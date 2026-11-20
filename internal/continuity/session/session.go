@@ -44,7 +44,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     project    TEXT NOT NULL DEFAULT '',
     title      TEXT NOT NULL DEFAULT '',
     archived   INTEGER NOT NULL DEFAULT 0,
-    protected  INTEGER NOT NULL DEFAULT 0
+    protected  INTEGER NOT NULL DEFAULT 0,
+    usage_turns        INTEGER NOT NULL DEFAULT 0,
+    input_tokens       INTEGER NOT NULL DEFAULT 0,
+    output_tokens      INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -207,6 +212,46 @@ type Session struct {
 	// remains available: protection constrains retention policy, not human
 	// authority.
 	Protected bool
+	// Usage is the measured provider usage recorded for this session.
+	// Known distinguishes a measured zero from no measurement: a provider
+	// that reported no usage must not be rendered as a zero-token run.
+	Usage Usage
+}
+
+// Usage is the measured token ledger for one session.
+//
+// It is additive across runs and resumes. A missing provider measurement does
+// not increment Turns; the zero value means "no measured usage", not "zero
+// tokens spent".
+type Usage struct {
+	// Turns is the number of model responses with a reported usage record.
+	Turns int
+	// Input and Output are the provider-reported token totals.
+	Input  int
+	Output int
+	// CacheRead and CacheWrite are additive cache telemetry, not part of the
+	// billed input total.
+	CacheRead  int
+	CacheWrite int
+}
+
+// Known reports whether at least one provider response supplied usage.
+func (u Usage) Known() bool { return u.Turns > 0 }
+
+// Total is the displayed token total. It is only meaningful when Known.
+func (u Usage) Total() int { return u.Input + u.Output }
+
+// Add folds one run's measured usage into the session ledger.
+func (u *Usage) Add(other Usage) {
+	if u == nil || (!other.Known() && other.Input == 0 && other.Output == 0 &&
+		other.CacheRead == 0 && other.CacheWrite == 0) {
+		return
+	}
+	u.Turns += other.Turns
+	u.Input += other.Input
+	u.Output += other.Output
+	u.CacheRead += other.CacheRead
+	u.CacheWrite += other.CacheWrite
 }
 
 // TitleAssigned reports whether title is a real label rather than a default
@@ -297,10 +342,40 @@ func (s *Store) SetAuthority(id int64, workspace, model string) error {
 	return nil
 }
 
+// AddUsage folds one run's measured provider usage into the session ledger.
+//
+// It is additive inside one SQL statement, so two runs resuming the same
+// session cannot lose an update between a read and a write. A run that
+// measured nothing is a no-op: the ledger must not turn "provider returned no
+// usage" into a measured zero.
+func (s *Store) AddUsage(id int64, usage Usage) error {
+	if !usage.Known() && usage.Input == 0 && usage.Output == 0 &&
+		usage.CacheRead == 0 && usage.CacheWrite == 0 {
+		return nil
+	}
+	result, err := s.db.Exec(
+		`UPDATE sessions SET usage_turns = usage_turns + ?, input_tokens = input_tokens + ?,
+		 output_tokens = output_tokens + ?, cache_read_tokens = cache_read_tokens + ?,
+		 cache_write_tokens = cache_write_tokens + ? WHERE id = ?`,
+		usage.Turns, usage.Input, usage.Output, usage.CacheRead, usage.CacheWrite, id,
+	)
+	if err != nil {
+		return fmt.Errorf("session: add usage: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("session: confirm usage: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: session %d", ErrSessionNotFound, id)
+	}
+	return nil
+}
+
 // Get returns one session by id.
 func (s *Store) Get(id int64) (Session, error) {
 	row := s.db.QueryRow(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected FROM sessions WHERE id = ?`, id)
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected, usage_turns, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens FROM sessions WHERE id = ?`, id)
 	return scanSession(row)
 }
 
@@ -310,7 +385,7 @@ func (s *Store) List(limit int) ([]Session, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected, usage_turns, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
 		 FROM sessions WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?`,
 		limit)
 	if err != nil {
@@ -335,7 +410,7 @@ func (s *Store) ListByProject(project string, limit int) ([]Session, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected, usage_turns, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
 		 FROM sessions WHERE (project = ? OR project = '') AND archived = 0
 		 ORDER BY updated_at DESC LIMIT ?`,
 		project, limit)
@@ -511,6 +586,10 @@ type Stat struct {
 	Messages int
 	// Tokens is the estimated token count reconstructed from stored text.
 	Tokens int
+	// Usage is the measured provider ledger for the session, when one exists.
+	// Callers prefer it over Tokens: an estimate is not a bill, and a measured
+	// zero is different from no measurement.
+	Usage Usage
 	// Prompt is the latest user prompt, or empty when none was recorded.
 	Prompt string
 	// InitialPrompt is the first user prompt, or empty when none was
@@ -534,13 +613,42 @@ func (s *Store) Stats(ids []int64) (map[int64]Stat, error) {
 	}
 	query := `SELECT session_id, payload FROM messages WHERE session_id IN (` +
 		strings.Join(placeholders, ",") + `) ORDER BY session_id, seq`
+
+	out := make(map[int64]Stat, len(ids))
+	usageRows, err := s.db.Query(
+		`SELECT id, usage_turns, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+		 FROM sessions WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("session: stats usage: %w", err)
+	}
+	for usageRows.Next() {
+		var (
+			id    int64
+			usage Usage
+		)
+		if err := usageRows.Scan(&id, &usage.Turns, &usage.Input, &usage.Output,
+			&usage.CacheRead, &usage.CacheWrite); err != nil {
+			_ = usageRows.Close()
+			return nil, fmt.Errorf("session: scan usage: %w", err)
+		}
+		stat := out[id]
+		stat.Usage = usage
+		out[id] = stat
+	}
+	if err := usageRows.Err(); err != nil {
+		_ = usageRows.Close()
+		return nil, err
+	}
+	_ = usageRows.Close()
+
+	// The store holds a single connection, so the message query must open only
+	// after the usage query is fully drained and closed. Interleaving two open
+	// rows sets deadlocks on the pool.
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("session: stats: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-
-	out := make(map[int64]Stat, len(ids))
 	for rows.Next() {
 		var (
 			id      int64
@@ -638,7 +746,7 @@ func (s *Store) PruneSessionsExcept(keep int, excludeID int64) (PruneResult, err
 		keep = DefaultKeepRecent
 	}
 	rows, err := s.db.Query(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected FROM sessions`)
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected, usage_turns, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens FROM sessions`)
 	if err != nil {
 		return PruneResult{}, fmt.Errorf("session: list for prune: %w", err)
 	}
@@ -983,7 +1091,8 @@ func scanSession(row rowScanner) (Session, error) {
 		archived  int
 		protected int
 	)
-	if err := row.Scan(&sess.ID, &createdAt, &updatedAt, &sess.Cwd, &sess.Model, &sess.Workspace, &sess.Project, &sess.Title, &archived, &protected); err != nil {
+	if err := row.Scan(&sess.ID, &createdAt, &updatedAt, &sess.Cwd, &sess.Model, &sess.Workspace, &sess.Project, &sess.Title, &archived, &protected,
+		&sess.Usage.Turns, &sess.Usage.Input, &sess.Usage.Output, &sess.Usage.CacheRead, &sess.Usage.CacheWrite); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrSessionNotFound
 		}
@@ -1027,6 +1136,11 @@ func migrate(db *sql.DB) error {
 		{"project", `ALTER TABLE sessions ADD COLUMN project TEXT NOT NULL DEFAULT ''`},
 		{"archived", `ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`},
 		{"protected", `ALTER TABLE sessions ADD COLUMN protected INTEGER NOT NULL DEFAULT 0`},
+		{"usage_turns", `ALTER TABLE sessions ADD COLUMN usage_turns INTEGER NOT NULL DEFAULT 0`},
+		{"input_tokens", `ALTER TABLE sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"output_tokens", `ALTER TABLE sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"cache_read_tokens", `ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"cache_write_tokens", `ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, add := range additions {
 		if columns[add.name] {

@@ -78,6 +78,12 @@ type Tree struct {
 	// hash; a checkpoint carrying any records the gap as metadata so a restore
 	// can state what it did not cover.
 	Skipped []string `json:"-"`
+	// rules are the ignore rules in force when this tree was captured. They are
+	// capture-time context, not part of the tree's identity: editing
+	// .gitignore changes which paths a later capture contains even when no file
+	// changed, and the edit diff must not report that definition change as a
+	// file edit. Trees loaded from the store have nil here.
+	rules *ignore.Matcher
 }
 
 // Hash returns the content identity of the tree.
@@ -269,7 +275,7 @@ func (s *Scanner) Scan(ctx context.Context, sink BlobSink) (*Tree, error) {
 	matcher := s.matcher
 	s.mu.Unlock()
 
-	tree := &Tree{Entries: make([]Entry, 0, 256)}
+	tree := &Tree{Entries: make([]Entry, 0, 256), rules: matcher}
 
 	err := filepath.WalkDir(s.root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

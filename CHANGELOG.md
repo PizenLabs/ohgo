@@ -5,6 +5,55 @@ immutable.
 
 ## [Unreleased]
 
+### Fixed
+
+- An answer that retracts an identifier is no longer audited as a claim that
+  the withdrawn name exists. A rejected answer could not be repaired: the
+  correction had to quote the wrong qualified name to retract it, so intent
+  grounding rejected the fix for repeating the error it corrected. A sentence
+  that withdraws a name is now outside the claim audit; an ordinary assertion
+  of the same name is still reviewed.
+- A documentation reference no longer narrows a project-wide account. "Facts
+  documented by the README" names the README as the source of one claim, but
+  the extracted path target made the request look targeted, so the runtime
+  could answer a source-verified architecture question from the README, a
+  directory listing, and a structural overview. The documentation-axis request
+  keeps its `repository_survey` requirement, which needs an implementation
+  observation before the answer boundary opens.
+- A negated external event is no longer audited as an assertion that it
+  happened. "No tests were run and no server/database was executed" was
+  reviewed as "external state the run never observed"; the event check now
+  requires the negator to attach to the event's own subject phrase, so
+  "no tests were run, but the deployment was executed" is still a claim.
+- A run observation is no longer audited as a repository absence. "No source
+  files were read beyond the README" reports what this run inspected, not that
+  the repository contains no source; the negated-quantity check now recognizes
+  inspection predicates as run facts. "No tests exist in this repository"
+  still needs coverage that can establish absence.
+- A read observation stores the read tool's line-numbered display text. The
+  provenance check now strips that gutter before reading a document's opening
+  definition, so a README's own project name ("GoCommerce is an e-commerce
+  application") is treated as identity instead of an unobserved implementation
+  claim, and a gutter line number is no longer audited as a documented metric.
+- A bare document target (`target_content:README`, `target_state:README`) now
+  resolves to the observed documentation file with the same name (README.md,
+  LICENSE.txt, CHANGELOG.rst). A root document wins over a nested one, and an
+  ambiguous set stays unresolved. Previously the requirement could never be
+  satisfied, so an investigation re-read the README until the run stalled.
+- A dotfile request (`update .gitignore file`, `read backend/.env`) now names a
+  literal path target. The path tokenizer dropped the leading dot, so the
+  contract was ambiguous and the task could never prove the named file changed.
+- A read-only probe after a successful check (`git status`, a network fetch)
+  no longer reopens the verification obligation when the host edit journal
+  observed the run. The journal pins the workspace identity at the check and at
+  run end; equal identities prove nothing changed, and a different identity
+  reopens the obligation even when the changed path was expected. Without a
+  captured journal, a write-capable execution still owes a later check.
+- Editing `.gitignore` no longer attributes every newly ignored path to the
+  edit. The checkpoint diff compares the before and after captures under their
+  own ignore rules, so a path that only became invisible is not reported as a
+  file change, and a path-scoped `.gitignore` task is not a scope violation.
+
 ## [v0.1.3] - 2026-11-19
 
 ### Added

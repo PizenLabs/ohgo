@@ -479,3 +479,78 @@ func TestMutationObjectiveStillRequiresChangeAndVerification(t *testing.T) {
 		t.Fatalf("literal mutation without check = %s/%s, want INSUFFICIENT/verify", suff.State, suff.Stage)
 	}
 }
+
+// A documentation artifact named as the source of one claim is not the
+// subject of the request. The prompt below asks for a project-wide account
+// that distinguishes README claims from source-verified architecture and
+// runtime behavior; extracting README as a narrowing target made the shape
+// look targeted, so the runtime answered from the README plus a directory
+// listing and never demanded a source observation.
+func TestDocumentationReferenceDoesNotNarrowARepositorySurvey(t *testing.T) {
+	const prompt = `Investigate this project and analyze what this project is about.
+
+Distinguish:
+- Facts documented by the README.
+- Architecture verified from source code.
+- Runtime behavior verified from implementation.
+- Features that are documented but not independently verified.`
+	facts := RepositoryFacts{Go: true}
+	intent, shape := regressionShapeAs(prompt, facts, "fuzz")
+	if len(intent.Targets) == 0 {
+		t.Fatalf("the README reference was not extracted: %+v", intent.Targets)
+	}
+	if !shape.BroadRepositoryAnalysis {
+		t.Fatalf("a project-wide account was narrowed by a documentation reference; needs=%+v", shape.RequiredKnowledge)
+	}
+	requireNeed(t, shape, "repository_survey", true)
+
+	// This is the evidence session 733 answered from: the README, a directory
+	// listing, and a structural overview. It must not reach the answer
+	// boundary, and the completion review must say the survey is open.
+	sessionEvidence := []agent.ToolOutcome{
+		readEvidence("read-1", "README.md"),
+		readEvidence("read-2", "backend/go.mod"),
+		listingEvidence("ls-1", "backend", "auth\ncart\ncheckout\nlayout\n"),
+		{
+			CallID: "structure-1", ToolName: "structure", Args: map[string]any{"view": "overview"},
+			Result: agent.Result{
+				Text: "view: overview\npackages: 80\nsymbols: 3440\n",
+				Details: map[string]any{
+					"view": "overview", "complete": false, "partial": true,
+					"truncated": true, "scope_complete": false,
+					"inventory_complete": true, "structural_complete": true,
+					"packages": 80, "symbols": 3440, "files": 305,
+				},
+			},
+		},
+	}
+	docs := NewEvidenceState()
+	docs.ObserveTurns(shape, []agent.Turn{{Results: sessionEvidence}})
+	if suff := EvaluateSufficiency(shape, docs, ExecutionState{}, false); suff.State != Insufficient || suff.Stage != StageExplore {
+		t.Fatalf("documentation-only evidence = %s/%s, want INSUFFICIENT/explore (%v)",
+			suff.State, suff.Stage, suff.Missing)
+	}
+	if review := completionAfter(shape, facts, sessionEvidence); review.Complete() {
+		t.Fatalf("README, listing, and structural overview completed a source-verified account: %s", review.Reason)
+	}
+
+	// One bounded implementation observation is what opens the answer
+	// boundary; the README requirement stays satisfied by the document read.
+	source := NewEvidenceState()
+	source.ObserveTurns(shape, readTurns("README.md", "backend/main.go"))
+	if suff := EvaluateSufficiency(shape, source, ExecutionState{}, false); suff.State != Sufficient || suff.Stage != StageAnswer {
+		t.Fatalf("documentation plus one source read = %s/%s, want SUFFICIENT/answer (%v)",
+			suff.State, suff.Stage, suff.Missing)
+	}
+}
+
+// The same path remains a narrowing subject when the request is actually about
+// that document. Widening every documentation mention into a survey would
+// demand source evidence for a question the source cannot answer.
+func TestDocumentationSubjectStillNarrows(t *testing.T) {
+	_, shape := regressionShapeAs("What does README.md say?", RepositoryFacts{Go: true}, "ask")
+	if shape.BroadRepositoryAnalysis {
+		t.Fatal("a question about the README became a whole-repository survey")
+	}
+	requireNeed(t, shape, "repository_survey", false)
+}

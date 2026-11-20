@@ -326,7 +326,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 			}
 		}
 	}
-	evidence := scanCompletionEvidence(turns, spec.MutationIntent)
+	evidence := scanCompletionEvidence(turns, spec.MutationIntent, false)
 	mutated := evidence.mutated
 	verified := evidence.mutated && evidence.lastVerification >= evidence.lastPotentialMutation
 	executed := evidence.executed

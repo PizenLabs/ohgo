@@ -18,8 +18,11 @@ import (
 type spyTool struct {
 	name string
 	tier agent.Tier
-	mu   sync.Mutex
-	n    int
+	// reply is the text the tool returns. Empty means "ok", so the existing
+	// routing tests keep their minimal observation.
+	reply string
+	mu    sync.Mutex
+	n     int
 }
 
 func (t *spyTool) Name() string        { return t.name }
@@ -34,6 +37,9 @@ func (t *spyTool) Execute(agent.Context, map[string]any) agent.Result {
 	t.mu.Lock()
 	t.n++
 	t.mu.Unlock()
+	if t.reply != "" {
+		return agent.Result{Text: t.reply}
+	}
 	return agent.Result{Text: "ok"}
 }
 

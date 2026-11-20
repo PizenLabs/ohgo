@@ -365,6 +365,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		stop()
 		if h.usage != nil {
 			h.usage.Add(turns)
+			recordRunUsage(h.store, h.sess, turns)
 		}
 		// Whatever the loop actually sent replaces the accumulator, including
 		// any compaction it applied, so the next turn starts from the real

@@ -75,8 +75,10 @@ type TaskResume struct {
 	Objective    string
 	ReviewReason string
 	// Role is the execution role the task last ran under. It is continuity
-	// metadata, never authority: the turn gate uses it to tell a role change
-	// on the same objective from a genuinely new request.
+	// metadata bounded by the task's contract: the turn boundary restores it
+	// through the workspace owner, and the turn gate uses it to tell a role
+	// change on the same objective from a genuinely new request. It never
+	// grants a capability by itself.
 	Role string
 	// HandoffStatus and HandoffTo describe an approved transition awaiting its
 	// turn boundary. An approved handoff is the human's explicit continuation
@@ -326,6 +328,23 @@ func (TaskCleared) eventKind() string { return "task_cleared" }
 // ClearTask drops the live task projection without claiming the task ended.
 func (p *Program) ClearTask() { p.publish(TaskCleared{}) }
 
+// restoreResumedAuthority applies the resumed task's persisted authority to
+// the live workspace.
+//
+// An explicit /task resume is a human selection of the task, so its contract is
+// restored immediately instead of waiting for the first continuation prompt.
+// The workspace owner performs the move; the program only asks and reports. A
+// resumed task whose authority cannot be restored stays resumable and refuses
+// the next turn rather than running under the wrong role.
+func (p *Program) restoreResumedAuthority() {
+	if p.workspace.RestoreTaskAuthority == nil {
+		return
+	}
+	if err := p.workspace.RestoreTaskAuthority(); err != nil {
+		p.state.Apply(Notice{Text: "task authority: " + err.Error()})
+	}
+}
+
 // SyncTask checkpoints and republishes the current task, if a layer is
 // installed. It is the hook a compaction report uses to keep the checkpoint in
 // step with a reconstructed context.
@@ -501,6 +520,7 @@ func (p *Program) taskCommand(args []string) {
 			return
 		}
 		p.PublishTask(projection)
+		p.restoreResumedAuthority()
 		p.state.Apply(Notice{Text: "resumed task: " + projection.Objective})
 		return
 	case "cancel":
@@ -933,10 +953,21 @@ func handoffContinuation(current TaskResume, active, text string, next contract.
 // human approved moving authority to perform *this* work. A question or a bare
 // acknowledgement approves nothing new, so the transition preserves the task's
 // own objective and no re-scope is recorded.
+//
+// A follow-up that names no target or behavioural check of its own ("fix it",
+// "implement the fix") approves the task's existing objective, not a new one.
+// Recording it would adopt an ambiguous contract at Begin and replace a
+// verifiable completion boundary with a targetless one, which turns the
+// approved work into a review.
 func approvedTransitionObjective(text string) string {
 	intent := workspace.BuildIntentContract(text)
 	switch intent.Kind {
-	case contract.ObjectiveMutation, contract.ObjectiveExecution:
+	case contract.ObjectiveMutation:
+		if intent.Ambiguous {
+			return ""
+		}
+		return intent.Objective
+	case contract.ObjectiveExecution:
 		return intent.Objective
 	}
 	return ""
@@ -1113,6 +1144,24 @@ func taskTurnDecision(current TaskResume, text, active string, next contract.Int
 	default:
 		return "", false
 	}
+}
+
+// handoffOwnsTurn reports whether a pending role transition already decides the
+// authority of the next turn.
+//
+// APPROVED is the human's authorization awaiting its turn boundary; APPLIED but
+// unconsumed is a workspace command awaiting the same. In both cases the live
+// role must still be the decided target, which is what the approving turn runs
+// under and what Begin applies or consumes. Otherwise the decision did not
+// survive the session and the ordinary task-authority restore is the truthful
+// reading.
+func handoffOwnsTurn(current TaskResume, active string) bool {
+	pending := current.HandoffStatus == "APPROVED" ||
+		(current.HandoffStatus == "APPLIED" && !current.HandoffConsumed)
+	if !pending || current.HandoffTo == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(current.HandoffTo), strings.TrimSpace(active))
 }
 
 // taskIntentLabel projects the persisted contract as the turn's semantic

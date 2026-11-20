@@ -35,7 +35,12 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 		}, nil
 	}
 	analysis, err := structural.NewAnalyzer(p.Source, p.Cache).Analyze(ctx, structural.Request{
-		Intent: intent, Focus: focus, MaxFiles: 4000, MaxSteps: 5,
+		// Level is the maximum authorised resolution, not a forced one. A
+		// target-shaped step needs the symbol-neighborhood strategy to be
+		// allowed to run; the default package level silently skipped it and
+		// left every impact/flow answer without a focus report.
+		Intent: intent, Focus: focus, Level: structural.LevelRelationship,
+		MaxFiles: 4000, MaxSteps: 5,
 	})
 	if err != nil {
 		return Observation{}, fmt.Errorf("structural analysis: %w", err)
@@ -102,14 +107,50 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 				"structural focus is ambiguous: "+strings.Join(analysis.Focus.Candidates, ", "))
 		default:
 			observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()), Subject: analysis.Focus.Selector,
-				Detail: fmt.Sprintf("%d references, %d callers, %d importers, %d tests",
-					analysis.Focus.References, analysis.Focus.Callers, analysis.Focus.Importers, analysis.Focus.Tests)})
+				Detail: fmt.Sprintf("%d references, %d callers, %d callees, %d importers, %d tests",
+					analysis.Focus.References, analysis.Focus.Callers, analysis.Focus.Callees,
+					analysis.Focus.Importers, analysis.Focus.Tests)})
 		}
 	}
 	for _, issue := range analysis.Issues {
 		observation.Issues = append(observation.Issues, issue.Code+": "+issue.Detail)
 	}
+	observation.Sufficient = structuralSufficient(intent, analysis)
+	if req.Intent == planner.IntentVerify && (analysis.Focus == nil || analysis.Focus.Tests == 0) {
+		// A verification question asks which tests exercise the target. A
+		// symbol with callers but no associated test is not sufficient
+		// evidence for that question, even though it is sufficient for impact.
+		observation.Sufficient = false
+	}
 	return observation, nil
+}
+
+// structuralSufficient reports whether the native answer already covers the
+// information need. It is deliberately conservative: a found target with no
+// relationship is not sufficient for an impact or flow question, and an
+// established architecture pattern is.
+func structuralSufficient(intent structural.Intent, analysis structural.Analysis) bool {
+	switch intent {
+	case structural.IntentProject:
+		return analysis.Coverage.Files > 0
+	case structural.IntentArchitecture:
+		return analysis.Architecture.Pattern != "" &&
+			analysis.Architecture.Pattern != "not-established" &&
+			analysis.Coverage.GraphEdges > 0
+	case structural.IntentImpact:
+		return analysis.Focus != nil && analysis.Focus.Found &&
+			analysis.Focus.References+analysis.Focus.Callers+analysis.Focus.Callees+
+				analysis.Focus.Tests > 0
+	case structural.IntentFlow:
+		return analysis.Focus != nil && analysis.Focus.Found &&
+			(analysis.Focus.References+analysis.Focus.Callers+analysis.Focus.Callees) > 0
+	case structural.IntentLocate:
+		return analysis.Focus != nil && analysis.Focus.Found
+	case structural.IntentIsolation:
+		return analysis.Focus != nil && analysis.Focus.Found
+	default:
+		return false
+	}
 }
 
 func structuralRequest(req Request) (structural.Intent, string, bool) {

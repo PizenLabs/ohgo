@@ -784,6 +784,16 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
     add bounded hints, but it can never grant authority, bypass evidence, change
     completion, alter a budget, or write task state. A project record becomes
     global only through an explicit validated promotion.
+31. A task-owned turn runs under the task's persisted authority, not the ambient
+    session. `task.Task.TurnRole` derives the role from `ExecutionContract` and
+    `activeRole`; the workspace owner applies it before the model is asked, and
+    `Controller.Begin` refuses a live role the contract does not authorize. A
+    new session's default workspace, a restored session, a different model, or
+    an older checkpoint can therefore neither widen nor narrow an open task. An
+    explicit per-turn workspace choice and a pending approved handoff are human
+    decisions and win over the restore. A checkpoint whose recorded role the
+    contract never authorized is repaired on load and reported as
+    `RECONSTRUCTED`; the repair never widens the contract.
 
 ## Explicit Non-Goals
 

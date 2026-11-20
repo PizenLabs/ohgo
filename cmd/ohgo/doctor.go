@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 	"github.com/spf13/cobra"
@@ -113,6 +115,11 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 		add("catalog", true, fmt.Sprintf("%d models across %d providers", len(models), len(providers)))
 	}
 
+	// The binary's structural capability is a build fact, not a repository
+	// fact. Without it a portable and a multi-language install diagnose
+	// identically, and a user cannot tell why TypeScript symbols are absent.
+	reports = append(reports, structuralReport())
+
 	if warnings := registerEndpoints(registry, settings); len(warnings) > 0 {
 		add("endpoints", false, strings.Join(warnings, "; "))
 	} else if len(settings.Endpoints) > 0 {
@@ -200,4 +207,34 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 	}
 
 	return reports
+}
+
+// structuralReport names the syntax adapters compiled into this binary.
+//
+// The portable and multi-language builds are otherwise indistinguishable from
+// the inside: both run, both report the same version, and only one can parse
+// TypeScript. The doctor must answer "what can this binary see?" directly
+// rather than leaving the user to infer it from a failed symbol query.
+func structuralReport() doctorReport {
+	adapters := ast.DefaultAdapters()
+	names := make([]string, 0, len(adapters))
+	seen := map[string]bool{}
+	for _, adapter := range adapters {
+		if seen[adapter.Name()] {
+			continue
+		}
+		seen[adapter.Name()] = true
+		names = append(names, adapter.Name())
+	}
+	sort.Strings(names)
+	if len(names) <= 1 {
+		return doctorReport{
+			Name: "structural", OK: true,
+			Detail: "1 adapter (go); portable build: other language adapters are unsupported",
+		}
+	}
+	return doctorReport{
+		Name: "structural", OK: true,
+		Detail: fmt.Sprintf("%d adapters (%s)", len(names), strings.Join(names, ", ")),
+	}
 }

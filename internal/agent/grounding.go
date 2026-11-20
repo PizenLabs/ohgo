@@ -33,13 +33,20 @@ var (
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:is|are)\s+(?:not\s+present|absent)\b`)
 	negativeMissingPattern = regexp.MustCompile(
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:is|was|are|were)\s+(?:missing|not\s+found)\b`)
-	// changeReportPattern follows a negated quantity with a change predicate.
-	// "No files were modified" reports what the run did to the workspace, not
-	// what the repository contains. No file scan can establish it, and it is
-	// not the existence claim the negative-conclusion check exists to police.
+	// negativeAbsenceOfPattern catches the noun form of a repository absence:
+	// "the absence of tests". It is the same conclusion as "there are no tests"
+	// and must earn the same coverage.
+	negativeAbsenceOfPattern = regexp.MustCompile(
+		`(?i)\babsence\s+of\s+([a-z0-9][a-z0-9 _./-]{0,40}?)(?:\s+(?:is|are|was|were|in|within|at|on|for|to)\b|[.,;:]|$)`)
+	// changeReportPattern follows a negated quantity with a run predicate.
+	// "No files were modified" and "no source files were read" report what the
+	// run did, not what the repository contains. No file scan can establish
+	// them, and they are not the existence claim the negative-conclusion check
+	// exists to police.
 	changeReportPattern = regexp.MustCompile(
 		`(?i)^\s*(?:(?:was|were|is|are|has\s+been|have\s+been|had\s+been|got)\s+)?` +
-			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited)\b`)
+			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited` +
+			`|read|inspected|examined|reviewed|opened|loaded|queried|searched|sampled|observed)\b`)
 	globalScopePattern = regexp.MustCompile(
 		`(?i)\b(?:repository|repo|project|codebase|workspace)\b`)
 	// rootScopePattern names a location bounded to the top level of the tree.
@@ -80,6 +87,15 @@ var (
 	// what is possible or configured; "was triggered at 03:17" is an event.
 	modalEventPattern = regexp.MustCompile(
 		`(?i)\b(?:can|could|may|might|will|would|should|must|is|are)\s+(?:also\s+|automatically\s+)?(?:be\s+)?$`)
+	// negatedEventPattern marks a negator inside the event's subject phrase:
+	// "the server was not executed", "the workflow hasn't run". The sentence
+	// then reports that the event did not happen.
+	negatedEventPattern = regexp.MustCompile(
+		`(?i)\b(?:not|never|no|none|without|nor|neither)\b|\b\w+n['’]t\b`)
+	// negatedLeadPattern marks a negator immediately before the event's
+	// subject: "no server was executed", "no deployment was published".
+	negatedLeadPattern = regexp.MustCompile(
+		`(?i)\b(?:no|not|never|without|nor|neither)\s+$`)
 	// uncertaintyPattern marks an honest report about external state: the
 	// answer names the claim in order to say it cannot be established.
 	uncertaintyPattern = regexp.MustCompile(
@@ -170,7 +186,9 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 		assessment.Verdict = contract.GroundingReview
 	}
 
-	evidence := scanCompletionEvidence(turns, intent.Kind == contract.ObjectiveMutation)
+	// Grounding only reads the definite-mutation flag; ordering is decided by
+	// the completion evaluator, which has the journal evidence.
+	evidence := scanCompletionEvidence(turns, intent.Kind == contract.ObjectiveMutation, false)
 	if evidence.mutated && !grounding.MutationIntent {
 		return rejectGrounding("action_invented",
 			"a repository change was observed but the request did not ask for one")
@@ -282,6 +300,14 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 			add(issue.Code, issue.Detail)
 		}
 	}
+	// The explicit deliverable contract is separate from claim scope: an answer
+	// can avoid every unsupported claim and still omit the field the user asked
+	// for. The facet check owns that obligation.
+	if facets := AssessRequiredFacets(intent, turns, answer); !facets.Pass() {
+		for _, issue := range facets.Issues {
+			add(issue.Code, issue.Detail)
+		}
+	}
 	if insufficientSearchPattern.MatchString(answerLower) &&
 		(intent.Kind != contract.ObjectiveMutation || grounding.HasAction(contract.GroundingInvestigate)) {
 		detail := "the answer reports an inability to find evidence as the result"
@@ -356,7 +382,7 @@ func negativeClaims(answer string) []negativeClaim {
 	var out []negativeClaim
 	add := func(value string, global bool) {
 		value = cleanClaimSubject(value)
-		if value == "" {
+		if value == "" || claimSubjectIsEvidenceGap(value) {
 			return
 		}
 		for _, existing := range out {
@@ -385,6 +411,13 @@ func negativeClaims(answer string) []negativeClaim {
 			if changeReportPattern.MatchString(answer[match[1]:]) {
 				continue
 			}
+			if claimIsEvidenceGap(answer, match[3]) {
+				// "No runtime or configuration evidence" is a statement about
+				// this run's observations, not a repository absence. Treating
+				// an epistemic limitation as a negative conclusion punishes the
+				// answer for being explicit about what it did not observe.
+				continue
+			}
 			value := answer[match[2]:match[3]]
 			global := repositoryWide || claimContextIsGlobal(answer, match[0], match[1])
 			add(value, global)
@@ -396,7 +429,44 @@ func negativeClaims(answer string) []negativeClaim {
 	addMatches(negativeExistPattern, false)
 	addMatches(negativeAbsentPattern, false)
 	addMatches(negativeMissingPattern, false)
+	addMatches(negativeAbsenceOfPattern, false)
 	return out
+}
+
+// claimSubjectIsEvidenceGap reports a subject that names the run's evidence
+// rather than a repository artifact.
+func claimSubjectIsEvidenceGap(subject string) bool {
+	subject = strings.ToLower(strings.TrimSpace(subject))
+	for _, suffix := range []string{"evidence", "observation", "observations", "information", "data"} {
+		if subject == suffix || strings.HasSuffix(subject, " "+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// claimIsEvidenceGap reports whether the words after an absence span make it a
+// statement about the run's evidence ("no runtime evidence", "no configuration
+// evidence available") rather than a claim that the repository lacks the thing.
+func claimIsEvidenceGap(answer string, end int) bool {
+	if end < 0 || end >= len(answer) {
+		return false
+	}
+	limit := end + 48
+	if limit > len(answer) {
+		limit = len(answer)
+	}
+	rest := strings.ToLower(strings.TrimSpace(answer[end:limit]))
+	for _, suffix := range []string{
+		"evidence", "evidence available", "evidence was available",
+		"evidence observed", "observation", "observations",
+		"data", "data available", "information", "information available",
+	} {
+		if strings.HasPrefix(rest, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // claimContextIsGlobal reports whether the sentence containing a claim names
@@ -462,6 +532,12 @@ func externalClaims(answer string) []string {
 			if len(match) >= 4 && descriptiveEventForm(answer, match[2]) {
 				continue
 			}
+			// A negated event reports that the external state did not occur.
+			// "No tests were run and no server/database was executed" is an
+			// evidence-gap report, not the claim that the server was used.
+			if len(match) >= 4 && negatedEventForm(answer, match[0], match[2]) {
+				continue
+			}
 			consider(match[0], match[1])
 		}
 	}
@@ -495,6 +571,27 @@ func descriptiveEventForm(answer string, verbStart int) bool {
 		}
 	}
 	return false
+}
+
+// negatedEventForm reports whether the event verb is negated by its own
+// subject phrase, so the sentence states that the event did not happen.
+//
+// The negator must attach to the subject or sit inside the subject-verb
+// phrase. Scanning the whole sentence would excuse a real claim next to an
+// unrelated negation ("no tests were run, but the deployment was executed"),
+// which is exactly the assertion this check exists to review.
+func negatedEventForm(answer string, subjectStart, verbStart int) bool {
+	if subjectStart < 0 || verbStart <= subjectStart || verbStart > len(answer) {
+		return false
+	}
+	if negatedEventPattern.MatchString(strings.ToLower(answer[subjectStart:verbStart])) {
+		return true
+	}
+	lead := subjectStart - 16
+	if lead < 0 {
+		lead = 0
+	}
+	return negatedLeadPattern.MatchString(strings.ToLower(answer[lead:subjectStart]))
 }
 
 // uncertaintyWindow returns the sentence around a claim, so a hedge in the same

@@ -271,8 +271,72 @@ type IntentContract struct {
 	// runtime validates a model proposal and final answer against. It is
 	// extracted from user text, never from model output, and grants nothing.
 	Grounding *IntentGrounding
+	// RequiredFacets are the answer fields the request explicitly asked for.
+	// They are extracted only from the user's own wording ("report the callers
+	// and the tests"), never from model output. An informational answer that
+	// omits one, or explicitly leaves it unverified, has not satisfied the
+	// request even when the rest of the prose is correct.
+	RequiredFacets []RequiredFacet
 	// Issues are deterministic extraction notes, used in the review reason.
 	Issues []string
+}
+
+// Facet is one requested answer field.
+//
+// A facet is a deliverable, not a topic: "the tests" mentioned in passing does
+// not require a test inventory, while "report the tests" does. The extractor
+// therefore requires an explicit request verb near the noun.
+type Facet string
+
+// Requested answer facets.
+const (
+	// FacetCallers is the set of symbols that call the named symbol.
+	FacetCallers Facet = "callers"
+	// FacetReferences is the set of reference sites for the named symbol.
+	FacetReferences Facet = "references"
+	// FacetCallSites is the set of concrete invocation sites.
+	FacetCallSites Facet = "call_sites"
+	// FacetImporters is the set of packages or files that import the target.
+	FacetImporters Facet = "importers"
+	// FacetDependencies is the set of packages or modules the target uses.
+	FacetDependencies Facet = "dependencies"
+	// FacetTests is the test files or test symbols associated with the target.
+	FacetTests Facet = "tests"
+	// FacetTestTooling is how the project runs its tests (script or command).
+	FacetTestTooling Facet = "test_tooling"
+	// FacetPackages is the package/module inventory in scope.
+	FacetPackages Facet = "packages"
+	// FacetEntrypoints is the set of application entry points.
+	FacetEntrypoints Facet = "entrypoints"
+	// FacetArchitecture is the architecture or component structure.
+	FacetArchitecture Facet = "architecture"
+	// FacetImpact is the direct and indirect effect of a change.
+	FacetImpact Facet = "impact"
+)
+
+// RequiredFacet is one facet with the subject the request named, when any.
+type RequiredFacet struct {
+	// Facet is the requested answer field.
+	Facet Facet
+	// Subject is the code coordinate the request named for this facet, or ""
+	// when the request did not name one.
+	Subject string
+}
+
+// Label is the human-facing name of a facet, used in review reasons.
+func (f Facet) Label() string {
+	switch f {
+	case FacetCallSites:
+		return "call sites"
+	case FacetTestTooling:
+		return "test tooling"
+	case FacetEntrypoints:
+		return "entry points"
+	case FacetDependencies:
+		return "dependencies"
+	default:
+		return string(f)
+	}
 }
 
 // InformationalPhase returns the contract evaluated as the informational or

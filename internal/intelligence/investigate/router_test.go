@@ -90,7 +90,7 @@ func TestRouterReusesNativeForOrientationAndDoesNotCallExternal(t *testing.T) {
 	}
 }
 
-func TestRouterUsesExternalWhenTheTargetShapeNeedsTraversal(t *testing.T) {
+func TestRouterEscalatesToExternalWhenNativeIsInsufficient(t *testing.T) {
 	native := &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObservation()}
 	external := &fakeStructuralProvider{
 		name: planner.ProviderStructural, available: true,
@@ -114,14 +114,65 @@ func TestRouterUsesExternalWhenTheTargetShapeNeedsTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if native.calls != 0 || external.calls != 1 {
-		t.Fatalf("routing calls: native=%d external=%d", native.calls, external.calls)
+	if native.calls != 1 || external.calls != 1 {
+		t.Fatalf("routing calls: native=%d external=%d, want native first then escalation", native.calls, external.calls)
 	}
-	if result.Source != "gry" || result.Outcome != OutcomeSuccess {
-		t.Fatalf("external observation was not returned: %+v", result)
+	if result.Source != "native+gry" || result.Outcome != OutcomePartial {
+		t.Fatalf("combined observation = %+v", result)
+	}
+	if len(result.Facts) != 2 {
+		t.Fatalf("native evidence was lost in the merge: %+v", result.Facts)
 	}
 	if meter.External() != 1 {
 		t.Fatalf("external request was not charged: %d", meter.External())
+	}
+}
+
+// A sufficient native answer must not spend an external request merely
+// because one is configured.
+func TestRouterKeepsSufficientNativeWithoutEscalation(t *testing.T) {
+	nativeObs := nativeObservation()
+	nativeObs.Sufficient = true
+	native := &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObs}
+	external := &fakeStructuralProvider{
+		name: planner.ProviderStructural, available: true,
+		observation: Observation{Outcome: OutcomeSuccess, Source: "gry"},
+	}
+	router := &StructuralRouter{Native: native, External: external}
+	meter := NewMeter(Budget{})
+
+	result, err := router.Observe(context.Background(),
+		Request{Intent: planner.IntentImpact, Focus: "target"},
+		planner.Step{Strategy: "reverse-dependencies"}, meter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if native.calls != 1 || external.calls != 0 {
+		t.Fatalf("routing calls: native=%d external=%d, want native only", native.calls, external.calls)
+	}
+	if result.Source != "native" || meter.External() != 0 {
+		t.Fatalf("result = %+v external=%d", result, meter.External())
+	}
+}
+
+func TestRouterKeepsSufficientNativeEvenWhenGlobalCoverageIsPartial(t *testing.T) {
+	nativeObs := nativeObservation()
+	nativeObs.Outcome = OutcomePartial
+	nativeObs.Sufficient = true
+	native := &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObs}
+	external := &fakeStructuralProvider{
+		name: planner.ProviderStructural, available: true,
+		observation: Observation{Outcome: OutcomeSuccess, Source: "gry"},
+	}
+	router := &StructuralRouter{Native: native, External: external}
+	result, err := router.Observe(context.Background(),
+		Request{Intent: planner.IntentImpact, Focus: "target"},
+		planner.Step{Strategy: "reverse-dependencies"}, NewMeter(Budget{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if external.calls != 0 || result.Source != "native" {
+		t.Fatalf("global partial coverage escalated unnecessarily: %+v external=%d", result, external.calls)
 	}
 }
 
@@ -204,7 +255,7 @@ func TestRouterFallsBackAndPreservesAmbiguity(t *testing.T) {
 	}
 }
 
-func TestRouterReturnsStaleExternalEvidenceWithoutRedoingTheWork(t *testing.T) {
+func TestRouterNeverPresentsStaleExternalEvidenceAsCurrent(t *testing.T) {
 	native := &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObservation()}
 	external := &fakeStructuralProvider{
 		name: planner.ProviderStructural, available: true,
@@ -220,11 +271,17 @@ func TestRouterReturnsStaleExternalEvidenceWithoutRedoingTheWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if native.calls != 0 {
-		t.Fatal("native analysis was repeated for usable stale evidence")
+	if native.calls != 1 || external.calls != 1 {
+		t.Fatalf("routing calls: native=%d external=%d, want native first then escalation", native.calls, external.calls)
 	}
-	if result.Outcome != OutcomeStale || result.Source != "gry" {
-		t.Fatalf("stale evidence was not returned: %+v", result)
+	if result.Outcome != OutcomeStale {
+		t.Fatalf("stale evidence was presented as current: %+v", result)
+	}
+	if !strings.Contains(strings.Join(result.Issues, "\n"), "stale") {
+		t.Fatalf("stale limitation was not stated: %+v", result.Issues)
+	}
+	if len(result.Facts) != 2 {
+		t.Fatalf("native or stale facts were dropped: %+v", result.Facts)
 	}
 }
 

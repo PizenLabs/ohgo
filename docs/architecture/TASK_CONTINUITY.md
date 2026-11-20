@@ -29,6 +29,7 @@ workspace, completes a task, or promotes model output into verified fact.
 | Task identity and lifecycle | `task.Task` | `progress.json` | `task.md`, TUI task block |
 | Completion contract and pre-run snapshot | `task.Task.Contract` / `.Snapshot` | `progress.json` | `task.md`, TUI task block |
 | Task execution authority (origin + authorized capabilities) | `task.Task.ExecutionContract` | `progress.json` (`executionContract`) | `task.md` Meta, transition policy input |
+| Turn authority (role a continuation runs under) | `task.Task.TurnRole` | never (derived from `executionContract` + `activeRole`) | turn boundary, live gate, TUI chrome |
 | Verified facts, hypotheses, evidence, questions | `task.Task.Context` | `progress.json` (`context`) | `task.ContextFor` |
 | Role-specific execution context | `task.Task.Context.Roles` | `progress.json` (`context.roles`) | `task.ContextFor` |
 | Role handoff and its disposition | `task.Task.Handoff` | `progress.json` (`handoff`) | `task.ContextFor`, TUI transition card |
@@ -60,8 +61,28 @@ routing. A terminal task owns no continuation: a repeated verification prompt
 reports the finished state instead of replacing the proof with a duplicate
 task. A terminal task is archived through
 the same detach path before the new objective starts, so its objective,
-evidence, proof, and timeline remain inspectable through `/task history` rather
-than being overwritten by the replacement checkpoint.
+evidence, proof, and timeline remain inspectable through `/task history`
+rather than being overwritten by the replacement checkpoint.
+
+### 1.1 Continuation semantics
+
+The distinctions are explicit; no single prompt word decides more than one of
+them.
+
+| Situation | What happens |
+| --- | --- |
+| `/new`, or a prompt that names a new subject | the live task is detached (archived, resumable) and a new task starts under the live role; no objective, evidence, proof, role, or budget is inherited |
+| explicit continuation (`continue`, `carry on`) on a non-terminal live task | the same task and objective continue; its persisted authority is restored (2.1) and its evidence, budget, and timeline are reused |
+| verification wording on an execution or mutation task (`check whether the fix worked`) | the same task continues at its verification boundary; an informational task does not acquire a result it never had |
+| a short follow-up to the task's own object (`fix it`, `implement the fix`) | the same task continues; the follow-up does not replace the task's completion contract with a targetless one |
+| the same objective submitted again while the task is open | the same task continues only when the prompt states the objective or the role changed; otherwise it is routed as a new request |
+| the same objective submitted again after the task finished | a new invocation: the terminal task is archived with its proof and a new task identity starts |
+| continuation wording with no live task | it is an ordinary request, not a silent resurrection of archived work; detached work needs `/task resume` |
+
+The session's workspace is the authority for the session. It is never evidence
+that an open task may run under it; 2.1 restores the task's contract before the
+model is asked. A prompt is not an identity: text similarity never re-attaches a
+task, and a repeated prompt never inherits one.
 
 An implementation delta belongs to the objective already in progress. When the
 open contract is a mutation objective under BUILD and the next prompt carries no
@@ -87,11 +108,12 @@ caller cannot persist a second, divergent representation.
 `Task` carries the stable identity, original objective, lifecycle status,
 constraints, coarse phase, execution guidance (todos), next action, creation and
 update times, the completion contract, and `SharedContext`. It also carries
-`ActiveRole`, the execution role it last ran under; that is continuity metadata,
-never authority, and it is additive to the checkpoint. `ExecutionContract`
-records the authority the task was created under and the capabilities a human
-authorized: the origin never changes, and the capability flags only widen. It
-is evidence for the transition policy, never a second gate.
+`ActiveRole`, the execution role it last ran under; that is continuity
+metadata, and only §2.1 turns it into the restore target, always bounded by
+the persisted contract. `ExecutionContract` records the authority the task was
+created under and the capabilities a human authorized: the origin never
+changes, and the capability flags only widen. It is evidence for the transition
+policy and the turn-boundary restore, never a second gate.
 
 `SharedContext` is additive to the checkpoint and carries its own schema
 version. It contains:
@@ -115,6 +137,35 @@ event and the newest events are retained and the sequence gap reports how many
 were dropped. `Task.Completion` is the durable proof for a COMPLETED task:
 the evaluator verdict, the observed check summaries, the evidence references,
 and whether an informational answer was produced.
+
+### 2.1 Turn authority
+
+A task's subject is not its authority. `Task.ExecutionContract` records the
+authority the task was created under and the capabilities a human has granted;
+`Task.ActiveRole` records the role it last ran under. `Task.TurnRole` combines
+them into the role a continuation must run under:
+
+```text
+TurnRole = ActiveRole          when the contract authorizes that role
+         = strongest role the contract grants   otherwise
+         = unresolved                            when neither exists
+```
+
+The turn boundary applies that role through the workspace owner before the
+model is asked, so the live gate, the recorded role, the session snapshot, and
+the model-visible authority are one fact. A new session's default BUILD, a
+restored session's workspace, a different model, and permission to read are not
+grants for an open task, and a granted capability is not lost because the
+session came back narrower. An explicit per-turn workspace choice and a pending
+approved handoff are human decisions and take precedence; the handoff's
+approval widens the contract when `Begin` applies it.
+
+`Controller.Begin` refuses a live role the contract never authorized
+(`ErrAuthorityConflict`) rather than recording it, and `Store.Load` repairs a
+checkpoint whose recorded role contradicts its contract, reporting the repair
+as `RECONSTRUCTED`. Both directions of the rule are enforced: an informational
+FUZZ task cannot resume as BUILD, and an interrupted BUILD task is not silently
+downgraded to FUZZ.
 
 ---
 
@@ -619,10 +670,12 @@ writer at the turn boundary.
 - Applying an approved handoff or recording an explicit human workspace command
   widens `Task.ExecutionContract` to the target capability. A narrowing command
   changes only the live role; the origin and the human's grant remain.
-- Recovery never switches authority. It compares an approved record with the
-  authority that was restored: a matching target is recorded as applied, a
-  matching source stays unapplied, and any third role is reported as a
-  discrepancy without rewriting the task role.
+- Recovery never switches authority by itself. It compares an approved record
+  with the authority that was restored: a matching target is recorded as
+  applied, a matching source stays unapplied, and any third role is reported as
+  a discrepancy without rewriting the task role. The authority an open task
+  actually runs under is restored later, at its turn boundary, from the task's
+  own contract (2.1).
 - A source that is missing from `task.md` is reconstructed from the persisted
   contract, so a recovered task and its handoff satisfy the same validation and
   persistence rules as a normally loaded task; an objective conflict drops the

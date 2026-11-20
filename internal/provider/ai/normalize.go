@@ -676,6 +676,16 @@ func defaultPseudoProtocols() []pseudoProtocol {
 			parse: parseToolCallEnvelope,
 		},
 		{
+			// Baidu ERNIE emits an XML invoke envelope under an ernie:
+			// namespace. It reached the runtime as final assistant text on a
+			// free gateway and was published as an answer until this spelling
+			// was registered.
+			name:  "ernie_tool_call",
+			open:  []byte("<ernie:tool_call>"),
+			close: []byte("</ernie:tool_call>"),
+			parse: parseXMLInvokeEnvelope,
+		},
+		{
 			// LongCat-Flash-Chat wraps a JSON function object; LongCat 2.5
 			// emits a bare tool name followed by key/value elements. Both
 			// spellings use this envelope.

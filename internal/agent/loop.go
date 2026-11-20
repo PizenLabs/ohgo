@@ -153,6 +153,19 @@ type Config struct {
 	// correctly serialized call without inventing arguments. Empty keeps the
 	// classification but does not spend the recovery request.
 	ProtocolRecoveryRequest string
+	// CompletionReviewRequest is the directive carried once when a candidate
+	// answer fails the answer-level completion review. It must contain
+	// {{reason}}; the loop replaces it with the runtime's evidence reason. The
+	// correction may use an available tool to acquire the missing evidence or
+	// qualify the claim. Empty disables correction even when AnswerReview is
+	// installed, so a host cannot spend a turn on an absent instruction.
+	CompletionReviewRequest string
+	// AnswerReview is the optional answer-level completion gate. It receives
+	// the run so far and the candidate answer and returns a non-empty reason
+	// when the answer cannot be published as complete. It can only request a
+	// correction; authority, completion, and publication remain the runtime's.
+	// A nil hook accepts every answer.
+	AnswerReview func(turns []Turn, answer string) string
 	// Tools are offered to the model.
 	Tools []Tool
 	// MaxTokens caps each completion.
@@ -420,6 +433,10 @@ type Loop struct {
 	// the run ends, and the host reads it immediately after Run returns.
 	mutationMu   sync.Mutex
 	lastMutation MutationProvenance
+	// lastVerifiedTree is the workspace identity the journal captured at the
+	// run's last successful check. It is compared with the run-end identity so
+	// completion can prove nothing changed after the check.
+	lastVerifiedTree string
 	// runSeq issues a local run identity for mutation provenance when the host
 	// has none. It is process-local and never a durable task identity.
 	runSeq int
@@ -505,6 +522,51 @@ func (l *Loop) recordMutation(provenance MutationProvenance) {
 	l.lastMutation = provenance
 }
 
+// markVerification captures the workspace identity after a successful check.
+//
+// It runs after the whole batch, so a later executing outcome in the same batch
+// would make the capture ambiguous; in that case the identity is left unset and
+// completion keeps the conservative rule. The capture is best-effort: a journal
+// without VerificationMarker simply provides none.
+func (l *Loop) markVerification(ctx context.Context, edit *runEdit, outcomes []ToolOutcome) {
+	if edit == nil {
+		return
+	}
+	if l.cfg.Grounding == nil || !l.cfg.Grounding.MutationIntent {
+		// Only a repository-change objective needs the identity; a read-only
+		// run must not pay a workspace capture for a check it will never owe.
+		return
+	}
+	marker, ok := edit.journal.(VerificationMarker)
+	if !ok {
+		return
+	}
+	lastCheck := -1
+	for index, outcome := range outcomes {
+		if outcome.Result.Verifies && !outcome.Result.IsError {
+			lastCheck = index
+		}
+	}
+	if lastCheck < 0 {
+		return
+	}
+	for _, outcome := range outcomes[lastCheck+1:] {
+		if outcome.Result.Executes && !outcome.ReadOnly() {
+			// A process ran after the check in the same batch. The capture
+			// cannot tell what it changed, so it cannot stand for the verified
+			// state.
+			return
+		}
+	}
+	identity, err := marker.MarkVerification(ctx)
+	if err != nil || identity == "" {
+		return
+	}
+	l.mutationMu.Lock()
+	l.lastVerifiedTree = identity
+	l.mutationMu.Unlock()
+}
+
 // LastMutation returns the mutation evidence published by the most recent run.
 //
 // It is empty when no journal was installed or the journal published nothing.
@@ -519,6 +581,17 @@ func (l *Loop) LastMutation() MutationProvenance {
 	out := l.lastMutation
 	out.Changes = append([]MutationChange(nil), l.lastMutation.Changes...)
 	return out
+}
+
+// VerifiedTree returns the workspace identity captured at the run's last
+// successful check, or "" when the journal could not provide one.
+func (l *Loop) VerifiedTree() string {
+	if l == nil {
+		return ""
+	}
+	l.mutationMu.Lock()
+	defer l.mutationMu.Unlock()
+	return l.lastVerifiedTree
 }
 
 // New returns a Loop. It returns ErrNoTools when the config has no tools,
@@ -750,6 +823,14 @@ func (l *Loop) SetGrounding(grounding *contract.IntentGrounding) {
 	l.cfg.Grounding = grounding
 }
 
+// SetAnswerReview installs the bounded answer-level completion gate for the
+// next run, or nil to accept every answer. The gate can ask for one corrected
+// answer; it cannot authorize an action, widen the tool set beyond the loop's
+// constructed capabilities, or mark the run complete.
+func (l *Loop) SetAnswerReview(review func(turns []Turn, answer string) string) {
+	l.cfg.AnswerReview = review
+}
+
 // SetProjectionReportHook installs the projection audit reporter.
 //
 // It must be called before Run, never during one. Passing nil silences audit
@@ -832,6 +913,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	l.runSeq++
 	runID := fmt.Sprintf("run-%d", l.runSeq)
 	l.lastMutation = MutationProvenance{}
+	l.lastVerifiedTree = ""
 	l.mutationMu.Unlock()
 	l.compactionAttempts = 0
 	l.compactionCooldown = 0
@@ -844,6 +926,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		commitErr := edit.txn.Commit(context.WithoutCancel(ctx))
 		if provenance, ok := edit.txn.Mutation(); ok {
 			provenance.RunID = runID
+			provenance.VerifiedTree = l.VerifiedTree()
 			l.recordMutation(provenance)
 		}
 		if commitErr == nil {
@@ -891,6 +974,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// covers both a forced answer after refusals and a natural evidence
 	// boundary where the first answer request produced only reasoning.
 	answerRetried := false
+	// answerCorrectionAttempted and correctionPending implement the one
+	// bounded completion-review correction. The first rejected answer spends
+	// the correction; the next request reopens the constructed tool surface so
+	// the model can acquire the missing evidence instead of rewriting prose.
+	answerCorrectionAttempted := false
+	correctionPending := false
 	// executionRecoveryAttempted and normalizationRecoveryAttempted are the
 	// bounded protocol recoveries. Each is spent at most once per run and the
 	// run/turn budget still bounds the whole loop, so neither can become an
@@ -1047,6 +1136,18 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				activeTools = []Tool{}
 			}
 			closed = answerEligible || terminal || len(activeTools) == 0
+			// The previous answer failed the answer-level review. Reopen the
+			// loop's constructed tool set for exactly this correction request:
+			// the missing evidence may be one read away, while the projection
+			// closed the surface from its own evidence model. This never widens
+			// authority; every call still crosses grounding and the security
+			// gate, and a terminal capability/stall stop is not overridden.
+			if correctionPending && !terminal {
+				activeTools = tools
+				closed = false
+				answerEligible = false
+				forceAnswer = false
+			}
 			// ForceAnswer is loop policy, not a projector hint. Withdraw the
 			// surface even when the projector does not: the model already
 			// spent two turns on proposals the runtime refused, so another
@@ -1089,6 +1190,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			activeTools = []Tool{}
 			closed = true
 		}
+		// The reopened surface applies to this correction request only. A
+		// second rejected answer is returned to the host for completion
+		// evaluation rather than spending another turn.
+		correctionPending = false
 
 		activeByName := make(map[string]Tool, len(activeTools))
 		for _, tool := range activeTools {
@@ -1180,6 +1285,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			executionIntentPending = false
 		}
 		if len(calls) == 0 {
+			turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
 			turns = append(turns, turn)
 			if l.cfg.OnTurn != nil {
 				l.cfg.OnTurn(turn)
@@ -1290,6 +1396,16 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				return turns, fmt.Errorf("%w: the provider produced no visible text and no tool call",
 					ErrNoModelOutput)
 			}
+			if !answerCorrectionAttempted && len(turns) < l.cfg.MaxTurns {
+				if reason := l.answerReviewReason(turns); reason != "" {
+					if directive := completionReviewDirective(l.cfg.CompletionReviewRequest, reason); directive != "" {
+						answerCorrectionAttempted = true
+						correctionPending = true
+						nudges = append(nudges, directive)
+						continue
+					}
+				}
+			}
 			return turns, nil
 		}
 
@@ -1306,10 +1422,24 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if text := strings.TrimSpace(assistant.Text()); text != "" &&
 			(closed || (!answerIsDeferredPlan(text) &&
 				l.noEvidenceInBatch(activeByName, redundant, calls, len(turns)))) {
-			turn.Assistant = answerWithoutToolCalls(assistant)
+			turn.Assistant = SanitizeAssistantMessage(answerWithoutToolCalls(assistant))
 			turns = append(turns, turn)
 			if l.cfg.OnTurn != nil {
 				l.cfg.OnTurn(turn)
+			}
+			if !answerCorrectionAttempted && len(turns) < l.cfg.MaxTurns {
+				if reason := l.answerReviewReason(turns); reason != "" {
+					if directive := completionReviewDirective(l.cfg.CompletionReviewRequest, reason); directive != "" {
+						// The stored turn dropped the call blocks; the live
+						// conversation must drop them too, or the correction
+						// request would replay a call with no result.
+						live[len(live)-1] = AssistantMessage{Message: turn.Assistant}
+						answerCorrectionAttempted = true
+						correctionPending = true
+						nudges = append(nudges, directive)
+						continue
+					}
+				}
 			}
 			return turns, nil
 		}
@@ -1332,6 +1462,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 
 		outcomes, admissionErr := l.dispatch(ctx, activeByName, refusals, assistant, calls, turn, len(turns), edit)
 		turn.Results = outcomes
+		l.markVerification(ctx, edit, outcomes)
 		for _, outcome := range outcomes {
 			live = append(live, ToolResultMessage{
 				ToolCallID: outcome.CallID,
@@ -1342,6 +1473,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			origins = append(origins, ai.ProvenanceToolResult)
 		}
 
+		turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
 		turns = append(turns, turn)
 		if l.cfg.OnTurn != nil {
 			l.cfg.OnTurn(turn)
@@ -1703,11 +1835,48 @@ func (l *Loop) convert(messages []Message, origins []ai.Provenance) ([]ai.Messag
 // ai.DrainStream, so the loop and any other consumer (the $sup answer surface)
 // cannot drift on what draining a stream means: the loop's contract is still
 // the completed message.
+//
+// The delta hook is an output boundary, not the provider wire. A model can copy
+// the request-side runtime state into its prose, so the live text is projected
+// through the same sanitizer the completed answer uses. A consumer never sees a
+// runtime directive that the final answer would withhold, and the live text
+// stays a prefix of the completed text even when a trigger is split across
+// deltas.
 func (l *Loop) drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessage, error) {
-	return ai.DrainStreamHooks(ctx, stream, ai.DrainHooks{
-		OnText:     l.cfg.OnTextDelta,
-		OnThinking: l.cfg.OnThinkingDelta,
-	})
+	var textSanitizer, thinkingSanitizer *answerStreamSanitizer
+	hooks := ai.DrainHooks{}
+	if l.cfg.OnTextDelta != nil {
+		textSanitizer = newAnswerStreamSanitizer()
+		hooks.OnText = func(delta string) {
+			if public := textSanitizer.Write(delta); public != "" {
+				l.cfg.OnTextDelta(public)
+			}
+		}
+	}
+	// Reasoning is a public block in the UI, not a private scratchpad. It is a
+	// separate channel, but the runtime-state boundary still applies: a model
+	// that copies the request briefing into its reasoning must not publish the
+	// orchestration state through the expanded reasoning view.
+	if l.cfg.OnThinkingDelta != nil {
+		thinkingSanitizer = newAnswerStreamSanitizer()
+		hooks.OnThinking = func(delta string) {
+			if public := thinkingSanitizer.Write(delta); public != "" {
+				l.cfg.OnThinkingDelta(public)
+			}
+		}
+	}
+	message, err := ai.DrainStreamHooks(ctx, stream, hooks)
+	if textSanitizer != nil {
+		if tail := textSanitizer.Flush(); tail != "" {
+			l.cfg.OnTextDelta(tail)
+		}
+	}
+	if thinkingSanitizer != nil {
+		if tail := thinkingSanitizer.Flush(); tail != "" {
+			l.cfg.OnThinkingDelta(tail)
+		}
+	}
+	return message, err
 }
 
 // runEdit tracks one run's optional edit transaction.

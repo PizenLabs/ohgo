@@ -182,7 +182,8 @@ func DocumentationIdentityTerms(text string) []string {
 	}
 	heading := false
 	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "#"))
+		line := strings.TrimSpace(stripReadLinePrefix(raw))
+		line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
 		if line == "" {
 			continue
 		}
@@ -228,6 +229,10 @@ func documentationClaimTerms(text string) []string {
 	if len(text) > MaxProvenanceValueBytes {
 		text = text[:MaxProvenanceValueBytes]
 	}
+	// The stored value is the read tool's display text, gutter included. Left
+	// in place, the gutter's line numbers become documentation metrics and can
+	// veto an answer that reports its own observed line count.
+	text = stripReadLineNumbers(text)
 	seen := map[string]bool{}
 	var out []string
 	add := func(term string) {

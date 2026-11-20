@@ -297,17 +297,27 @@ func TestConditionalWorkflowStartsInvestigatingThenContinuesIntoBuild(t *testing
 		t.Fatalf("role = %s, want FUZZ", *r.role)
 	}
 
-	// "fix it" refers to the task's own result. FUZZ cannot mutate, so the
-	// control plane hands the same task to BUILD automatically.
+	// "fix it" refers to the task's own result. The task was created under ASK
+	// and never granted mutation, so FUZZ cannot hand itself BUILD: the control
+	// plane proposes the human boundary and the approval grants the same task
+	// the mutation authority.
 	cmd = r.program.submit("fix it")
-	if cmd == nil {
-		t.Fatal("the automatic FUZZ -> BUILD handoff did not release the turn")
+	if cmd != nil {
+		t.Fatal("the mutation ran before the BUILD decision")
 	}
-	if r.program.state.Transition != nil {
-		t.Fatalf("automatic handoff opened a decision surface: %+v", r.program.state.Transition)
+	buildPending := r.program.state.Transition
+	if buildPending == nil || buildPending.Proposed != "BUILD" || buildPending.Automatic {
+		t.Fatalf("transition = %+v, want a confirmed FUZZ -> BUILD decision", buildPending)
+	}
+	if *r.role != workspace.Fuzz {
+		t.Fatalf("role = %s, want FUZZ while the decision is pending", *r.role)
+	}
+	_, cmd = r.program.resolveTransition(true)
+	if cmd == nil {
+		t.Fatal("the approved FUZZ -> BUILD handoff did not release the turn")
 	}
 	if *r.role != workspace.Build {
-		t.Fatalf("role = %s, want BUILD after the automatic handoff", *r.role)
+		t.Fatalf("role = %s, want BUILD after the approved handoff", *r.role)
 	}
 	cmd()
 	drainProgram(r.program)

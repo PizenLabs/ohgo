@@ -562,6 +562,13 @@ type WorkspaceHooks struct {
 	// installs it on the loop unchanged: policy and the live gate stay with
 	// the owner, and the loop never grants a capability itself.
 	Handoff func(call ai.ToolCall, tool agent.Tool, args map[string]any) (moved bool)
+	// RestoreTaskAuthority realigns the live workspace with the open task's
+	// persisted authority contract. A task-owned turn calls it before the
+	// model is asked, because a new session, a restored workspace, or a
+	// different model must not change what the task is allowed to do. It is
+	// the owner's decision, not the program's: the program only asks, and a
+	// nil hook leaves the live role as the task's only failing evidence.
+	RestoreTaskAuthority func() error
 }
 
 // Proposal kinds carried by TurnTransition.
@@ -2612,6 +2619,7 @@ func (p *Program) chooseTask(item PickerItem) (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	p.PublishTask(projection)
+	p.restoreResumedAuthority()
 	p.state.Apply(Notice{Text: "resumed task: " + projection.Objective})
 	p.recordTaskDecision("EXPLICIT_RESUME")
 	return p, nil
@@ -5642,6 +5650,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		return
 	}
 
+	// The submitted prompt is the first event of the turn. Control-plane
+	// decisions it triggers (an authority restore, a refusal) happen after it,
+	// so the transcript reads in the order the user experienced.
+	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
+
 	// Resolve the live authority before routing. An explicit continuation is
 	// owned by the open task and reaches this turn after the task layer
 	// resolved it; a repeated objective was routed at submission so a BUILD
@@ -5659,6 +5672,43 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	intent := workspace.BuildIntentContract(text)
 
 	taskCurrent, _, taskOwned := p.taskContinuationFor(text, activeAuthority)
+
+	// A task-owned turn runs under the task's persisted authority contract,
+	// not the ambient session default. A new session restores BUILD and a
+	// resumed session restores whatever workspace it last held; neither is a
+	// grant for an open task, and neither may narrow a grant the task already
+	// holds. The workspace owner performs the move through the one switch
+	// seam, so the live gate, the recorded role, and the model-visible
+	// authority become the same fact before any provider call.
+	//
+	// An explicit per-turn choice is a human decision for this turn and wins:
+	// the selector already moved the live workspace, and a human may narrow or
+	// widen for the work in front of them. A pending handoff is also already
+	// decided: its target is the authority this turn runs under, and Begin
+	// widens the contract when it applies the approval. Restoring the task's
+	// pre-approval role here would undo the human's decision.
+	if taskOwned && !choice.Valid() && !handoffOwnsTurn(taskCurrent, activeAuthority) {
+		switch {
+		case p.workspace.RestoreTaskAuthority != nil:
+			if err := p.workspace.RestoreTaskAuthority(); err != nil {
+				p.publish(Notice{Text: "task authority: " + err.Error()})
+				p.publish(AssistantDone{Seq: seq})
+				return
+			}
+			if p.workspace.Current != nil {
+				activeAuthority = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
+			}
+		case activeAuthority != "" && taskCurrent.Role != "" &&
+			!strings.EqualFold(strings.TrimSpace(taskCurrent.Role), strings.TrimSpace(activeAuthority)):
+			// No owner seam to restore through: refusing is the only truthful
+			// option, because running would execute the task under an authority
+			// its contract does not grant.
+			p.publish(Notice{Text: "task authority: the task runs under " + taskCurrent.Role +
+				" but no workspace owner can restore it"})
+			p.publish(AssistantDone{Seq: seq})
+			return
+		}
+	}
 
 	// The control plane validates the active authority before the model is asked.
 	// A request the selected workspace cannot answer is refused unless this exact
@@ -5685,7 +5735,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		turn = p.workspace.PrepareTurn(text)
 	}
 	if turn.Blocked {
-		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 		reason := turn.Reason
 		if reason == "" {
 			reason = "request refused by workspace authority"
@@ -5694,7 +5743,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		p.publish(AssistantDone{Seq: seq})
 		return
 	}
-	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 
 	// The active authority is read from the route for a normal turn, or from
 	// the live owner when the task already owned the continuation above. A role
@@ -5983,6 +6031,10 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// so a later turn never inherits an objective it did not state.
 	p.loop.SetGrounding(intent.Grounding)
 	defer p.loop.SetGrounding(nil)
+	p.loop.SetAnswerReview(func(turns []agent.Turn, answer string) string {
+		return agent.ReviewInformationalAnswer(intent, turns, answer)
+	})
+	defer p.loop.SetAnswerReview(nil)
 
 	request := append(append([]agent.Message(nil), history...), user)
 
@@ -6217,6 +6269,18 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 
 	if p.usage != nil {
 		p.usage.Add(turns)
+	}
+	// Persist the measured ledger for this run, not the cumulative process
+	// log. A resumed session adds a new run's tokens; an unmeasured run leaves
+	// the row as "not measured" rather than a fabricated zero.
+	if p.store != nil && turnSessID != 0 {
+		if measured := session.MeasuredUsage(turns); measured.Known() ||
+			measured.Input > 0 || measured.Output > 0 ||
+			measured.CacheRead > 0 || measured.CacheWrite > 0 {
+			if err := p.store.AddUsage(turnSessID, measured); err != nil {
+				p.publish(Notice{Text: "session usage: " + err.Error()})
+			}
+		}
 	}
 	// Progressive disclosure reads the live session's own accumulation, not
 	// the lifetime /usage ledger: a cleared or resumed session starts clean.

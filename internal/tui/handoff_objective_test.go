@@ -116,13 +116,16 @@ func TestHumanApprovedHandoffRunsTheApprovedObjective(t *testing.T) {
 	}
 }
 
-// Only an executable request approves a new objective. A question or an
-// acknowledgement approves nothing new, so the transition preserves the task's
-// own objective instead of re-scoping the task to a phrase.
+// Only a self-sufficient executable request approves a new objective. A
+// question or an acknowledgement approves nothing new, and a follow-up that
+// names no target or check of its own ("fix it", "implement the fix") approves
+// the task's existing objective: adopting its ambiguous contract would replace
+// a verifiable boundary with a targetless one.
 func TestApprovedTransitionObjectiveOnlyTakesExecutableRequests(t *testing.T) {
 	cases := map[string]bool{
 		"ok, convert this project to Next.js help me": true,
-		"implement the fix":                           true,
+		"implement the fix":                           false,
+		"fix it":                                      false,
 		"run the tests":                               true,
 		"what does this project do?":                  false,
 		"ok":                                          false,

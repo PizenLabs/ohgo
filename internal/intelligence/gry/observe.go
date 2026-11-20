@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,11 +19,12 @@ import (
 // helper, not a second evidence store: every fact and record it produces is
 // published into the shared investigate/evidence model.
 type observationBuilder struct {
-	obs       investigate.Observation
-	project   string
-	snapshot  string
-	freshness evidence.Freshness
-	scope     evidence.Scope
+	obs           investigate.Observation
+	project       string
+	snapshot      string
+	freshness     evidence.Freshness
+	edgeFreshness evidence.Freshness
+	scope         evidence.Scope
 }
 
 // internalPackage is the bounded projection of one architecture package row.
@@ -48,10 +50,11 @@ func (p *Provider) observation(project, generation, focus string) *observationBu
 			Confidence: 0.55,
 			Coverage:   0.45,
 		},
-		project:   project,
-		snapshot:  snapshot,
-		freshness: evidence.FreshnessUnknown,
-		scope:     evidence.Scope{Workspace: p.cfg.Root, Path: focus},
+		project:       project,
+		snapshot:      snapshot,
+		freshness:     evidence.FreshnessUnknown,
+		edgeFreshness: evidence.FreshnessUnknown,
+		scope:         evidence.Scope{Workspace: p.cfg.Root, Path: focus},
 	}
 }
 
@@ -63,8 +66,31 @@ func (b *observationBuilder) fact(subject, detail string) {
 	})
 }
 
+// edgeFact records a relationship as its own fact with its own freshness. The
+// node facts can be CURRENT while the edge between them is UNVERIFIED.
+func (b *observationBuilder) edgeFact(subject, detail string) {
+	b.obs.Facts = append(b.obs.Facts, investigate.Fact{
+		Provider:  string(planner.ProviderStructural),
+		Subject:   subject,
+		Detail:    detail,
+		Freshness: b.edgeFreshness,
+	})
+}
+
 func (b *observationBuilder) record(subject, relation, object string, state evidence.State,
 	confidence float64, refs []evidence.Ref, note string) {
+	b.recordAt(subject, relation, object, state, confidence, b.freshness, refs, note)
+}
+
+// edgeRecord records a relationship with edge-specific freshness. A node
+// coordinate that still exists does not prove the relationship still exists.
+func (b *observationBuilder) edgeRecord(subject, relation, object string, state evidence.State,
+	confidence float64, refs []evidence.Ref, note string) {
+	b.recordAt(subject, relation, object, state, confidence, b.edgeFreshness, refs, note)
+}
+
+func (b *observationBuilder) recordAt(subject, relation, object string, state evidence.State,
+	confidence float64, recordFreshness evidence.Freshness, refs []evidence.Ref, note string) {
 	b.obs.Records = append(b.obs.Records, evidence.Record{
 		Kind:       evidence.KindRelationship,
 		Provider:   evidence.ProviderStructural,
@@ -74,7 +100,7 @@ func (b *observationBuilder) record(subject, relation, object string, state evid
 		Object:     object,
 		State:      state,
 		Confidence: confidence,
-		Freshness:  b.freshness,
+		Freshness:  recordFreshness,
 		Scope:      b.scope,
 		Refs:       refs,
 		SnapshotID: b.snapshot,
@@ -84,6 +110,97 @@ func (b *observationBuilder) record(subject, relation, object string, state evid
 
 func (b *observationBuilder) issue(format string, args ...any) {
 	b.obs.Issues = append(b.obs.Issues, fmt.Sprintf(format, args...))
+}
+
+// verifyFreshness reconciles the provider's own freshness claim with a bounded
+// read of the current source. The source is the stronger fact: a claimed
+// current index does not excuse a moved or deleted symbol, and an unreadable
+// source cannot be promoted to CURRENT merely because the provider said so.
+func (b *observationBuilder) verifyFreshness(generation string, claimed freshnessRef, locations []sourceLocation, kind string) {
+	if generation != "" {
+		b.snapshot = "gry:" + b.project + ":" + generation
+	}
+	providerFreshness := freshness(claimed.Freshness, claimed.Stale)
+	sourceFreshness, reasons := verifySourceLocations(b.scope.Workspace, locations)
+	switch {
+	case providerFreshness == evidence.FreshnessStale || sourceFreshness == evidence.FreshnessStale:
+		b.freshness = evidence.FreshnessStale
+		b.obs.Outcome = investigate.OutcomeStale
+		b.obs.Confidence = 0.4
+		if len(reasons) > 0 {
+			b.issue("gry %s evidence is stale: %s; candidates are preserved but not current source facts", kind, strings.Join(reasons, "; "))
+		} else {
+			b.issue("gry %s evidence is stale; candidates are preserved but not current source facts", kind)
+		}
+	case sourceFreshness == evidence.FreshnessUnavailable:
+		b.freshness = evidence.FreshnessUnavailable
+		if b.obs.Outcome == investigate.OutcomeSuccess {
+			b.obs.Outcome = investigate.OutcomePartial
+		}
+		b.issue("gry %s endpoints could not be verified against current source: %s", kind, strings.Join(reasons, "; "))
+	case sourceFreshness == evidence.FreshnessCurrent:
+		// The rows name symbols that still exist in the current workspace.
+		// This verifies the endpoints, not every edge; GRY's own observation
+		// flag and generation remain the edge provenance.
+		b.freshness = evidence.FreshnessCurrent
+	case providerFreshness == evidence.FreshnessCurrent:
+		// The provider claims current and the source did not contradict it, but
+		// no endpoint could be verified. Preserve the claim without upgrading
+		// an unverified row to a source fact.
+		b.freshness = evidence.FreshnessCurrent
+	default:
+		b.freshness = evidence.FreshnessUnknown
+	}
+	// Endpoint verification and relationship verification are separate facts.
+	// A current node only makes the edge UNVERIFIED, never CURRENT: the call,
+	// import, or dependency may have been removed while both declarations
+	// remain.
+	b.edgeFreshness = b.freshness
+	if b.freshness == evidence.FreshnessCurrent {
+		b.edgeFreshness = evidence.FreshnessUnverified
+	}
+}
+
+// noteUnverifiedEdges states the relationship boundary once per observation.
+func (b *observationBuilder) noteUnverifiedEdges(kind string) {
+	if b.edgeFreshness != evidence.FreshnessUnverified {
+		return
+	}
+	b.issue("gry %s edges are UNVERIFIED: the named endpoints still exist in current source, but each relationship was not re-checked; treat the edge as an index candidate, not a current fact", kind)
+}
+
+// searchLocations projects search results into source coordinates.
+func searchLocations(results []projectRef) []sourceLocation {
+	out := make([]sourceLocation, 0, len(results))
+	for _, result := range results {
+		name := result.QN
+		if name == "" {
+			name = result.Name
+		}
+		out = append(out, sourceLocation{file: result.File, lines: result.Lines, symbol: name})
+	}
+	return out
+}
+
+// traceLocations projects trace rows into source coordinates.
+func traceLocations(rows []traceRow) []sourceLocation {
+	out := make([]sourceLocation, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, sourceLocation{file: row.File, lines: row.Lines, symbol: row.QN})
+	}
+	return out
+}
+
+// contextLocations projects context nodes and tests into source coordinates.
+func contextLocations(nodes []contextNode, tests []projectRef) []sourceLocation {
+	out := make([]sourceLocation, 0, len(nodes)+len(tests))
+	for _, node := range nodes {
+		out = append(out, sourceLocation{file: node.File, lines: node.Lines, symbol: node.QN})
+	}
+	for _, test := range tests {
+		out = append(out, sourceLocation{file: test.File, lines: test.Lines, symbol: test.QN})
+	}
+	return out
 }
 
 // edgeSubject identifies one graph edge as a functional claim.
@@ -120,6 +237,40 @@ func decodeResponse[T any](raw []byte) (T, *failure) {
 	return payload, nil
 }
 
+// searchSymbols asks gry for an exact symbol first, then falls back to its
+// ranked search. The ranked result for "NewOrder" is dominated by
+// NewOrderView/NewOrderSummary and can omit the exact declaration; a locate
+// question that names a symbol must not be answered by lexical neighbours.
+func (p *Provider) searchSymbols(ctx context.Context, project, target string) (searchResponse, *failure) {
+	exactPattern := "^" + regexp.QuoteMeta(target) + "$"
+	raw, queryFailure := p.query(ctx, "search", []string{
+		"search", project,
+		"--name-pattern", exactPattern,
+		"--limit", strconv.Itoa(p.cfg.MaxRows),
+		"--json",
+	})
+	if queryFailure == nil {
+		if payload, decodeFailure := decodeResponse[searchResponse](raw); decodeFailure == nil && len(payload.Results) > 0 {
+			return payload, nil
+		}
+	} else if queryFailure.outcome != investigate.OutcomeUnresolved {
+		return searchResponse{}, queryFailure
+	}
+	raw, queryFailure = p.query(ctx, "search", []string{
+		"search", project, target,
+		"--limit", strconv.Itoa(p.cfg.MaxRows),
+		"--json",
+	})
+	if queryFailure != nil {
+		return searchResponse{}, queryFailure
+	}
+	payload, decodeFailure := decodeResponse[searchResponse](raw)
+	if decodeFailure != nil {
+		return searchResponse{}, decodeFailure
+	}
+	return payload, nil
+}
+
 // observeResolve answers a target-shaped locate question. Search is ranked, so
 // multiple candidates are preserved; the adapter never chooses one silently.
 func (p *Provider) observeResolve(ctx context.Context, project string, req investigate.Request) investigate.Observation {
@@ -130,17 +281,9 @@ func (p *Provider) observeResolve(ctx context.Context, project string, req inves
 		builder.issue("gry resolve requires a target; no query was sent")
 		return builder.finish()
 	}
-	raw, queryFailure := p.query(ctx, "search", []string{
-		"search", project, target,
-		"--limit", strconv.Itoa(p.cfg.MaxRows),
-		"--json",
-	})
+	payload, queryFailure := p.searchSymbols(ctx, project, target)
 	if queryFailure != nil {
 		return failureObservation(queryFailure)
-	}
-	payload, decodeFailure := decodeResponse[searchResponse](raw)
-	if decodeFailure != nil {
-		return failureObservation(decodeFailure)
 	}
 	if len(payload.Results) == 0 {
 		builder.obs.Outcome = investigate.OutcomeUnresolved
@@ -152,8 +295,10 @@ func (p *Provider) observeResolve(ctx context.Context, project string, req inves
 	if payload.Total < len(payload.Results) {
 		payload.Total = len(payload.Results)
 	}
+	builder.verifyFreshness(payload.Generation, payload.Freshness, searchLocations(payload.Results), "resolve")
 	builder.obs.Summary = fmt.Sprintf(
-		"gry resolve: %d of %d candidates for %s", payload.Returned, payload.Total, target)
+		"gry resolve: %d of %d candidates for %s (%s)",
+		payload.Returned, payload.Total, target, builder.freshness)
 	for _, result := range payload.Results {
 		subject := result.QN
 		if subject == "" {
@@ -165,11 +310,15 @@ func (p *Provider) observeResolve(ctx context.Context, project string, req inves
 			evidence.Observed, 0.8, refs(result.File, result.Lines), result.Label)
 	}
 	if len(payload.Results) > 1 {
-		builder.obs.Outcome = investigate.OutcomePartial
+		if builder.obs.Outcome == investigate.OutcomeSuccess {
+			builder.obs.Outcome = investigate.OutcomePartial
+		}
 		builder.issue("%d candidates matched %q; no single target was selected", payload.Total, target)
 	}
 	if payload.Total > len(payload.Results) {
-		builder.obs.Outcome = investigate.OutcomePartial
+		if builder.obs.Outcome == investigate.OutcomeSuccess {
+			builder.obs.Outcome = investigate.OutcomePartial
+		}
 		builder.issue("bounded result: showing %d of %d candidates", len(payload.Results), payload.Total)
 	}
 	builder.obs.Confidence = 0.65
@@ -192,6 +341,9 @@ func (p *Provider) observeTrace(ctx context.Context, project string, req investi
 		"--direction", direction,
 		"--depth", strconv.Itoa(p.cfg.MaxDepth),
 		"--limit", strconv.Itoa(p.cfg.MaxRows),
+		// Test call sites are evidence for impact and test-impact questions.
+		// Omitting them made a symbol with thirteen test callers look unused.
+		"--include-tests",
 		"--json",
 	})
 	if queryFailure != nil {
@@ -219,9 +371,11 @@ func (p *Provider) observeTrace(ctx context.Context, project string, req investi
 	if start == "" {
 		start = target
 	}
+	builder.verifyFreshness(payload.Generation, payload.Freshness, traceLocations(payload.Rows), "trace")
 	builder.obs.Summary = fmt.Sprintf(
-		"gry trace: %d of %d %s relationships for %s (depth %d)",
-		payload.Returned, payload.Total, direction, start, p.cfg.MaxDepth)
+		"gry trace: %d of %d %s relationships for %s (depth %d, endpoints %s, edges %s)",
+		payload.Returned, payload.Total, direction, start, p.cfg.MaxDepth,
+		builder.freshness, builder.edgeFreshness)
 	if len(payload.Rows) == 0 {
 		builder.obs.Outcome = investigate.OutcomeUnresolved
 		builder.obs.State = evidence.Unknown
@@ -244,14 +398,17 @@ func (p *Provider) observeTrace(ctx context.Context, project string, req investi
 		if row.Direction == "inbound" {
 			edgeSource, edgeTarget = row.QN, start
 		}
-		builder.fact(row.QN, fmt.Sprintf("%s %s %s hop %d via %s",
+		builder.edgeFact(row.QN, fmt.Sprintf("%s %s %s hop %d via %s",
 			relation, row.Direction, location(row.File, row.Lines), row.Hop, start))
-		builder.record(edgeSubject("symbol:"+edgeSource, "symbol:"+edgeTarget), relation, "observed",
+		builder.edgeRecord(edgeSubject("symbol:"+edgeSource, "symbol:"+edgeTarget), relation, "observed",
 			state, confidence, refs(row.File, row.Lines),
 			fmt.Sprintf("hop=%d direction=%s via=%s", row.Hop, row.Direction, row.ViaQN))
 	}
+	builder.noteUnverifiedEdges("trace")
 	if payload.Truncated || payload.Total > payload.Returned {
-		builder.obs.Outcome = investigate.OutcomePartial
+		if builder.obs.Outcome == investigate.OutcomeSuccess {
+			builder.obs.Outcome = investigate.OutcomePartial
+		}
 		if payload.Total > payload.Returned {
 			builder.issue("bounded traversal: showing %d of %d relationship rows; the rest were not retrieved",
 				payload.Returned, payload.Total)
@@ -308,20 +465,18 @@ func (p *Provider) observeContext(ctx context.Context, project string, req inves
 }
 
 func contextObservation(builder *observationBuilder, payload contextResponse) investigate.Observation {
-	builder.snapshot = "gry:" + builder.project
-	if payload.Generation != "" {
-		builder.snapshot = "gry:" + builder.project + ":" + payload.Generation
+	claimed := payload.Freshness
+	if payload.Status == "stale" || payload.Freshness.Stale {
+		claimed.Stale = true
 	}
-	builder.freshness = freshness(payload.Freshness.Freshness, payload.Freshness.Stale)
-	if builder.freshness == evidence.FreshnessUnknown {
-		builder.freshness = freshness(payload.Evidence.Freshness, false)
+	if claimed.Freshness == "" {
+		claimed.Freshness = payload.Evidence.Freshness
 	}
+	builder.verifyFreshness(payload.Generation, claimed,
+		contextLocations(payload.Nodes, payload.Tests), "context")
 	if payload.Status == "stale" || payload.Freshness.Stale {
 		builder.obs.Outcome = investigate.OutcomeStale
 		builder.obs.Confidence = 0.4
-		if builder.freshness == evidence.FreshnessUnknown {
-			builder.freshness = evidence.FreshnessStale
-		}
 	}
 
 	nodes := payload.Nodes
@@ -359,8 +514,8 @@ func contextObservation(builder *observationBuilder, payload contextResponse) in
 		if relationship.Direction == "inbound" {
 			edgeSource, edgeTarget = edgeTarget, edgeSource
 		}
-		builder.fact(relationship.Source, fmt.Sprintf("%s %s", relation, relationship.Target))
-		builder.record(edgeSubject("symbol:"+edgeSource, "symbol:"+edgeTarget),
+		builder.edgeFact(relationship.Source, fmt.Sprintf("%s %s", relation, relationship.Target))
+		builder.edgeRecord(edgeSubject("symbol:"+edgeSource, "symbol:"+edgeTarget),
 			relation, "observed", state, confidence, nil, relationship.Provenance)
 	}
 	for index, node := range nodes {
@@ -391,8 +546,11 @@ func contextObservation(builder *observationBuilder, payload contextResponse) in
 	}
 
 	builder.obs.Summary = fmt.Sprintf(
-		"gry context: %d nodes, %d relationships, %d tests (%s)",
-		len(nodes), len(relationships), len(tests), builder.freshness)
+		"gry context: %d nodes, %d relationships, %d tests (endpoints %s, edges %s)",
+		len(nodes), len(relationships), len(tests), builder.freshness, builder.edgeFreshness)
+	if len(relationships) > 0 {
+		builder.noteUnverifiedEdges("context")
+	}
 	if payload.Truncated || len(payload.Unknowns) > 0 {
 		if builder.obs.Outcome == investigate.OutcomeSuccess {
 			builder.obs.Outcome = investigate.OutcomePartial
@@ -591,7 +749,7 @@ func (p *Provider) observeChanges(ctx context.Context, project, scope string) in
 		}
 		builder.fact(row.QN, fmt.Sprintf("%s %s hop %d %s",
 			row.Direction, location(row.File, row.Lines), row.Hop, row.Risk))
-		builder.record("symbol:"+row.QN, relation, "change",
+		builder.edgeRecord("symbol:"+row.QN, relation, "change",
 			provenanceState(row.Provenance), provenanceConfidence(row.Provenance),
 			refs(row.File, row.Lines), fmt.Sprintf("hop=%d risk=%s", row.Hop, row.Risk))
 	}
@@ -609,7 +767,7 @@ func (p *Provider) observeChanges(ctx context.Context, project, scope string) in
 			break
 		}
 		builder.fact("test:"+test.Name, location(test.File, test.Lines))
-		builder.record("test:"+test.QN, "covers_change", "change",
+		builder.edgeRecord("test:"+test.QN, "covers_change", "change",
 			evidence.Observed, 0.75, refs(test.File, test.Lines), "")
 	}
 
@@ -645,6 +803,10 @@ func freshness(value string, stale bool) evidence.Freshness {
 		return evidence.FreshnessCurrent
 	case "stale":
 		return evidence.FreshnessStale
+	case "unavailable", "unverifiable":
+		return evidence.FreshnessUnavailable
+	case "unknown":
+		return evidence.FreshnessUnknown
 	default:
 		return evidence.FreshnessUnknown
 	}

@@ -117,6 +117,22 @@ func newReadinessRuntimeWithTools(t *testing.T, root string, initial workspace.W
 			}
 			return nil
 		},
+		// The owner applies the open task's persisted authority before a
+		// task-owned turn, exactly like the production seam: the task layer
+		// decides the role and the workspace owner moves the live gate.
+		RestoreTaskAuthority: func() error {
+			current, ok := controller.Current()
+			if !ok {
+				return nil
+			}
+			target := current.TurnRole()
+			if !target.Valid() || role == target {
+				return nil
+			}
+			from := role
+			role = target
+			return controller.RecordAuthorityRestore(from, target)
+		},
 		PrepareTurn: func(text string) TurnAuthority {
 			route := workspace.RouteTurn(role, text)
 			return TurnAuthority{
@@ -126,9 +142,18 @@ func newReadinessRuntimeWithTools(t *testing.T, root string, initial workspace.W
 				Reason:  route.Message(),
 			}
 		},
-		Predict: func(text string, _ bool) (TurnTransition, bool) {
+		Predict: func(text string, taskOwned bool) (TurnTransition, bool) {
 			requirement := workspace.AnalyzeRequest(text)
-			decision := workspace.DecideTransition(role, workspace.ContractFor(workspace.Build), requirement)
+			// A task-owned prompt consults the task's persistent authority,
+			// exactly like the production seam: a new objective must not
+			// inherit another task's grant.
+			contract := workspace.ContractFor(role)
+			if taskOwned {
+				if current, ok := controller.Current(); ok && current.ExecutionContract.Valid() {
+					contract = current.ExecutionContract
+				}
+			}
+			decision := workspace.DecideTransition(role, contract, requirement)
 			if !decision.Proposed() {
 				return TurnTransition{}, false
 			}
@@ -476,17 +501,26 @@ func TestReadinessI01UnderstandInvestigateImplementVerifyRestart(t *testing.T) {
 		t.Fatalf("RI-I01: FUZZ turn role = %s", fuzz.ActiveRole)
 	}
 
-	// BUILD: FUZZ -> BUILD is cooperative execution-workspace movement. The
-	// control plane applies it automatically and the same task continues.
-	cmd := r.program.submit("implement the fix and verify it")
+	// BUILD: the task was created under ASK and widened to execution, not
+	// mutation, so FUZZ -> BUILD is a human authority boundary. The control
+	// plane proposes the handoff; the approval is what grants mutation and the
+	// same task continues under it.
+	if cmd := r.program.submit("implement the fix and verify it"); cmd != nil {
+		t.Fatal("RI-I01: the mutation ran before the BUILD decision")
+	}
+	pending := r.program.state.Transition
+	if pending == nil || pending.Proposed != "BUILD" || pending.Automatic {
+		t.Fatalf("RI-I01: transition = %+v, want a confirmed FUZZ -> BUILD decision", pending)
+	}
+	if *r.role != workspace.Fuzz {
+		t.Fatalf("RI-I01: the proposal moved authority to %s", *r.role)
+	}
+	_, cmd := r.program.resolveTransition(true)
 	if cmd == nil {
-		t.Fatal("RI-I01: the automatic BUILD handoff did not start the turn")
+		t.Fatal("RI-I01: the approved BUILD handoff did not release the turn")
 	}
 	if *r.role != workspace.Build {
-		t.Fatalf("RI-I01: automatic handoff left authority at %s", *r.role)
-	}
-	if r.program.state.Transition != nil {
-		t.Fatalf("RI-I01: automatic handoff opened a decision surface: %+v", r.program.state.Transition)
+		t.Fatalf("RI-I01: approved handoff left authority at %s", *r.role)
 	}
 	// The next message is the BUILD write/check/answer sequence.
 	cmd()
@@ -519,7 +553,7 @@ func TestReadinessI01UnderstandInvestigateImplementVerifyRestart(t *testing.T) {
 	}
 	buildCtx, _ := completed.Context.Role(workspace.Build)
 	joinedProgress := strings.Join(buildCtx.Progress, "\n")
-	if !strings.Contains(joinedProgress, "control-plane workspace switch from FUZZ") {
+	if !strings.Contains(joinedProgress, "resumed via handoff from FUZZ") {
 		t.Fatalf("RI-I01: BUILD context did not receive the handoff summary: %+v", buildCtx)
 	}
 	for _, id := range proof.EvidenceIDs {

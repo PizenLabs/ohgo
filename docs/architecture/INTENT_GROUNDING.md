@@ -262,7 +262,10 @@ phrase cannot excuse a repository-wide claim in the same sentence. A claim
 that a check did not run (“no tests were run”) is a fact about the run, not a
 repository property. The same holds for a change report: “no files were
 modified” describes what the run did to the workspace. It is not an absence
-claim about repository contents, and no file scan could ever cover it.
+claim about repository contents, and no file scan could ever cover it. An
+inspection report follows the same rule: “no source files were read beyond the
+README” reports this run's observations, not that the repository has no source
+files.
 
 A **local configuration** claim is different again from an **external state**
 claim. A workflow file proves what is configured: the schedule, the trigger, the
@@ -273,7 +276,10 @@ run observed the remote surface itself: a knowledge call, an MCP capability, or
 a command that talked to a remote (`gh`, `git push`, `git ls-remote`, `curl`,
 `ssh`, a cloud CLI). A sentence that names the claim only to report it as
 unverified ("I cannot establish whether it ran") is an epistemic report, not a
-claim, and completes.
+claim, and completes. The same is true of a negated event: “no server/database
+was executed” reports non-occurrence, not use. The negator must attach to the
+event's own subject phrase, so “no tests were run, but the deployment was
+executed” is still a claim about the deployment.
 
 ### 4.6 Claim scope
 

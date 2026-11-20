@@ -1,6 +1,9 @@
 package cognition
 
 import (
+	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -387,6 +390,70 @@ func TestRepositorySlugHeadingKeepsProjectIdentityOutOfClaims(t *testing.T) {
 	}
 }
 
+// The production observation value is the read tool's line-numbered display
+// text. The identity scan must see the README's opening definition through
+// that gutter, or the project's own name is audited as an unobserved
+// implementation claim and a truthful survey is vetoed.
+func TestLineNumberedReadKeepsDocumentIdentityOutOfClaims(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	document := []string{
+		"# go-ecommerce",
+		"",
+		"GoCommerce is an e-commerce application written in Go and HTMX.",
+	}
+	for len(document) < 120 {
+		document = append(document, "Filler line.")
+	}
+	document = append(document, "The backend uses PostgreSQL.")
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", numberedRead(document...)),
+		readEvidenceForTest("read-2", "main.go", numberedRead("package main")),
+	)
+	summary := state.Provenance(shape)
+	for _, term := range summary.DocumentationTerms {
+		if term == "gocommerce" {
+			t.Fatalf("the project's own name was audited as an implementation claim: %+v", summary.DocumentationTerms)
+		}
+		if strings.Trim(term, "0123456789") == "" {
+			t.Fatalf("a read-gutter line number was audited as a documentation metric: %+v", summary.DocumentationTerms)
+		}
+	}
+	foundTech := false
+	for _, term := range summary.DocumentationTerms {
+		if term == "postgresql" {
+			foundTech = true
+		}
+	}
+	if !foundTech {
+		t.Fatalf("the documented implementation claim was lost: %+v", summary.DocumentationTerms)
+	}
+
+	intent := contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}
+	if assessment := agent.AssessAnswerProvenance(intent, "This project is GoCommerce.", summary); !assessment.Pass() {
+		t.Fatalf("naming the documented project identity was rejected: %s", assessment.Reason())
+	}
+	if assessment := agent.AssessAnswerProvenance(intent, "The backend uses PostgreSQL.", summary); assessment.Pass() {
+		t.Fatal("an unattributed documented implementation claim passed")
+	}
+}
+
+// numberedRead renders lines in the read tool's production format: a 1-based
+// line number, a tab, then the line.
+func numberedRead(lines ...string) string {
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "%d\t%s", i+1, line)
+	}
+	return b.String()
+}
+
 // Manifest dependency tokens are observed facts even when they are embedded in
 // a path-style module line.
 func TestManifestDependencyTermsAreObserved(t *testing.T) {
@@ -553,5 +620,44 @@ func TestDomainHeadingIsNotAProvenanceClaim(t *testing.T) {
 		if term == "shopping" || term == "cart" {
 			t.Fatalf("documentation terms = %v, want the domain heading excluded", terms)
 		}
+	}
+}
+
+// Documentation stays documentation after the persisted evidence ledger is
+// reloaded. The ledger is written to progress.json at every checkpoint, so a
+// field missing from its wire form would let a resumed answer present a README
+// claim as an observed implementation fact.
+func TestProvenanceSurvivesThePersistedEvidenceLedger(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "The platform uses PostgreSQL and HTMX."),
+		readEvidenceForTest("read-2", "main.go", "package main"),
+	)
+	before := state.Provenance(shape)
+	if !before.HasDocumentation || !before.HasImplementation || !before.RequireAttribution {
+		t.Fatalf("setup provenance = %+v, want documentation + implementation in a broad account", before)
+	}
+	found := false
+	for _, term := range before.DocumentationTerms {
+		if term == "postgresql" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("documentation terms = %v, want postgresql documented-only", before.DocumentationTerms)
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal evidence state: %v", err)
+	}
+	var restored EvidenceState
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("unmarshal evidence state: %v", err)
+	}
+	after := restored.Provenance(shape)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("provenance changed across persistence:\nbefore %+v\nafter  %+v", before, after)
 	}
 }

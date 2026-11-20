@@ -46,3 +46,17 @@ type EditBoundary struct {
 	// them.
 	Tools []string
 }
+
+// VerificationMarker is an optional journal capability: it captures the
+// workspace identity at a successful check.
+//
+// Completion compares that identity with the run-end capture. Equality proves
+// that nothing changed after the check, which command-shape classification
+// cannot: a process the runtime could not classify may have rewritten an
+// already-expected path. A journal that cannot provide the identity leaves the
+// completion evaluator on the conservative rule.
+type VerificationMarker interface {
+	// MarkVerification returns an opaque workspace identity for the current
+	// state. It must not mutate the workspace.
+	MarkVerification(ctx context.Context) (string, error)
+}

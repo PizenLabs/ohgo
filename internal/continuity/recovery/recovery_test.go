@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -637,6 +638,72 @@ func TestGitMetadataAndIgnoredFilesAreOutsideTheCheckpoint(t *testing.T) {
 	if got := h.read(".git/HEAD"); got != "ref: other\n" {
 		t.Errorf("git metadata was touched by recovery: %q", got)
 	}
+}
+
+// Editing .gitignore changes which paths a capture contains: the new rules
+// exclude assets the old rules admitted. The checkpoint diff must report the
+// .gitignore edit itself, not the untouched assets whose visibility changed.
+func TestGitignoreEditDoesNotReportNewlyIgnoredPaths(t *testing.T) {
+	h := newHarness(t, 1)
+	h.write("a.go", "base\n")
+	h.write("assets/logo.png", "png\n")
+	h.write("assets/photo.jpg", "jpg\n")
+
+	h.edit(func() {
+		h.write(".gitignore", "assets/\n")
+	})
+
+	history, err := h.store.History(h.scope, 0)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("history: %v (%d)", err, len(history))
+	}
+	if got, want := pathsOf(history[0].Changes), []string{".gitignore"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("checkpoint changes = %v, want %v", got, want)
+	}
+
+	if result := h.ctrl.Undo(context.Background()); !result.Verified() {
+		t.Fatalf("undo: %s %s", result.State, result.Reason)
+	}
+	if h.exists(".gitignore") {
+		t.Error("the .gitignore the edit created was not removed by undo")
+	}
+	if got := h.read("assets/logo.png"); got != "png\n" {
+		t.Errorf("an untouched newly-ignored asset changed: %q", got)
+	}
+}
+
+// The journal pins the workspace identity at a check so completion can prove a
+// later execution changed nothing. A workspace that changed after the mark must
+// not reuse the checked identity.
+func TestVerificationIdentityPinsTheCheckedWorkspace(t *testing.T) {
+	h := newHarness(t, 1)
+	h.write("a.go", "base\n")
+
+	txn := h.begin("write")
+	h.write("a.go", "checked\n")
+	checked, err := h.ctrl.MarkVerification(context.Background())
+	if err != nil || checked == "" {
+		t.Fatalf("mark verification = %q (%v)", checked, err)
+	}
+	h.commit(txn)
+	provenance, ok := txn.Mutation()
+	if !ok {
+		t.Fatal("the committed edit published no mutation evidence")
+	}
+	if provenance.FinalTree != checked {
+		t.Fatalf("run-end identity = %q, want the checked identity %q", provenance.FinalTree, checked)
+	}
+
+	txn = h.begin("write")
+	h.write("a.go", "changed-after-check\n")
+	after, err := h.ctrl.MarkVerification(context.Background())
+	if err != nil || after == "" {
+		t.Fatalf("mark verification = %q (%v)", after, err)
+	}
+	if after == checked {
+		t.Fatal("a workspace changed after the check reused the checked identity")
+	}
+	h.commit(txn)
 }
 
 func TestIdenticalContentIsStoredOnce(t *testing.T) {

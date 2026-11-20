@@ -338,6 +338,21 @@ func sanitizeArchived(file *archivedFile) archiveRepairs {
 			file.Progress.ActiveRole = clean.To
 		}
 	}
+	// The same cross-field rule as the live checkpoint: a recorded role the
+	// contract never authorized is a repair, not an authority to restore.
+	if file.Task.ActiveRole.Valid() && file.Task.ExecutionContract.Valid() &&
+		!file.Task.ExecutionContract.PermitsRole(file.Task.ActiveRole) {
+		granted := file.Task.TurnRole()
+		if file.Task.ContextWarning == "" {
+			file.Task.ContextWarning = fmt.Sprintf(
+				"task authority was repaired on load: the recorded role %s is not authorized by the task contract (%s); restored %s",
+				file.Task.ActiveRole.Label(), file.Task.ExecutionContract.String(), granted.Label())
+		}
+		repairs.add(fmt.Sprintf("the archived role %s was not authorized by the task contract and was restored to %s",
+			file.Task.ActiveRole.Label(), granted.Label()), "authorized role")
+		file.Task.ActiveRole = granted
+		file.Progress.ActiveRole = granted
+	}
 	if len(file.Task.Timeline) == 0 && len(file.Progress.Timeline) > 0 {
 		clean, changes := sanitizeTimeline(file.Progress.Timeline)
 		file.Task.Timeline = cloneTimeline(clean)

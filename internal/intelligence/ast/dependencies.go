@@ -235,7 +235,7 @@ func (idx *Index) Dependencies(ctx context.Context, query DependencyQuery) (Depe
 			if imported.resolution == ResolutionResolved {
 				continue
 			}
-			if locallyShapedImport(imported.language, imported.imported.Path) {
+			if locallyShapedImport(imported.language, imported.imported.Path, idx.jsPaths) {
 				continue
 			}
 			externalByDir[packageDir(imported.from)]++
@@ -287,7 +287,15 @@ func (idx *Index) Dependencies(ctx context.Context, query DependencyQuery) (Depe
 	result.TotalEdges = len(result.Edges)
 
 	result.Complete = true
-	if idx.graph == nil && info.GoFiles > 0 {
+	switch {
+	case info.GoFiles > 0 && idx.modulePath == "":
+		// A Go file can import a module-local package only when the owning
+		// go.mod was resolved. Without it, every package-level import is
+		// unprovable even though the files are parsed, so a zero-edge graph is
+		// not evidence of independently deployed packages.
+		result.Complete = false
+		result.Reason = "go_module_unresolved"
+	case idx.graph == nil && info.GoFiles > 0:
 		result.Complete = false
 		result.Reason = "go_graph_unavailable"
 	}
@@ -337,11 +345,11 @@ func (idx *Index) dependencyUnresolvedLocked() []DependencyUnresolved {
 	}
 	if idx.languageGraph != nil {
 		for _, imported := range idx.languageGraph.imports {
-			if imported.resolution == ResolutionResolved {
+			if imported.resolution == ResolutionResolved || imported.resolution == ResolutionExcluded {
 				continue
 			}
 			dir := packageDir(imported.from)
-			if !locallyShapedImport(imported.language, imported.imported.Path) {
+			if !locallyShapedImport(imported.language, imported.imported.Path, idx.jsPaths) {
 				// A non-relative import that resolves to nothing is an external
 				// dependency in every adapter this build ships. Counting it as
 				// a structural gap would make every package.json project look
@@ -396,13 +404,15 @@ func trimFileNodeID(id string) string {
 // The distinction is language-aware on purpose: "react" and "com.google.guava"
 // are libraries, while "./missing" is a broken local reference. Only the second
 // makes the dependency projection incomplete.
-func locallyShapedImport(language Language, spec string) bool {
+func locallyShapedImport(language Language, spec string, js jsPathConfig) bool {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
 		return false
 	}
 	switch language {
-	case LanguageTypeScript, LanguageTSX, LanguageJavaScript, LanguageJSX, LanguageRuby:
+	case LanguageTypeScript, LanguageTSX, LanguageJavaScript, LanguageJSX:
+		return js.localSpecifier(spec)
+	case LanguageRuby:
 		return strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/")
 	case LanguageRust:
 		return strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") ||

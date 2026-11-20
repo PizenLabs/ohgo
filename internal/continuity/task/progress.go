@@ -112,9 +112,9 @@ type Progress struct {
 	// surrounding checkpoint schema does not change meaning.
 	Context *SharedContext `json:"context,omitempty"`
 	// ActiveRole is the execution role the task last ran under. It is additive
-	// and optional; it lets the turn gate distinguish a role change from a new
-	// objective without inferring one from prompt wording. It is never
-	// authority.
+	// and optional; it lets the turn boundary distinguish a role change from a
+	// new objective and supplies the restore target that
+	// ExecutionContract bounds. It is never a grant by itself.
 	ActiveRole workspace.Workspace `json:"activeRole,omitempty"`
 	// ExecutionContract is the persistent authority origin and the capabilities
 	// a human has authorized. It is additive, optional, and never the live gate.
@@ -146,6 +146,10 @@ type Progress struct {
 	// ContextProblem explains why the structured context could not be used at
 	// all. It is diagnostic only and is never written.
 	ContextProblem string `json:"-"`
+	// AuthorityProblem explains why the recorded role had to be repaired
+	// against the task's execution contract. It is diagnostic only and is
+	// never written.
+	AuthorityProblem string `json:"-"`
 }
 
 // ProgressFrom projects a task into its checkpoint form.
@@ -498,6 +502,21 @@ func (s *Store) Load() (Snapshot, error) {
 			t.Timeline = cloneTimeline(clean)
 			progress.ContextDropped += changes
 		}
+		// The recorded role must be one the contract authorizes. A checkpoint
+		// written while the runtime ignored the contract can carry a wider role
+		// than the human ever granted (a FUZZ task resumed under a BUILD
+		// default). The contract is the authority evidence; the role is a
+		// projection of it, so the role is repaired, reported, and never
+		// promoted. Otherwise the next continuation would silently restore the
+		// escalated role.
+		if t.ActiveRole.Valid() && t.ExecutionContract.Valid() && !t.ExecutionContract.PermitsRole(t.ActiveRole) {
+			granted := t.TurnRole()
+			progress.AuthorityProblem = fmt.Sprintf(
+				"the recorded role %s is not authorized by the task contract (%s); restored %s",
+				t.ActiveRole.Label(), t.ExecutionContract.String(), granted.Label())
+			t.ActiveRole = granted
+			progress.ActiveRole = granted
+		}
 		if progress.Completion != nil {
 			problem := ""
 			if t.Status != StatusCompleted {
@@ -520,6 +539,8 @@ func (s *Store) Load() (Snapshot, error) {
 			t.ContextWarning = "task handoff was not restored: " + progress.HandoffProblem
 		case progress.CompletionProblem != "":
 			t.ContextWarning = "task completion proof was not restored: " + progress.CompletionProblem
+		case progress.AuthorityProblem != "":
+			t.ContextWarning = "task authority was repaired on load: " + progress.AuthorityProblem
 		case progress.ContextDropped > 0:
 			t.ContextWarning = fmt.Sprintf("%d task context record(s) were invalid and repaired or dropped on load", progress.ContextDropped)
 		}

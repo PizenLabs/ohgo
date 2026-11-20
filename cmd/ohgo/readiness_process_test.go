@@ -403,6 +403,16 @@ func TestReadinessE06FailedPersistenceAcrossProcess(t *testing.T) {
 		t.Fatalf("RE-E06: the failed completion was published: status=%s objective=%s proof=%+v",
 			restored.Status, restored.ObjectiveState(), restored.Completion)
 	}
+	// The next process restores the session default, then the turn boundary
+	// moves the live gate to the task's own authority before Begin. A FUZZ task
+	// must not be resumed as BUILD merely because that is the session default.
+	restoredRole := restored.TurnRole()
+	if restoredRole.Valid() {
+		reopened.SetRoleSource(func() workspace.Workspace { return restoredRole })
+		if err := reopened.RecordAuthorityRestore(workspace.Build, restoredRole); err != nil {
+			t.Fatalf("RE-E06: restore task authority: %v", err)
+		}
+	}
 	if _, err := reopened.Begin(contract.IntentContract{
 		Objective: "fix tools/grep.go", Kind: contract.ObjectiveMutation,
 		Targets:      []contract.Target{{Kind: contract.TargetPath, Value: "tools/grep.go"}},

@@ -43,3 +43,21 @@ func TestMatchReportsTheDecisiveRule(t *testing.T) {
 		t.Errorf("Match(a.go) = %v %q, want included with no reason", excluded, reason)
 	}
 }
+
+// A file beneath an ignored directory is outside the boundary even when no
+// rule names the file. A walk prunes the directory, but a caller holding the
+// path directly (a captured entry, a changed path) must get the same answer.
+func TestExcludedIncludesAncestorDirectories(t *testing.T) {
+	matcher := NewRules()
+	matcher.Append("", "assets/\n")
+
+	if !matcher.Excluded("assets/logo.png", false) {
+		t.Error("a file under an ignored directory was not excluded")
+	}
+	if !matcher.Excluded("assets", true) {
+		t.Error("the ignored directory itself was not excluded")
+	}
+	if matcher.Excluded("src/assets.go", false) {
+		t.Error("an unrelated path was excluded")
+	}
+}

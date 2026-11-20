@@ -126,7 +126,7 @@ func EvaluateCompletion(turns []Turn, mutationIntent bool) Completion {
 		return needsReview("the model emitted serialized tool syntax that could not be normalized")
 	}
 
-	evidence := scanCompletionEvidence(turns, mutationIntent)
+	evidence := scanCompletionEvidence(turns, mutationIntent, false)
 	if len(evidence.pendingFailures) > 0 {
 		return needsReview("a tool call failed and no later success or verification recovered it: %s",
 			pendingFailureNames(evidence.pendingFailures, evidence.pendingFailureClasses))
@@ -156,7 +156,7 @@ func EvaluateCompletion(turns []Turn, mutationIntent bool) Completion {
 // a definite mutation: a child that only ran tests did not change the
 // repository, and the parent's mutation objective still needs a real change.
 func CompletionEvidence(turns []Turn, mutationIntent bool) (mutated, verifiedAfterMutation bool) {
-	evidence := scanCompletionEvidence(turns, mutationIntent)
+	evidence := scanCompletionEvidence(turns, mutationIntent, false)
 	if !evidence.mutated {
 		return false, false
 	}
@@ -176,12 +176,18 @@ type completionEvidence struct {
 	// classified as mutating.
 	mutated bool
 	// lastPotentialMutation is the last definite change, or (for a mutation
-	// objective) the last arbitrary execution, because an arbitrary process
-	// may have changed something the runtime could not classify.
+	// objective without a captured journal) the last arbitrary execution,
+	// because an arbitrary process may have changed something the runtime
+	// could not classify.
 	lastPotentialMutation int
-	lastVerification      int
-	pendingFailures       map[string]int
-	pendingFailureClasses map[string]string
+	// lastAmbiguousExecution is the last write-capable execution the runtime
+	// could not classify. With a captured journal it does not reopen the
+	// obligation by itself: the journal's tree identity must prove the run
+	// ended in the checked state.
+	lastAmbiguousExecution int
+	lastVerification       int
+	pendingFailures        map[string]int
+	pendingFailureClasses  map[string]string
 	// verifications records every successful check and the scope it covered.
 	// The position is the outcome's index in the run, so a check that happened
 	// before the last change can be excluded.
@@ -197,16 +203,23 @@ type verificationRecord struct {
 // scanCompletionEvidence walks the turns once, recording the last observed
 // change and verification and which tool failures remain unrecovered.
 //
+// journalCaptured reports that the host's edit journal observed the run. A
+// captured journal can bound a write-capable execution after a check: it pins
+// the workspace identity at the check and at run end, and the completion
+// evaluator compares them. Without it, the command's shape is the only
+// evidence available.
+//
 // A failure is recovered by a later success of the same tool (a retry that
 // worked) or by a successful verification (the final state was checked). A
 // verification after a failure therefore clears every pending failure, while a
 // failure with no later evidence stays pending.
-func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidence {
+func scanCompletionEvidence(turns []Turn, mutationIntent bool, journalCaptured bool) completionEvidence {
 	evidence := completionEvidence{
-		lastPotentialMutation: -1,
-		lastVerification:      -1,
-		pendingFailures:       map[string]int{},
-		pendingFailureClasses: map[string]string{},
+		lastPotentialMutation:  -1,
+		lastAmbiguousExecution: -1,
+		lastVerification:       -1,
+		pendingFailures:        map[string]int{},
+		pendingFailureClasses:  map[string]string{},
 	}
 	position := 0
 	for _, turn := range turns {
@@ -232,12 +245,22 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 				evidence.mutated = true
 				evidence.lastPotentialMutation = position
 			} else if mutationIntent && outcome.Result.Executes && !outcome.ReadOnly() {
-				// The runtime cannot prove this process did not change the
-				// repository. A mutation objective must verify after it. A
-				// read-only authorization is the exception: the sandbox
-				// prevented a write, so an investigation execution (FUZZ
-				// probing the service) does not create a verification debt.
-				evidence.lastPotentialMutation = position
+				// Without a captured journal the runtime cannot prove this
+				// process did not change the repository, so a mutation
+				// objective must verify after it. A read-only authorization is
+				// the exception: the sandbox prevented a write, so an
+				// investigation execution (FUZZ probing the service) does not
+				// create a verification debt.
+				evidence.lastAmbiguousExecution = position
+				if !journalCaptured {
+					// A captured journal is the authority on what changed, but
+					// it only records the net diff: it cannot order a change
+					// against the check. The completion evaluator compares the
+					// journal's verification and run-end identities, which is
+					// the proof the conservative command-shape rule stands in
+					// for here.
+					evidence.lastPotentialMutation = position
+				}
 			}
 			if outcome.Result.Executes && outcome.Result.Finished {
 				evidence.executed = true
@@ -393,6 +416,14 @@ type CompletionInput struct {
 	// host's edit journal. It attributes a shell mutation whose paths the
 	// command text cannot reveal. It is runtime evidence, never model output,
 	// and an empty Captured=false value must stay unattributed.
+	//
+	// When Captured is true the journal also bounds a write-capable execution
+	// after the last check. It pins VerifiedTree at the check and FinalTree at
+	// run end; equal identities prove nothing changed after the check, and an
+	// unclassified execution that changed an already-expected path reopens the
+	// obligation when they differ. Without a captured journal the command's
+	// write capability is the only evidence available, so any write-capable
+	// execution still owes a later check.
 	Mutations MutationProvenance
 	// Provenance summarizes what kind of evidence the run can truthfully rely
 	// on. It can only downgrade completion: an explicit external requirement
@@ -492,7 +523,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if intent.Kind == "" {
 		return needsReview("no intent contract was supplied")
 	}
-	evidence := scanCompletionEvidence(input.Turns, intent.Kind == contract.ObjectiveMutation)
+	evidence := scanCompletionEvidence(input.Turns, intent.Kind == contract.ObjectiveMutation, input.Mutations.Captured)
 	applyMutationProvenance(&evidence, input.Turns, input.Mutations)
 	if len(evidence.pendingFailures) > 0 && pendingFailureVetoes(evidence, input.EvidenceReview) {
 		return needsReview("a tool call failed and no later success or verification recovered it: %s",
@@ -543,6 +574,17 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	}
 	if evidence.lastVerification < evidence.lastPotentialMutation {
 		return needsReview("the repository change or execution was not followed by a successful verification")
+	}
+	if input.Mutations.Captured && evidence.lastVerification >= 0 &&
+		evidence.lastAmbiguousExecution > evidence.lastVerification {
+		// A write-capable execution ran after the check. The journal's net diff
+		// cannot order a change against the check, so the only proof is the
+		// workspace identity: the run must have ended in exactly the state the
+		// check observed. An unpinned identity is not that proof.
+		if input.Mutations.VerifiedTree == "" ||
+			input.Mutations.VerifiedTree != input.Mutations.FinalTree {
+			return needsReview("a write-capable execution ran after the last successful check and the workspace is not the checked state; run the check again")
+		}
 	}
 	if effective.Kind != contract.ObjectiveMutation && evidence.mutated {
 		// The phase contract must not hide a change the request did not ask

@@ -26,12 +26,23 @@ type projectRef struct {
 }
 
 type searchResponse struct {
-	Total    int          `json:"total"`
-	Returned int          `json:"returned"`
-	Results  []projectRef `json:"results"`
+	Status     string       `json:"status"`
+	Generation string       `json:"generation"`
+	Freshness  freshnessRef `json:"freshness"`
+	Total      int          `json:"total"`
+	Returned   int          `json:"returned"`
+	Results    []projectRef `json:"results"`
+}
+
+type freshnessRef struct {
+	Freshness string `json:"freshness"`
+	Stale     bool   `json:"stale"`
 }
 
 type traceResponse struct {
+	Status     string       `json:"status"`
+	Generation string       `json:"generation"`
+	Freshness  freshnessRef `json:"freshness"`
 	Found      bool         `json:"found"`
 	Ambiguous  bool         `json:"ambiguous"`
 	Message    string       `json:"message"`

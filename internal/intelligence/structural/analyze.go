@@ -63,22 +63,26 @@ type ManifestTopology struct {
 
 // FocusReport is the structural neighbourhood of the request's selector.
 type FocusReport struct {
-	Selector     string             `json:"selector"`
-	SelectorKind string             `json:"selector_kind"`
-	Found        bool               `json:"found"`
-	Ambiguous    bool               `json:"ambiguous"`
-	Candidates   []string           `json:"candidates,omitempty"`
-	Targets      int                `json:"targets"`
-	References   int                `json:"references"`
-	Callers      int                `json:"callers"`
-	Importers    int                `json:"importers"`
-	Tests        int                `json:"tests"`
-	Nodes        int                `json:"nodes"`
-	Edges        int                `json:"edges"`
-	Truncated    bool               `json:"truncated"`
-	Reason       string             `json:"reason,omitempty"`
-	Unknown      ast.UnknownSummary `json:"unknown"`
-	Evidence     Evidence           `json:"evidence"`
+	Selector     string   `json:"selector"`
+	SelectorKind string   `json:"selector_kind"`
+	Found        bool     `json:"found"`
+	Ambiguous    bool     `json:"ambiguous"`
+	Candidates   []string `json:"candidates,omitempty"`
+	Targets      int      `json:"targets"`
+	References   int      `json:"references"`
+	Callers      int      `json:"callers"`
+	// Callees are the forward call edges from the selector. A flow report
+	// without them can only describe what reaches the target, not what the
+	// target reaches.
+	Callees   int                `json:"callees,omitempty"`
+	Importers int                `json:"importers"`
+	Tests     int                `json:"tests"`
+	Nodes     int                `json:"nodes"`
+	Edges     int                `json:"edges"`
+	Truncated bool               `json:"truncated"`
+	Reason    string             `json:"reason,omitempty"`
+	Unknown   ast.UnknownSummary `json:"unknown"`
+	Evidence  Evidence           `json:"evidence"`
 }
 
 // Analysis is one complete adaptive structural analysis.

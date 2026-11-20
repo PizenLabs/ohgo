@@ -127,7 +127,7 @@ func TestObservationProjectionAttributesOnlyTheExecutingRole(t *testing.T) {
 		t.Fatalf("a read became a verified fact: %+v", current.Context.Facts)
 	}
 
-	role = workspace.Fuzz
+	grantAuthority(t, controller, &role, workspace.Fuzz)
 	if _, err := controller.Begin(intent, nil); err != nil {
 		t.Fatalf("Begin FUZZ: %v", err)
 	}

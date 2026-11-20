@@ -146,6 +146,12 @@ func runOnce(cmd *cobra.Command, text string) error {
 		return err
 	}
 	defer tools.StopToolProcesses(loop.Tools())
+	// One-shot runs are a session like any other: the provider reports usage
+	// per response, and the loop forwards it to this ledger. Persisting the
+	// measured totals is what keeps `ohgo sessions show` from reconstructing a
+	// text estimate after a headless run.
+	usage := &agent.UsageLog{}
+	loop.SetUsageLog(usage)
 	// One-shot turns have no durable task controller, so the request contract
 	// and the run's budget are the demand evidence. The setting is applied
 	// before the first provider request; automatic tool-boundary handoffs keep
@@ -216,7 +222,9 @@ func runOnce(cmd *cobra.Command, text string) error {
 		defer loop.SetJournal(nil)
 	}
 
-	outcome, _ := runHeadlessTurnAs(ctx, loop, opts.root, out, text, history, route.Active.String())
+	outcome, turns := runHeadlessTurnAs(ctx, loop, opts.root, out, text, history, route.Active.String())
+	usage.Add(turns)
+	recordRunUsage(store, sess, turns)
 	if outcome.State == runCompleted {
 		return nil
 	}

@@ -212,8 +212,9 @@ type graphNode struct {
 }
 
 // buildPackageGraph derives the graph from parsed file records.
-func buildPackageGraph(records map[string]fileRecord, module string) *packageGraph {
+func buildPackageGraph(records map[string]fileRecord, module, moduleRoot, walkRoot string) *packageGraph {
 	g := &packageGraph{module: module, nodes: map[string]*graphNode{}}
+	importTargets := importTargetTable(module, moduleRoot, walkRoot, records)
 
 	// First pass: create a node for every directory with at least one parsed
 	// file. The package clause is the identity input; a parse failure removes
@@ -315,14 +316,14 @@ func buildPackageGraph(records map[string]fileRecord, module string) *packageGra
 				node.externalSet[imp.Path] = true
 				continue
 			}
-			target, local := moduleLocalTarget(module, imp.Path)
+			target, local := importTargets[imp.Path]
 			if !local {
-				node.externalSet[imp.Path] = true
-				continue
-			}
-			if unsafeModuleTarget(target) {
-				if _, ok := node.unresolved[imp.Path]; !ok {
-					node.unresolved[imp.Path] = "import path escapes the module root"
+				if moduleLocalImport(module, imp.Path) {
+					if _, ok := node.unresolved[imp.Path]; !ok {
+						node.unresolved[imp.Path] = "no indexed package at that path"
+					}
+				} else {
+					node.externalSet[imp.Path] = true
 				}
 				continue
 			}
@@ -379,29 +380,16 @@ func buildPackageGraph(records map[string]fileRecord, module string) *packageGra
 	return g
 }
 
-// moduleLocalTarget maps an import path to a repository-relative directory.
-// It reports false when the import is outside the module.
-func moduleLocalTarget(module, importPath string) (string, bool) {
-	if importPath == "" || strings.HasPrefix(importPath, ".") {
-		return "", false
+// moduleLocalImport reports whether an unresolved import names a package of
+// the indexed module rather than an external dependency. It is used only to
+// classify the failure; the directory lookup itself is owned by
+// importTargetTable so a nested module root cannot be reconstructed by string
+// arithmetic.
+func moduleLocalImport(module, importPath string) bool {
+	if module == "" || importPath == "" || strings.HasPrefix(importPath, ".") {
+		return false
 	}
-	if importPath == module {
-		return ".", true
-	}
-	prefix := module + "/"
-	if !strings.HasPrefix(importPath, prefix) {
-		return "", false
-	}
-	target := strings.TrimPrefix(importPath, prefix)
-	if target == "" {
-		return ".", true
-	}
-	return path.Clean(target), true
-}
-
-// unsafeModuleTarget rejects a cleaned target that leaves the module root.
-func unsafeModuleTarget(target string) bool {
-	return target == ".." || strings.HasPrefix(target, "../")
+	return importPath == module || strings.HasPrefix(importPath, module+"/")
 }
 
 // packageDir returns the repository-relative directory for a file key.

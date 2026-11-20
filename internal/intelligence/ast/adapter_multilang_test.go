@@ -198,6 +198,12 @@ func TestLanguageAdaptersEmitCanonicalFacts(t *testing.T) {
 			if facts.Partial {
 				t.Errorf("valid fixture reported partial: %+v", facts.Issues)
 			}
+			// A grammar that parses but produces no call sites is not a
+			// working structural adapter. Every fixture contains at least one
+			// call expression.
+			if len(facts.genericCalls) == 0 && len(facts.genericReferences) == 0 {
+				t.Error("adapter extracted no call or reference sites")
+			}
 			second, err := adapter.ParseFile(path, ParseOptions{Relationships: true})
 			if err != nil {
 				t.Fatal(err)

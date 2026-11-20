@@ -22,6 +22,8 @@ type (
 	VerificationCheck       = contract.VerificationCheck
 	VerificationRequirement = contract.VerificationRequirement
 	IntentContract          = contract.IntentContract
+	RequiredFacet           = contract.RequiredFacet
+	Facet                   = contract.Facet
 	Operation               = contract.Operation
 	Capability              = contract.Capability
 	CapabilityNeed          = contract.CapabilityNeed
@@ -77,6 +79,20 @@ const (
 	CheckTest  = contract.CheckTest
 	CheckBuild = contract.CheckBuild
 	CheckVet   = contract.CheckVet
+)
+
+const (
+	FacetCallers      = contract.FacetCallers
+	FacetReferences   = contract.FacetReferences
+	FacetCallSites    = contract.FacetCallSites
+	FacetImporters    = contract.FacetImporters
+	FacetDependencies = contract.FacetDependencies
+	FacetTests        = contract.FacetTests
+	FacetTestTooling  = contract.FacetTestTooling
+	FacetPackages     = contract.FacetPackages
+	FacetEntrypoints  = contract.FacetEntrypoints
+	FacetArchitecture = contract.FacetArchitecture
+	FacetImpact       = contract.FacetImpact
 )
 
 // BuildIntentContract extracts a completion contract from a user request.
@@ -196,6 +212,7 @@ func BuildIntentContract(text string) IntentContract {
 	}
 	contract.MutationScope = mutationScopeFor(contract)
 	contract.Grounding = buildGrounding(objective, contract)
+	contract.RequiredFacets = requiredFacets(objective, contract.Kind)
 
 	// A conditional change may be scoped by a named repository concept and an
 	// explicit check rather than by a literal path: "understand the checkout
@@ -703,8 +720,9 @@ func createsVerifiableArtifact(text string) bool {
 }
 
 // pathToken matches one candidate path-like token. It stops at punctuation so
-// a sentence comma is not part of the path.
-var pathToken = regexp.MustCompile(`[A-Za-z0-9_][A-Za-z0-9_./-]*`)
+// a sentence comma is not part of the path. The optional leading dot keeps a
+// dotfile (".gitignore", ".env") one token instead of matching only its stem.
+var pathToken = regexp.MustCompile(`\.?[A-Za-z0-9_][A-Za-z0-9_./-]*`)
 
 // extensionToken matches a filename extension with at least one letter.
 var extensionToken = regexp.MustCompile(`\.([A-Za-z][A-Za-z0-9]{0,7})$`)
@@ -736,6 +754,13 @@ func looksLikeFile(value string) bool {
 	}
 	if knownFileNames[strings.ToLower(base)] {
 		return true
+	}
+	if len(base) > 1 && base[0] == '.' {
+		// A dotfile is a filename, not a sentence fragment: ".gitignore",
+		// ".env", ".prettierrc". A numeric remainder (".5") is prose.
+		if c := base[1]; c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return true
+		}
 	}
 	match := extensionToken.FindStringSubmatch(base)
 	if match == nil {
@@ -1544,4 +1569,154 @@ func appendUnique(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
+}
+
+// requiredFacets extracts the answer fields a request explicitly asked for.
+//
+// It is intentionally conservative: the noun must appear in a clause with a
+// request or question shape, so a passing mention ("the tests are unrelated")
+// does not create a completion obligation. The extraction belongs here, next to
+// the rest of the contract, because the evaluator must receive the obligation
+// as data rather than re-parse the user's sentence at answer time.
+func requiredFacets(text string, kind ObjectiveKind) []RequiredFacet {
+	// A mutation contract is judged by targets and verification. Its prose may
+	// mention callers or tests as context, and requiring those as answer fields
+	// would turn a correct edit into a false review.
+	if kind != ObjectiveInformational {
+		return nil
+	}
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return nil
+	}
+	type rule struct {
+		facet   Facet
+		pattern *regexp.Regexp
+		// noun marks a weak noun that only counts when a request verb is in the
+		// same clause. Strong relationship nouns already carry the request.
+		noun bool
+	}
+	rules := []rule{
+		{FacetCallSites, regexp.MustCompile(`\b(?:call|invocation)s?[ -]sites?\b`), false},
+		{FacetCallers, regexp.MustCompile(`\b(?:callers?|who\s+calls?|called\s+by)\b`), false},
+		{FacetImporters, regexp.MustCompile(`\b(?:importers?|who\s+imports?|imported\s+by)\b`), false},
+		{FacetReferences, regexp.MustCompile(`\b(?:references?|usages?|used\s+by|used\s+where)\b`), false},
+		{FacetDependencies, regexp.MustCompile(`\b(?:dependenc(?:y|ies)|depends?\s+on|dependents?)\b`), false},
+		{FacetTestTooling, regexp.MustCompile(`\b(?:test\s+(?:script|command|tooling|runner|framework)|how\s+(?:are|is)\s+.{0,40}tested|how\s+to\s+run\s+(?:the\s+)?tests?)\b`), false},
+		{FacetEntrypoints, regexp.MustCompile(`\b(?:entry[ -]?points?|main\s+(?:function|package)|bootstrap)\b`), false},
+		{FacetImpact, regexp.MustCompile(`\b(?:impact|affected|downstream|ripple|what\s+else\s+(?:breaks|changes))\b`), false},
+		{FacetTests, regexp.MustCompile(`\b(?:tests?|test\s+files?|test\s+suite|test\s+cases?|test\s+functions?)\b`), true},
+	}
+	requestVerb := regexp.MustCompile(`\b(?:report|list|identify|find|show|trace|explain|describe|analy[sz]e|which|what|where|give|include|count|how\s+many|map|determine|establish|verify|inspect|tell)\b`)
+	// A weak noun ("tests") is a deliverable only when the clause asks for a
+	// report of it. "Investigate why the tests fail" names the subject of the
+	// investigation, not a request for a test inventory.
+	reportVerb := regexp.MustCompile(`\b(?:report|list|identify|which|what|how\s+many|count|find|show|include|map)\b`)
+	var out []RequiredFacet
+	seen := map[Facet]bool{}
+	for _, clause := range facetClauses(normalized) {
+		hasVerb := requestVerb.MatchString(clause) || strings.HasSuffix(clause, " (requested)")
+		hasReport := reportVerb.MatchString(clause) || strings.HasSuffix(clause, " (requested)")
+		for _, candidate := range rules {
+			if !candidate.pattern.MatchString(clause) {
+				continue
+			}
+			if candidate.noun && !hasReport {
+				continue
+			}
+			if !candidate.noun && !hasVerb {
+				continue
+			}
+			if seen[candidate.facet] {
+				continue
+			}
+			seen[candidate.facet] = true
+			out = append(out, RequiredFacet{
+				Facet:   candidate.facet,
+				Subject: facetSubject(text, candidate.facet),
+			})
+		}
+	}
+	return out
+}
+
+// facetClauses splits a request into sentence- and comma-sized units. A comma
+// is a real boundary here: "report the callers, the tests, and affected
+// packages" lists three deliverables, and a verb in the first unit must not
+// turn an incidental mention in the last one into a requirement.
+func facetClauses(text string) []string {
+	var out []string
+	for _, unit := range regexp.MustCompile(`[.!?;\n]+|,\s*`).Split(text, -1) {
+		unit = strings.TrimSpace(unit)
+		if unit != "" {
+			out = append(out, unit)
+		}
+	}
+	if len(out) == 0 {
+		return []string{text}
+	}
+	// A list item such as "the tests" has no verb of its own. It inherits the
+	// request shape of the list's leading clause, which is the only way a
+	// natural "report the callers, the tests, and affected packages" is read
+	// as three deliverables rather than one.
+	verb := false
+	for index, unit := range out {
+		if regexp.MustCompile(`\b(?:report|list|identify|find|show|trace|explain|describe|analy[sz]e|which|what|where|give|include|count|how\s+many|map|determine|establish|verify|inspect|tell)\b`).MatchString(unit) {
+			verb = true
+			continue
+		}
+		if verb {
+			out[index] = unit + " (requested)"
+		}
+	}
+	return out
+}
+
+// facetSubject extracts the code coordinate a facet request names. It is used
+// only to make the review reason specific; an empty subject never weakens the
+// facet obligation.
+func facetSubject(text string, facet Facet) string {
+	lower := strings.ToLower(text)
+	needle := ""
+	switch facet {
+	case FacetCallers:
+		needle = "callers"
+	case FacetReferences:
+		needle = "references"
+	case FacetImporters:
+		needle = "importers"
+	case FacetCallSites:
+		needle = "call sites"
+	case FacetDependencies:
+		needle = "dependencies"
+	case FacetTests:
+		needle = "tests"
+	}
+	if needle == "" {
+		return ""
+	}
+	index := strings.Index(lower, needle)
+	if index < 0 {
+		return ""
+	}
+	rest := text[index+len(needle):]
+	rest = strings.TrimLeft(rest, " \t:,-")
+	// The nearest explicit code-shaped token after the facet noun is the
+	// subject. Backticked names are preferred, then a qualified identifier.
+	backtick := regexp.MustCompile("`([A-Za-z_][A-Za-z0-9_.]*)`")
+	if match := backtick.FindStringSubmatch(rest); match != nil {
+		return match[1]
+	}
+	identifier := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b`)
+	for _, match := range identifier.FindAllStringSubmatch(rest, -1) {
+		value := match[1]
+		if hasUpper(value) || strings.Contains(value, ".") || strings.Contains(value, "_") {
+			switch strings.ToLower(value) {
+			case "the", "and", "for", "of", "in", "this", "project", "repository":
+				continue
+			}
+			return value
+		}
+	}
+	return ""
 }

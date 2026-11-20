@@ -1112,8 +1112,11 @@ func broadRepositoryAnalysis(objective string, intent contract.IntentContract) b
 
 	// A named coordinate is a targeted objective. Only an explicit "whole
 	// repository" request widens it again; "overall structure of the parser
-	// package" is still about one package.
-	if len(intent.Targets) > 0 && !wholeRepository {
+	// package" is still about one package. A documentation artifact named as
+	// the source of a claim is not a coordinate: "facts documented by the
+	// README" is one evidence axis of a project-wide account, and treating the
+	// mention as a target removed the source survey the request asked for.
+	if namedSubjectTargets(objective, intent.Targets) && !wholeRepository {
 		return false
 	}
 	// A named concept is the object of the understanding. "Understand how the
@@ -1144,6 +1147,100 @@ func broadRepositoryAnalysis(objective string, intent contract.IntentContract) b
 		return true
 	}
 	return false
+}
+
+// namedSubjectTargets reports whether the request names a code or filesystem
+// coordinate as its subject rather than as the source of a claim.
+//
+// The difference decides whether a request narrows to one artifact. "What does
+// README.md say?" is about the file. "Investigate this project ... facts
+// documented by the README, architecture verified from source code" names the
+// file only to attribute one class of facts; the subject is the project, and
+// the request explicitly asks for source-verified architecture. A path that is
+// always introduced by a provenance phrase therefore does not narrow the
+// analysis. Symbol and package targets are always subjects.
+func namedSubjectTargets(objective string, targets []contract.Target) bool {
+	text := " " + normalizeWords(objective) + " "
+	for _, target := range targets {
+		name := normalizeWords(target.Value)
+		if name == "" {
+			return true
+		}
+		if target.Kind != contract.TargetPath {
+			return true
+		}
+		if !referencedOnlyAsEvidence(text, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// evidenceReferenceMarkers introduce an artifact as the source of a claim
+// rather than as the thing the request is about. They are matched against the
+// clause before the mention, not the whole objective, so an unrelated earlier
+// sentence cannot excuse a substantive target.
+var evidenceReferenceMarkers = []string{
+	"documented by", "documented in", "documented within",
+	"described by", "described in", "stated in", "reported in",
+	"listed in", "written in", "according to", "as per",
+}
+
+// referencedOnlyAsEvidence reports whether every mention of name is introduced
+// by a provenance marker in the same clause. An empty mention list is not a
+// reference: a target the text never names cannot be classified.
+func referencedOnlyAsEvidence(text, name string) bool {
+	mentioned := false
+	for offset := 0; offset <= len(text); {
+		start := indexWord(text, name, offset)
+		if start < 0 {
+			break
+		}
+		mentioned = true
+		left := start - 48
+		if left < 0 {
+			left = 0
+		}
+		window := text[left:start]
+		if cut := strings.LastIndexAny(window, ".;,\n"); cut >= 0 {
+			window = window[cut+1:]
+		}
+		referenced := false
+		for _, marker := range evidenceReferenceMarkers {
+			if strings.Contains(window, marker) {
+				referenced = true
+				break
+			}
+		}
+		if !referenced {
+			return false
+		}
+		offset = start + len(name)
+	}
+	return mentioned
+}
+
+// indexWord returns the first occurrence of name at or after from that is not
+// embedded in a longer word, or -1. The normalized text contains only
+// lowercase alphanumerics, underscores, and spaces, so a boundary is the text
+// edge or a space. Without this, a target "auth" would match "authentication"
+// and every directory named with that stem would be read as substantive.
+func indexWord(text, name string, from int) int {
+	for from <= len(text) {
+		index := strings.Index(text[from:], name)
+		if index < 0 {
+			return -1
+		}
+		start := from + index
+		end := start + len(name)
+		startOK := start == 0 || text[start-1] == ' '
+		endOK := end == len(text) || text[end] == ' '
+		if startOK && endOK {
+			return start
+		}
+		from = start + 1
+	}
+	return -1
 }
 
 // repositorySubjectPhrases are determiner-bound references to the repository

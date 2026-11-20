@@ -124,8 +124,9 @@ func (c *Controller) CurrentRole() workspace.Workspace {
 }
 
 // LastRole returns the role the task last executed under, or "" when no role
-// has been recorded. It is continuity metadata, never authority: the host uses
-// it to distinguish a role change from a new objective.
+// has been recorded. It is continuity metadata, not a grant: Task.TurnRole
+// combines it with the persisted contract to decide the restore target, and the
+// host still applies every call through the live gate.
 func (c *Controller) LastRole() workspace.Workspace {
 	if !c.roleKnown {
 		return ""
@@ -464,6 +465,17 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 		c.planStale = false
 		c.resuming = resumeRequested ||
 			c.task.Status == StatusPaused || c.task.Status == StatusPending || c.task.Status == StatusNeedsReview
+		// The persisted contract is the authority the task was created under
+		// and the human widened. A task-owned turn first moves the live gate to
+		// Task.TurnRole, so the live role here is either inside that contract
+		// or unchanged by a narrowing command. A wider role that the contract
+		// never granted is the resume default leaking in: refuse, because
+		// recording it would persist an escalation and running it would execute
+		// under authority the task does not hold.
+		if c.role.Valid() && c.task.ExecutionContract.Valid() && !c.task.ExecutionContract.PermitsRole(c.role) {
+			return Task{}, fmt.Errorf("%w: live %s, task contract %s",
+				ErrAuthorityConflict, c.role.Label(), c.task.ExecutionContract.String())
+		}
 		if c.task.Contract == nil {
 			return Task{}, fmt.Errorf("%w: %q has no persisted completion contract; cancel or replace it explicitly",
 				ErrObjectiveConflict, c.task.Objective)
@@ -615,6 +627,57 @@ func (c *Controller) Sync() (Task, error) {
 		Summary: c.lastAction,
 	})
 	return c.commit(before, beforeAction)
+}
+
+// RecordAuthorityRestore records that a continuation moved the live workspace
+// back to the authority the task's persisted contract grants.
+//
+// The task did not transition: the role it last ran under is unchanged. Only
+// the ambient session authority had drifted — a new session defaults to BUILD,
+// a restored session may hold another workspace, or the process restarted — so
+// recording a handoff would claim a role change the task never made. The
+// contract is not widened here: the caller must already have applied the role
+// through the workspace owner, and a role the contract does not permit is
+// refused rather than recorded.
+func (c *Controller) RecordAuthorityRestore(from, to workspace.Workspace) error {
+	if err := c.ensureLoaded(); err != nil {
+		return err
+	}
+	if c.task.ID == "" || c.task.Status.IsTerminal() {
+		return nil
+	}
+	if !from.Valid() || !to.Valid() || from == to {
+		return nil
+	}
+	if !c.task.ExecutionContract.Valid() || !c.task.ExecutionContract.PermitsRole(to) {
+		return fmt.Errorf("%w: %s is not authorized by the task contract %s",
+			ErrAuthorityConflict, to.Label(), c.task.ExecutionContract.String())
+	}
+	// The caller contract is "the live gate already moved". Verify it against
+	// the only real authority so the task's record can never name a role the
+	// runtime is not running.
+	if c.roleSource != nil {
+		if live := c.currentRole(); live != to {
+			return fmt.Errorf("%w: the live workspace is %q, not the restored target %q",
+				ErrInvalidHandoff, live, to)
+		}
+	}
+	before := c.snapshotState()
+	now := c.now().UTC()
+	c.task.ActiveRole = to
+	c.role = to
+	c.roleKnown = true
+	c.task.UpdatedAt = now
+	c.lastAction = "authority restored: " + from.Label() + " -> " + to.Label()
+	c.task.AppendEvent(TimelineEvent{
+		At:      now,
+		Kind:    TimelineResumed,
+		Role:    to,
+		Status:  string(c.task.Status),
+		Summary: "restored the task's persisted authority: " + from.Label() + " -> " + to.Label(),
+	})
+	_, err := c.commitState(before)
+	return err
 }
 
 // Pause records an interruption at a recoverable checkpoint.

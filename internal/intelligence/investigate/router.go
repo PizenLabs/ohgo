@@ -51,25 +51,49 @@ func (r *StructuralRouter) Observe(ctx context.Context, req Request, step planne
 	if r == nil {
 		return Observation{}, errors.New("structural router is not configured")
 	}
+
+	// Native first. The task contract gives native structural analysis
+	// precedence and makes the external provider an escalation for a specific
+	// evidence gap, not a replacement for every target-shaped question.
+	var native Observation
+	haveNative := r.Native != nil
+	var nativeErr error
+	if haveNative {
+		native, nativeErr = r.Native.Observe(ctx, req, step, meter)
+		if nativeErr == nil && native.Sufficient &&
+			native.Outcome != OutcomeStale && native.Outcome != OutcomeFailed {
+			// A sufficient answer can still carry a global coverage limit
+			// (unsupported SQL or templates). That limit does not turn a
+			// complete focus answer into an evidence gap that justifies an
+			// external request.
+			native.Source = "native"
+			return native, nil
+		}
+	}
+
 	external := r.externalFor(ctx, req, step)
 	if external == nil {
-		if r.Native == nil {
+		if !haveNative {
 			return Observation{
 				Outcome: OutcomeUnavailable,
 				Issues:  []string{"no structural intelligence provider is configured"},
 			}, nil
 		}
-		return r.Native.Observe(ctx, req, step, meter)
-	}
-
-	if err := meter.ChargeExternal(); err != nil {
-		if r.Native == nil {
-			return Observation{Outcome: OutcomeUnavailable, Issues: []string{err.Error()}}, nil
-		}
-		native, nativeErr := r.Native.Observe(ctx, req, step, meter)
 		if nativeErr != nil {
 			return Observation{}, nativeErr
 		}
+		native.Source = "native"
+		return native, nil
+	}
+
+	if err := meter.ChargeExternal(); err != nil {
+		if !haveNative {
+			return Observation{Outcome: OutcomeUnavailable, Issues: []string{err.Error()}}, nil
+		}
+		if nativeErr != nil {
+			return Observation{}, nativeErr
+		}
+		native.Source = "native"
 		native.Issues = append(append([]string(nil), native.Issues...),
 			err.Error()+"; native structural analysis used")
 		return native, nil
@@ -83,16 +107,21 @@ func (r *StructuralRouter) Observe(ctx context.Context, req Request, step planne
 		if externalObservation.Source == "" {
 			externalObservation.Source = "external"
 		}
+		// A native gap is what justified the escalation. Keep the native
+		// evidence too: for impact it owns references, importers, and test
+		// associations that the external call graph does not carry.
+		if haveNative && nativeErr == nil {
+			return mergeStructural(native, externalObservation), nil
+		}
 		return externalObservation, nil
 	}
 
-	if r.Native == nil {
+	if !haveNative {
 		if externalErr != nil {
 			return Observation{}, fmt.Errorf("external structural provider: %w", externalErr)
 		}
 		return externalObservation, nil
 	}
-	native, nativeErr := r.Native.Observe(ctx, req, step, meter)
 	if nativeErr != nil {
 		if externalErr != nil {
 			return Observation{}, fmt.Errorf("external structural provider: %v; native structural provider: %w",
@@ -111,37 +140,75 @@ func (r *StructuralRouter) Observe(ctx context.Context, req Request, step planne
 	}
 
 	native.Issues = append(fallbackIssues(externalObservation, externalErr), native.Issues...)
-	// Preserve which mechanism produced each fact when the native and external
-	// observations are combined. The step-level source is "native" because the
-	// native answer is being returned, but a gry fact is still gry evidence.
+	// A fallback still preserves the external facts that explain why it was
+	// not usable, such as ambiguity candidates or a stale generation. Dropping
+	// them would hide the very uncertainty the fallback disclosed.
+	externalSource := externalObservation.Source
+	if externalSource == "" {
+		externalSource = "external"
+	}
 	for i := range externalObservation.Facts {
 		if externalObservation.Facts[i].Source == "" {
-			externalObservation.Facts[i].Source = externalObservation.Source
+			externalObservation.Facts[i].Source = externalSource
 		}
 	}
+	native.Facts = append(native.Facts, externalObservation.Facts...)
+	native.Records = append(native.Records, externalObservation.Records...)
+	if native.Outcome == OutcomeSuccess {
+		native.Outcome = OutcomePartial
+	}
+	native.Source = "native"
+	return native, nil
+}
+
+// mergeStructural combines a native observation with an escalating external
+// one. Source attribution stays per fact and per record; the step-level label
+// names both mechanisms.
+func mergeStructural(native, external Observation) Observation {
 	for i := range native.Facts {
 		if native.Facts[i].Source == "" {
 			native.Facts[i].Source = "native"
 		}
 	}
-	native.Facts = append(append([]Fact(nil), externalObservation.Facts...), native.Facts...)
-	native.Records = append(append([]evidence.Record(nil), externalObservation.Records...), native.Records...)
-	native.Source = "native"
+	extSource := external.Source
+	if extSource == "" {
+		extSource = "external"
+	}
+	for i := range external.Facts {
+		if external.Facts[i].Source == "" {
+			external.Facts[i].Source = extSource
+		}
+	}
+	merged := native
+	merged.Facts = append(append([]Fact(nil), native.Facts...), external.Facts...)
+	merged.Records = append(append([]evidence.Record(nil), native.Records...), external.Records...)
+	merged.Issues = append(append([]string(nil), native.Issues...), external.Issues...)
+	merged.Source = "native+" + extSource
+	merged.Sufficient = true
+	if external.Confidence > merged.Confidence {
+		merged.Confidence = external.Confidence
+	}
+	if external.Coverage > merged.Coverage {
+		merged.Coverage = external.Coverage
+	}
+	// Combined evidence is additive, not a claim that either provider alone
+	// completed the step. Stale external evidence downgrades the combined
+	// observation rather than being silently averaged with current native
+	// facts.
 	switch {
-	case len(native.Facts) > 0:
-		native.Outcome = OutcomePartial
-	case externalErr == nil && externalObservation.Outcome != "":
-		native.Outcome = externalObservation.Outcome
-	default:
-		native.Outcome = OutcomeFailed
+	case external.Outcome == OutcomeStale:
+		merged.Outcome = OutcomeStale
+		merged.Issues = append(merged.Issues,
+			"external structural evidence is stale; native structural analysis is current")
+	case merged.Outcome == OutcomeSuccess:
+		merged.Outcome = OutcomePartial
 	}
-	if native.Confidence <= 0 {
-		native.Confidence = externalObservation.Confidence
+	if merged.Summary == "" {
+		merged.Summary = external.Summary
+	} else if external.Summary != "" {
+		merged.Summary += "; " + external.Summary
 	}
-	if native.Coverage < externalObservation.Coverage {
-		native.Coverage = externalObservation.Coverage
-	}
-	return native, nil
+	return merged
 }
 
 // externalFor returns the external provider when this step's information need

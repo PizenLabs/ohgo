@@ -169,6 +169,66 @@ func TestInformationalContentQuestionNeedsAFileRead(t *testing.T) {
 	}
 }
 
+// "The README" is a documentation reference, not an exact extensionless
+// filename. The read observation records README.md, so the requirement must
+// resolve by document name; otherwise target_content:README can never be
+// satisfied and the run keeps re-reading the same document.
+func TestBareDocumentTargetResolvesToTheObservedREADME(t *testing.T) {
+	const objective = `Investigate this project and analyze what this project is about.
+
+Distinguish:
+- Facts documented by the README.
+- Architecture verified from source code.
+- Runtime behavior verified from implementation.
+- Features that are documented but not independently verified.`
+	shape := BuildShape(workspace.BuildIntentContract(objective), ShapeParams{Authority: "fuzz", Intent: "investigate"})
+	var stateKey, contentKey bool
+	for _, need := range shape.RequiredKnowledge {
+		switch need.Key {
+		case "target_state:README":
+			stateKey = true
+		case "target_content:README":
+			contentKey = true
+		}
+	}
+	if !stateKey || !contentKey {
+		t.Fatalf("required knowledge = %#v, want target_state:README and target_content:README", shape.RequiredKnowledge)
+	}
+
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{
+			Text:    "1\t# go-ecommerce\n2\t\n3\tGoCommerce is an e-commerce application.",
+			Details: map[string]any{"path": "README.md", "totalLines": 3, "offset": 1, "limit": 2000},
+		},
+	})
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-2", ToolName: "read", Args: map[string]any{"path": "docs/Readme.md"},
+		Result: agent.Result{
+			Text:    "1\tNested documentation.",
+			Details: map[string]any{"path": "docs/Readme.md", "totalLines": 1, "offset": 1, "limit": 2000},
+		},
+	})
+	for _, key := range []string{"target_state:README", "target_content:README"} {
+		if !state.Satisfied(key, ExecutionState{}) {
+			t.Fatalf("%s was not satisfied by reading README.md", key)
+		}
+	}
+
+	other := NewEvidenceState()
+	other.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-3", ToolName: "read", Args: map[string]any{"path": "config.md"},
+		Result: agent.Result{
+			Text:    "1\tA different document.",
+			Details: map[string]any{"path": "config.md", "totalLines": 1, "offset": 1, "limit": 2000},
+		},
+	})
+	if other.Satisfied("target_content:README", ExecutionState{}) {
+		t.Fatal("an unrelated documentation file satisfied the README target")
+	}
+}
+
 func TestStructuralQuerySatisfiesCoordinatesForANamedPath(t *testing.T) {
 	// A symbols query that names the exact path is coordinate evidence for a
 	// package/declaration question; it is not a file read, and it must not

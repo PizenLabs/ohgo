@@ -5,7 +5,7 @@ BIN := ohgo
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build build-multilang test vet fmt lint race check bench install install-multilang uninstall clean docker snapshot release
+.PHONY: build build-multilang test test-portable test-multilang vet fmt lint race check bench install install-multilang uninstall clean docker snapshot release
 
 # Install location. Defaults to ~/.local (first on a typical PATH, no sudo);
 # override for system installs: `sudo make install PREFIX=/usr/local`.
@@ -39,6 +39,15 @@ build:
 test:
 	go test ./...
 
+# The two build variants have different adapters and different code paths
+# (`//go:build cgo`). A default `go test` only exercises the host default, so
+# both are available explicitly and CI can pin each.
+test-portable:
+	CGO_ENABLED=0 go test ./...
+
+test-multilang:
+	CGO_ENABLED=1 go test ./...
+
 vet:
 	go vet ./...
 
@@ -55,7 +64,11 @@ race:
 check: build vet fmt test
 
 bench:
-	go test -run=NONE -bench=. -benchmem ./tools/ ./agent/ ./ai/ 2>&1 | head -60
+	go test -run=NONE -bench=. -benchmem \
+		./internal/intelligence/ast/ \
+		./internal/intelligence/structural/ \
+		./internal/intelligence/retrieval/ \
+		./internal/execution/tools/ 2>&1 | head -60
 
 # Multi-language structural adapters are cgo-build-time integrations. The
 # grammar sources are pinned in go.mod; no runtime download or shared library
@@ -78,7 +91,7 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/ohgo
 
 clean:
-	rm -f $(BIN) coverage.* *.out *.test
+	rm -f $(BIN) $(BIN)-multilang coverage.* *.out *.test
 
 docker:
 	docker build --build-arg VERSION=$(VERSION) -t ohgo:$(VERSION) .

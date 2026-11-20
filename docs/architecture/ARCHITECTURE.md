@@ -641,13 +641,22 @@ user's request before execution and the evidence the runtime observed.
   journal diff attributes the rest. A mutation with neither remains
   `UNATTRIBUTED` and `NEEDS_REVIEW`, never silently accepted. The same journal
   diff is folded into the durable evidence state, so a shell-only mutation can
-  support the task's completion proof.
+  support the task's completion proof. The diff compares two captures under the
+  same workspace definition: a path that only became ignored (or visible)
+  because the run edited `.gitignore` is not reported as an edit, because its
+  content did not change.
 - **Evidence.** A mutation objective needs an observed target change and a
   successful verification after it. An execution authorized read-only is not a
   potential mutation, so an investigation probe cannot create a verification
-  debt. A checkless execution objective needs a process that reached a
-  successful terminal state (`Executes` + `Finished`); a started background
-  spawn is not evidence. A **runtime** execution objective (`run this project`,
+  debt. A captured host journal adds a stronger proof: it pins the workspace
+  identity at the check and again at run end, so a write-capable probe after the
+  check (`git status`, a network fetch) cannot reopen the obligation when both
+  identities are equal, and an unclassified execution that changed an
+  already-expected path still reopens it when they differ. Without a captured
+  journal, a write-capable execution owes a later check because its effect
+  cannot be proven. A checkless execution objective needs a process that
+  reached a successful terminal state (`Executes` + `Finished`); a started
+  background spawn is not evidence. A **runtime** execution objective (`run this project`,
   `run the app`, `npm run dev`, `start the dev server`) is stronger than that:
   the contract records `ExecutionRuntime`, and completion requires the runtime
   itself to be observed. A finished environment probe such as
@@ -773,7 +782,11 @@ the model said. Two properties keep the loop honest and small:
   need: at least two content observations or one content observation plus
   structure. A named coordinate, a specific artifact ("this project's license",
   the test suite, one file), or a named repository concept ("the checkout
-  flow") stays targeted even when the sentence contains a broad verb. The
+  flow") stays targeted even when the sentence contains a broad verb. A
+  documentation path introduced by a provenance phrase ("facts documented by
+  the README", "according to the README") attributes one class of claims
+  rather than naming the subject, so it does not narrow a project-wide account
+  that names the repository itself. The
   classification is deterministic and derived from the objective and the
   contract's targets and concept entities, so unusual wording does not fall
   back to the single-observation policy and narrow questions are not forced

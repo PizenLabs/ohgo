@@ -20,6 +20,18 @@ func TestBuildIntentContractDistinguishesPathTargetsFromRepositoryConcepts(t *te
 			wantPaths: []string{"order/checkout.go"},
 		},
 		{
+			text:      "update .gitignore file",
+			wantPaths: []string{".gitignore"},
+		},
+		{
+			text:      "update .gitignore",
+			wantPaths: []string{".gitignore"},
+		},
+		{
+			text:      "read backend/.env",
+			wantPaths: []string{"backend/.env"},
+		},
+		{
 			text:      "Inspect the order/checkout directory",
 			wantPaths: []string{"order/checkout"},
 		},

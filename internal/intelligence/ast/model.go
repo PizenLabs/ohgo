@@ -270,11 +270,19 @@ type TestDecl struct {
 type SnapshotInfo struct {
 	// Root is the absolute index root.
 	Root string `json:"root"`
-	// Module is the Go module path, empty when there is no usable go.mod.
+	// Module is the Go module path, empty when there is no usable go.mod or
+	// when the workspace contains several sibling modules and no single one
+	// owns the snapshot.
 	Module string `json:"module,omitempty"`
 	// ModuleRoot is the nearest directory above Root that carries go.mod.
 	// It is metadata only; the index never widens its walk to include it.
 	ModuleRoot string `json:"module_root,omitempty"`
+	// ModuleAmbiguous reports sibling go.mod files that no single module owns.
+	// The files are still inventoried and parsed, but cross-module imports are
+	// not resolved; completion must not claim a module-local graph.
+	ModuleAmbiguous bool `json:"module_ambiguous,omitempty"`
+	// ModuleCandidates names the sibling module roots when ambiguous.
+	ModuleCandidates []string `json:"module_candidates,omitempty"`
 	// Generation is process-local and monotonic.
 	Generation uint64 `json:"generation"`
 	// SnapshotID is deterministic identity for this published snapshot.
@@ -618,23 +626,27 @@ type ImpactQuery struct {
 // ImpactResult is one bounded impact projection. It is static reachability,
 // not a behavioral claim.
 type ImpactResult struct {
-	Snapshot   SnapshotInfo      `json:"snapshot"`
-	QueryType  string            `json:"query_type"`
-	Selector   string            `json:"selector"`
-	Found      bool              `json:"found"`
-	Ambiguous  bool              `json:"ambiguous"`
-	Candidates []RefTarget       `json:"candidates,omitempty"`
-	Targets    []RefTarget       `json:"targets,omitempty"`
-	References []ReferenceSite   `json:"references,omitempty"`
-	Callers    []CallEdge        `json:"callers,omitempty"`
-	Importers  []string          `json:"importers,omitempty"`
-	Tests      []TestAssociation `json:"tests,omitempty"`
-	Nodes      []Node            `json:"nodes,omitempty"`
-	Edges      []Edge            `json:"edges,omitempty"`
-	Total      int               `json:"total"`
-	Truncated  bool              `json:"truncated"`
-	Reason     string            `json:"reason,omitempty"`
-	Unknown    UnknownSummary    `json:"unknown"`
+	Snapshot   SnapshotInfo    `json:"snapshot"`
+	QueryType  string          `json:"query_type"`
+	Selector   string          `json:"selector"`
+	Found      bool            `json:"found"`
+	Ambiguous  bool            `json:"ambiguous"`
+	Candidates []RefTarget     `json:"candidates,omitempty"`
+	Targets    []RefTarget     `json:"targets,omitempty"`
+	References []ReferenceSite `json:"references,omitempty"`
+	Callers    []CallEdge      `json:"callers,omitempty"`
+	// Callees are the forward call edges from the target. They make the impact
+	// projection usable for a flow question, which asks what a component
+	// reaches rather than what reaches it.
+	Callees   []CallEdge        `json:"callees,omitempty"`
+	Importers []string          `json:"importers,omitempty"`
+	Tests     []TestAssociation `json:"tests,omitempty"`
+	Nodes     []Node            `json:"nodes,omitempty"`
+	Edges     []Edge            `json:"edges,omitempty"`
+	Total     int               `json:"total"`
+	Truncated bool              `json:"truncated"`
+	Reason    string            `json:"reason,omitempty"`
+	Unknown   UnknownSummary    `json:"unknown"`
 }
 
 // itoa avoids a strconv import at every identity helper. The values are small

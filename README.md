@@ -58,8 +58,9 @@ it is done. ohgo is built around the opposite contract.
   observed results, never from the model's claim of success.
 - **The transport is a seam.** The agent loop never touches HTTP, so every
   layer can be tested against a real request body instead of a mock.
-- **The binary is static.** Pure Go, zero cgo, no C toolchain, no shared
-  libraries at runtime.
+- **The default binary is static.** The portable release is pure Go with zero
+  cgo. The optional multi-language build compiles pinned tree-sitter grammars
+  and therefore requires cgo; it is not the static release artifact.
 
 ## Features
 
@@ -205,6 +206,12 @@ the proven owner (for example `brew upgrade ohgo`) instead. Linux and macOS on
 amd64/arm64 are the published matrix; everything else reports unsupported. The
 updater never invokes `sudo`, never edits shell configuration, and is not an
 agent tool: only a human running `ohgo update` can install.
+
+The published tarballs are portable (`CGO_ENABLED=0`) builds. `ohgo update`
+refuses to replace a multi-language installation with a portable binary,
+because doing so would silently remove the non-Go adapters the user built. It
+reports the downgrade and leaves the installed binary untouched; update a
+multi-language build from source with `make build-multilang`.
 
 Verification currently rests on TLS plus the publisher's SHA-256 manifest.
 Release signing is not part of the current release workflow; the verifier seam
@@ -437,10 +444,18 @@ subscription is not yet a valid credential.
 
 Not yet supported: Azure/OpenAI Responses-only models (no Responses transport),
 GitHub Copilot's OAuth token exchange, Bedrock SigV4/IAM credentials, and
-`pi-vfs`/`pi-walker` internals. LSP/DAP and MCP features beyond bounded stdio
-plus the streamable-HTTP request/response core are also outside this build
-(standalone GET streams, resumability, and server-to-client requests are not
-implemented).
+`pi-vfs`/`pi-walker` internals. MCP support is bounded to stdio plus the
+streamable-HTTP request/response core (standalone GET streams, resumability,
+and server-to-client requests are not implemented).
+
+Semantic assistance is bounded and optional. When `gopls` is installed,
+`investigate` uses it for Go declarations, references, and call hierarchy at
+the module the request names; the server is started lazily and closed after the
+step. DAP runtime observation exists only for an already-authorized stopped
+debug session and is not exposed as a start/attach tool. No other language has
+a language server in this build: TypeScript, JavaScript, Java, C#, Rust,
+Kotlin, Ruby, C, and C++ have syntax-level Tree-sitter facts only, and the
+portable build has no adapter for them at all.
 
 Credentials resolve in order: explicit request key, `~/.ohgo/credentials.json`
 (0600, written only when you save), environment, then parsed shell startup

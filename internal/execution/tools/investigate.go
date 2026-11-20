@@ -189,6 +189,12 @@ func formatInvestigation(result investigate.Result) string {
 		if fact.Source != "" {
 			provider += "/" + fact.Source
 		}
+		if fact.Freshness != "" {
+			// Freshness belongs on the fact, not only in the step summary: an
+			// UNVERIFIED edge must not read as a current relationship merely
+			// because the nodes around it are current.
+			provider += " " + string(fact.Freshness)
+		}
 		fmt.Fprintf(&builder, "- [%s] %s — %s\n", provider, fact.Subject, fact.Detail)
 	}
 	if len(result.Contradictions) > 0 {

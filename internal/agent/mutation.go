@@ -121,6 +121,14 @@ type MutationProvenance struct {
 	// Captured reports that a journal observed the run, even when Changes is
 	// empty.
 	Captured bool
+	// VerifiedTree is the workspace identity captured at the last successful
+	// check in the run, or "" when no check ran under a journal.
+	VerifiedTree string
+	// FinalTree is the workspace identity captured when the run ended. It is
+	// equal to VerifiedTree exactly when nothing changed after the check, which
+	// is the only proof a read-only probe after the check did not mutate an
+	// already-expected path.
+	FinalTree string
 	// Changes are the paths that differ between the pre-mutation capture and
 	// the end of the run.
 	Changes []MutationChange

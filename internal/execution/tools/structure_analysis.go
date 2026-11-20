@@ -296,9 +296,9 @@ func writeFocusText(text *strings.Builder, focus *structural.FocusReport) {
 	if focus == nil {
 		return
 	}
-	fmt.Fprintf(text, "focus: %s (%s) found=%v targets=%d references=%d callers=%d importers=%d tests=%d evidence=%s",
+	fmt.Fprintf(text, "focus: %s (%s) found=%v targets=%d references=%d callers=%d callees=%d importers=%d tests=%d evidence=%s",
 		focus.Selector, focus.SelectorKind, focus.Found, focus.Targets,
-		focus.References, focus.Callers, focus.Importers, focus.Tests, focus.Evidence.State)
+		focus.References, focus.Callers, focus.Callees, focus.Importers, focus.Tests, focus.Evidence.State)
 	if focus.Evidence.Reason != "" {
 		fmt.Fprintf(text, " (%s)", focus.Evidence.Reason)
 	}

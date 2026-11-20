@@ -493,11 +493,14 @@ func sessionRowPlain(cols sessionTableColumns, marker, status, slot, title, dirt
 }
 
 // sessionTokenLine renders the detail token row. An unmeasured count stays
-// absent rather than rendering a fabricated zero; a measured count is
-// prefixed with "~" because it is reconstructed from stored text.
+// absent rather than rendering a fabricated zero; a measured count is shown
+// without the estimate marker.
 func sessionTokenLine(item SessionItem) string {
-	if item.Tokens <= 0 {
+	if item.Tokens <= 0 && !item.TokensMeasured {
 		return "not measured"
+	}
+	if item.TokensMeasured {
+		return formatCount(item.Tokens) + " tokens"
 	}
 	return "~" + formatCount(item.Tokens) + " tokens"
 }
