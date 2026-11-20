@@ -178,7 +178,7 @@ func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 	for _, raw := range claimSentenceBoundary.Split(strings.TrimSpace(answer), -1) {
 		sentence := strings.TrimSpace(raw)
 		if sentence == "" || claimIsNonAssertive(sentence) || claimIsBounded(sentence) ||
-			claimIsDocumentationAttributed(sentence) {
+			claimIsDocumentationAttributed(sentence) || claimIsRetraction(sentence) {
 			continue
 		}
 		lineIssue := lineCountClaimIssue(sentence, turns)
@@ -932,6 +932,27 @@ func claimIsNonAssertive(sentence string) bool {
 		"i recommend", "we recommend", "would recommend", "should consider",
 		"could add", "could implement", "might want", "may want",
 		"would be worth", "is worth considering", "if you want",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// claimIsRetraction reports a sentence that names an identifier only to
+// withdraw it. A corrected answer necessarily quotes the name it retracts, so
+// auditing that quotation as a claim would make the correction fail for
+// repeating the error it corrects.
+func claimIsRetraction(sentence string) bool {
+	lower := strings.ToLower(sentence)
+	for _, marker := range []string{
+		"should not have called", "should not have written",
+		"should not have said", "should not have used", "should not have named",
+		"mistakenly called", "mistakenly wrote", "mistakenly named",
+		"incorrectly called", "incorrectly wrote", "incorrectly named",
+		"misnamed", "retract", "correction:",
+		"instead of `", "rather than `",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
