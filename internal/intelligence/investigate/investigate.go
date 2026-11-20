@@ -160,6 +160,11 @@ type Fact struct {
 	Source  string
 	Subject string
 	Detail  string
+	// Freshness is the currency of this specific fact. It is empty for a
+	// provider that does not make a freshness claim. A relationship fact can be
+	// UNVERIFIED while the nodes it connects are CURRENT; collapsing the two
+	// would present an unverified edge as current source truth.
+	Freshness evidence.Freshness
 }
 
 // Provider is one intelligence capability.

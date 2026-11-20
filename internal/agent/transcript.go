@@ -59,6 +59,11 @@ func ConversationMessages(turns []Turn) []Message {
 }
 
 func TranscriptTurn(turn Turn) Turn {
+	// The runtime-state boundary applies to every assistant text block a host
+	// may publish, not only the final answer turn. A model that copies the
+	// request briefing before calling a tool must not have that text replayed
+	// into the transcript, the durable conversation, or the next request.
+	turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
 	if turn.Err != nil || len(turn.Results) == 0 {
 		return turn
 	}

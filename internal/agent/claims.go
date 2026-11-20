@@ -173,6 +173,7 @@ var (
 // is governed by target and verification evidence instead.
 func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 	answer = stripFencedCode(answer)
+	observed := successfulObservationText(turns)
 	var issues []claimIssue
 	for _, raw := range claimSentenceBoundary.Split(strings.TrimSpace(answer), -1) {
 		sentence := strings.TrimSpace(raw)
@@ -204,6 +205,7 @@ func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 			issues = append(issues, *issue)
 		}
 		issues = append(issues, codeClaimIssues(sentence, turns)...)
+		issues = append(issues, entityClaimIssues(sentence, observed)...)
 		if issue := citationClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}
@@ -234,6 +236,7 @@ func prioritizeClaimIssues(issues []claimIssue) []claimIssue {
 	rank := map[string]int{
 		"unsupported_implementation_claim": 0,
 		"unsupported_code_claim":           1,
+		"unsupported_code_entity":          1,
 		"unsupported_completeness_claim":   1,
 		"unsupported_runtime_state":        2,
 		"unsupported_dependency_claim":     3,

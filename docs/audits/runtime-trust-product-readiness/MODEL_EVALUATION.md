@@ -19,7 +19,9 @@
 |---|---|
 | `opencode-go/beam-free` | Available; runs completed. |
 | `openrouter/baidu/ernie-5.5-flash-preview:free` | Available; runs completed. |
-| `opencode-go/longcat-2.5-free` | Available this run; a prior audit recorded repeated HTTP 429s. One successful run is not a reliability verdict. |
+| `opencode-go/longcat-2.5-free` | Available this run; a prior audit recorded repeated HTTP 429s. Closure added two samples: one reviewed, one completed after calibration. |
+| `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | Available; two closure samples. Correct answers, but completion was conservative (`NEEDS_REVIEW`) on insufficient runtime evidence. |
+| `openrouter/inclusionai/ling-3.2-flash:free` | Upstream HTTP 429 at request time; zero provider turns. Provider availability fact, not an OHGO defect. |
 | `openrouter/cohere/north-mini-code:free` | Not in the live OpenRouter roster (380 models at test time); no sample. This is a provider availability fact, not an OHGO defect. |
 
 No model was labelled reliable or unreliable from an insufficient sample.
@@ -158,11 +160,86 @@ Before the classifier fix this was refused as needing FUZZ. After the fix it
 ran under ASK and completed with all 13 static callers and the dynamic-dispatch
 caveat. Exit `0`. This is the `OHGO-CTRL-001` before/after evidence.
 
+### R8 — Blog investigation, LongCat Free (closure sample A)
+
+Prompt: `Investigate this project and analyze what this project is about.
+Report the tests and the entrypoints you can observe.`
+
+Observed: the model used `structure`, `glob`, and `read`, correctly described
+the Next.js terminal blog, and then claimed “no tests” from a complete file
+inventory plus the absence of a test script. Runtime returned `NEEDS_REVIEW`:
+a zero test-file inventory is not proof that the project has no tests.
+
+Exit `2`, 5 turns, 37,786 input / 2,411 output (session 1, 73.5 s).
+
+### R9 — Ecommerce caller analysis, LongCat Free (pre-calibration)
+
+Prompt: `Report the callers of NewOrder, the tests, and affected packages.`
+
+Observed: the model listed all 13 call sites but ended with “no runtime or
+configuration evidence”. The negative-claim parser read that evidence gap as a
+repository absence and returned `NEEDS_REVIEW`. This was an OHGO false
+positive; `OHGO-COMP-007` now excludes evidence-gap subjects.
+
+Exit `2`, 5 turns, 23,604 input / 1,578 output (session 2, 36.5 s).
+
+### R10 — Ecommerce caller analysis, LongCat Free (post-calibration)
+
+Same prompt after the evidence-gap fix. The model again listed all 13 call
+sites, separated tests from test helpers, stated the static-analysis caveat,
+and marked the source body as not read. Runtime returned `COMPLETED`.
+
+Exit `0`, 2 turns, 8,525 input / 1,583 output (session 3, 27.9 s).
+
+### R11 — Blog props, Nemotron (pre-adjective fix)
+
+Prompt: `What props does TerminalBlog accept? Explain each one.`
+
+The model read the component and answered correctly (`posts?: Post[]`), but
+the answer began “Based on my investigation … a single prop”. The code-claim
+audit read `single` as a member on a component named `Based` and returned
+`NEEDS_REVIEW`. This was the OHGO false positive fixed by `OHGO-COMP-006`.
+
+Exit `2`, 5 turns, 40,563 input / 1,016 output (session 4, 46.3 s).
+
+### R12 — Blog props, Nemotron (post-adjective fix)
+
+Same prompt after the adjective filter. The entity false positive did not
+recur. The model again answered correctly, but completion returned
+`NEEDS_REVIEW` because the run's runtime-evidence state remained insufficient
+(`INSUFFICIENT` at stage `explore`). This is a conservative completion result,
+not a claim-grounding false positive.
+
+Exit `2`, 5 turns, 38,890 input / 758 output (session 5, 14.0 s).
+
+### R13 — Ling 3.2 Flash availability
+
+Prompt: `What is this project about?`
+
+The provider returned HTTP 429 (`upstream_provider_shared_pool`,
+`rpm_limit_exceeded`) before any model turn. Session `usage_turns = 0`, input
+and output tokens `0`; this is a measured pre-provider refusal, not an OHGO
+defect and not a zero-token answer.
+
+### R14 — Ecommerce caller analysis, Nemotron
+
+Same caller prompt. The model listed all 13 call sites and affected packages
+correctly, but completion returned `NEEDS_REVIEW` for insufficient runtime
+evidence. The answer included a speculative “production code likely uses
+`NewOrderFactory`” sentence; the conservative result is consistent with the
+source-evidence boundary.
+
+Exit `2`, 3 turns, 24,391 input / 1,517 output (session 7, 23.5 s).
+
+
 ## 4. Provider failures vs runtime defects
 
 - Cohere north-mini absence: provider roster change. Not an OHGO defect.
-- Prior LongCat 429s: provider rate limiting. Not an OHGO defect. This audit
-  got one successful run; the sample is insufficient for a reliability claim.
+- Prior LongCat 429s: provider rate limiting. Not an OHGO defect. The closure
+  phase added two samples (one reviewed, one completed); the sample is still
+  insufficient for a reliability claim.
+- Ling 3.2 Flash upstream 429: provider rate limiting. Zero turns and zero
+  tokens; recorded as availability, not an OHGO defect.
 - ERNIE citing an unopened file: model claim failure, correctly reviewed.
 - Beam overclaiming a complete test absence: model claim failure, correctly
   reviewed.
@@ -170,7 +247,7 @@ caveat. Exit `0`. This is the `OHGO-CTRL-001` before/after evidence.
 
 ## 5. Limits
 
-- One or two runs per model is not a benchmark. It is a behavior sample under
+- One to five runs per model is not a benchmark. It is a behavior sample under
   identical prompts, authority, sandbox, and task contract.
 - Provider rosters and rate limits change. The cohere model was unavailable at
   test time and may return later.

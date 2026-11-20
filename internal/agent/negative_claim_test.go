@@ -115,3 +115,13 @@ func TestUnreadObservedPathIsNamedInTheReview(t *testing.T) {
 		t.Fatalf("detail = %q, want the path the answer declines to read", detail)
 	}
 }
+
+// An explicit evidence gap is not a repository absence. The answer says the
+// run did not observe runtime or configuration evidence; it does not claim the
+// project has no runtime or configuration.
+func TestEvidenceGapIsNotANegativeRepositoryClaim(t *testing.T) {
+	answer := "Structural evidence only: no source contents were read, so there is no runtime or configuration evidence."
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("claims = %+v, want the evidence gap excluded", claims)
+	}
+}

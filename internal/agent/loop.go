@@ -1473,6 +1473,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			origins = append(origins, ai.ProvenanceToolResult)
 		}
 
+		turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
 		turns = append(turns, turn)
 		if l.cfg.OnTurn != nil {
 			l.cfg.OnTurn(turn)
@@ -1834,11 +1835,48 @@ func (l *Loop) convert(messages []Message, origins []ai.Provenance) ([]ai.Messag
 // ai.DrainStream, so the loop and any other consumer (the $sup answer surface)
 // cannot drift on what draining a stream means: the loop's contract is still
 // the completed message.
+//
+// The delta hook is an output boundary, not the provider wire. A model can copy
+// the request-side runtime state into its prose, so the live text is projected
+// through the same sanitizer the completed answer uses. A consumer never sees a
+// runtime directive that the final answer would withhold, and the live text
+// stays a prefix of the completed text even when a trigger is split across
+// deltas.
 func (l *Loop) drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessage, error) {
-	return ai.DrainStreamHooks(ctx, stream, ai.DrainHooks{
-		OnText:     l.cfg.OnTextDelta,
-		OnThinking: l.cfg.OnThinkingDelta,
-	})
+	var textSanitizer, thinkingSanitizer *answerStreamSanitizer
+	hooks := ai.DrainHooks{}
+	if l.cfg.OnTextDelta != nil {
+		textSanitizer = newAnswerStreamSanitizer()
+		hooks.OnText = func(delta string) {
+			if public := textSanitizer.Write(delta); public != "" {
+				l.cfg.OnTextDelta(public)
+			}
+		}
+	}
+	// Reasoning is a public block in the UI, not a private scratchpad. It is a
+	// separate channel, but the runtime-state boundary still applies: a model
+	// that copies the request briefing into its reasoning must not publish the
+	// orchestration state through the expanded reasoning view.
+	if l.cfg.OnThinkingDelta != nil {
+		thinkingSanitizer = newAnswerStreamSanitizer()
+		hooks.OnThinking = func(delta string) {
+			if public := thinkingSanitizer.Write(delta); public != "" {
+				l.cfg.OnThinkingDelta(public)
+			}
+		}
+	}
+	message, err := ai.DrainStreamHooks(ctx, stream, hooks)
+	if textSanitizer != nil {
+		if tail := textSanitizer.Flush(); tail != "" {
+			l.cfg.OnTextDelta(tail)
+		}
+	}
+	if thinkingSanitizer != nil {
+		if tail := thinkingSanitizer.Flush(); tail != "" {
+			l.cfg.OnThinkingDelta(tail)
+		}
+	}
+	return message, err
 }
 
 // runEdit tracks one run's optional edit transaction.

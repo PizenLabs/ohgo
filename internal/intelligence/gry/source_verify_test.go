@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/intelligence/evidence"
@@ -105,8 +106,9 @@ func TestSourceVerificationWithoutRootIsUnknown(t *testing.T) {
 }
 
 // Trace and search payloads do not carry a generation today. The adapter must
-// not treat their success as current; it verifies the source instead.
-func TestTraceWithoutGenerationIsVerifiedAgainstSource(t *testing.T) {
+// not treat their success as current; it verifies the endpoints, while the
+// relationship between them stays UNVERIFIED.
+func TestTraceWithoutGenerationVerifiesEndpointsButNotEdges(t *testing.T) {
 	root := t.TempDir()
 	writeSource(t, root, "order/service.go", "package order\nfunc NewOrder() {}\nfunc Place() { NewOrder() }\n")
 	run := &recordedRun{reply: func(args []string) ([]byte, []byte, error) {
@@ -122,8 +124,14 @@ func TestTraceWithoutGenerationIsVerifiedAgainstSource(t *testing.T) {
 	if obs.Outcome != investigate.OutcomeSuccess && obs.Outcome != investigate.OutcomePartial {
 		t.Fatalf("outcome = %s, issues=%v", obs.Outcome, obs.Issues)
 	}
-	if len(obs.Records) == 0 || obs.Records[0].Freshness != evidence.FreshnessCurrent {
-		t.Fatalf("records = %+v, want CURRENT verified endpoints", obs.Records)
+	if len(obs.Records) == 0 || obs.Records[0].Freshness != evidence.FreshnessUnverified {
+		t.Fatalf("records = %+v, want UNVERIFIED edge freshness", obs.Records)
+	}
+	if len(obs.Facts) == 0 || obs.Facts[0].Freshness != evidence.FreshnessUnverified {
+		t.Fatalf("facts = %+v, want the edge fact marked UNVERIFIED", obs.Facts)
+	}
+	if !strings.Contains(strings.Join(obs.Issues, " "), "edges are UNVERIFIED") {
+		t.Fatalf("issues = %v, want the edge-freshness boundary", obs.Issues)
 	}
 }
 
@@ -149,5 +157,52 @@ func TestTraceStaleRowDowngradesObservation(t *testing.T) {
 		if record.Freshness != evidence.FreshnessStale {
 			t.Fatalf("record freshness = %s, want STALE", record.Freshness)
 		}
+	}
+}
+
+// A current node does not make the relationships around it current. Context
+// carries both, so the node record stays CURRENT while the edge record is
+// explicitly UNVERIFIED.
+func TestContextKeepsNodeAndEdgeFreshnessSeparate(t *testing.T) {
+	root := t.TempDir()
+	writeSource(t, root, "order/service.go", "package order\nfunc NewOrder() {}\nfunc Place() { NewOrder() }\n")
+	run := &recordedRun{reply: func(args []string) ([]byte, []byte, error) {
+		return []byte(`{
+			"status":"ok","generation":"gen-1",
+			"evidence":{"complete_for_scope":true,"freshness":"current"},
+			"nodes":[
+				{"qn":"order.NewOrder","label":"Function","file":"order/service.go","lines":[2,2],"role":"target","distance":0,"provenance":"verified"},
+				{"qn":"order.Place","label":"Function","file":"order/service.go","lines":[3,3],"role":"context","distance":1,"provenance":"verified"}
+			],
+			"relationships":[
+				{"source":"order.Place","target":"order.NewOrder","type":"CALLS","direction":"outbound","provenance":"verified","observed":true}
+			]
+		}`), nil, nil
+	}}
+	provider := newWithRunner(Config{Root: root, Project: "proj", Timeout: 1, MaxRows: 10, MaxDepth: 2}, run.run)
+	obs, err := provider.Observe(context.Background(), investigate.Request{Intent: planner.IntentDebug, Question: "why does Place call NewOrder", Focus: "order.NewOrder"}, planner.Step{Strategy: "test"}, testMeter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawNode, sawEdge bool
+	for _, record := range obs.Records {
+		switch record.Relation {
+		case "appears_in_context":
+			sawNode = true
+			if record.Freshness != evidence.FreshnessCurrent {
+				t.Fatalf("node freshness = %s, want CURRENT: %+v", record.Freshness, record)
+			}
+		case "CALLS":
+			sawEdge = true
+			if record.Freshness != evidence.FreshnessUnverified {
+				t.Fatalf("edge freshness = %s, want UNVERIFIED: %+v", record.Freshness, record)
+			}
+		}
+	}
+	if !sawNode || !sawEdge {
+		t.Fatalf("records = %+v, want both a node and an edge", obs.Records)
+	}
+	if !strings.Contains(strings.Join(obs.Issues, " "), "edges are UNVERIFIED") {
+		t.Fatalf("issues = %v, want the edge boundary", obs.Issues)
 	}
 }

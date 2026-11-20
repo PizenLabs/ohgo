@@ -133,6 +133,12 @@ const (
 	// is not STALE (the evidence did not contradict the index) and not UNKNOWN
 	// (freshness was not merely absent): the check itself was impossible.
 	FreshnessUnavailable Freshness = "UNAVAILABLE"
+	// FreshnessUnverified means the coordinates are readable and current, but
+	// the asserted relationship itself was not checked against the current
+	// source or a current structural snapshot. A current node is not proof of a
+	// current edge. Consumers must present this state as a candidate
+	// relationship, never as a current fact.
+	FreshnessUnverified Freshness = "UNVERIFIED"
 )
 
 // Ref is one provenance coordinate.

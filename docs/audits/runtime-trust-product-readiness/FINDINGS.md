@@ -58,9 +58,33 @@ keeps command/server/package-runner forms as execution.
 
 A model can copy the request-side `# Runtime state (authoritative, not a user
 request)` block or its `Sufficiency:` / `Available actions:` lines. The final
-answer is now sanitized before storage/publication. The sanitizer preserves
+answer is sanitized before storage/publication. The sanitizer preserves
 fenced code and model-authored limitations; an all-state answer becomes empty
 and is reviewed.
+
+### OHGO-ISO-002 — Runtime-state leakage into the live stream
+
+The final-only sanitizer left the live delta channel raw. The new online
+sanitizer is shared by `Loop.drain` and the completed answer, and
+`TranscriptTurn` sanitizes every turn a host may publish or persist. It holds
+only a line-start prefix that could still become a runtime line, so an
+arbitrary delta split cannot leak a partial directive. See
+`STREAMING_ISOLATION.md`.
+
+### OHGO-GRY-005 — Current nodes made unverified edges look current
+
+Endpoint verification was applied to the whole observation, so every
+relationship record inherited `CURRENT`. The adapter now keeps node and edge
+freshness separate and uses `UNVERIFIED` for a relationship whose endpoints are
+current but whose edge was not checked. See `EDGE_FRESHNESS.md`.
+
+### OHGO-COMP-005/006/007 — General claim grounding and real-model false positives
+
+The closure phase added an entity-to-evidence association that is independent
+of the predicate vocabulary, an absence contradiction for observed entities,
+and two calibration fixes found by real models: a prose adjective is no longer
+an invented member, and an explicit evidence gap is no longer a repository
+absence. See `CLAIM_GROUNDING.md`.
 
 ### OHGO-GRY-004 — GRY trace/search freshness was unknown and unverified
 
@@ -115,15 +139,13 @@ module resolution remains a documented limitation.
    resolution is not implemented.
 2. **Non-Go semantics**: Tree-sitter is syntax-level; no TypeScript/Java/etc.
    language server.
-3. **GRY edge freshness**: endpoints are source-verified; an edge can still be
-   stale in a way the payload cannot prove.
-4. **Completion claim vocabulary**: deterministic and finite. A plausible claim
-   outside the audited shapes can pass.
-5. **Streaming leakage**: final output is sanitized; live deltas can briefly
-   show runtime text before the completed turn is replaced.
-6. **Authority classifier conservatism**: ambiguous prose can under-authorize
+3. **GRY edge verification**: relationships are honestly `UNVERIFIED`; per-edge
+   verification is not implemented.
+4. **Claim grounding**: general for explicit code entities but not a semantic
+   parser. A plausible claim outside the audited shapes can pass.
+5. **Authority classifier conservatism**: ambiguous prose can under-authorize
    (READ instead of FUZZ); it does not over-authorize.
-7. **Model coverage**: cohere/north-mini unavailable; longcat sample is one
-   successful run after prior 429s.
-8. **Provider-dependent token accounting**: a provider that reports no usage is
+6. **Model coverage**: cohere/north-mini unavailable; Ling 3.2 Flash 429;
+   LongCat/Nemotron samples are small.
+7. **Provider-dependent token accounting**: a provider that reports no usage is
    represented as unknown, not estimated.

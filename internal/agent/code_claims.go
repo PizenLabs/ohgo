@@ -30,6 +30,17 @@ var identifierTokenPattern = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]{2,}\b`)
 // in prose does not identify a project-specific contract. A real project prop
 // is not in this list; skipping these avoids reviewing a correct answer that
 // mentions React's own vocabulary.
+// codeClaimAdjectives are prose quantifiers and descriptors, not identifiers.
+// A model can write "accepts a single prop" without naming a code member; the
+// adjacent-identifier form must not turn that adjective into one.
+var codeClaimAdjectives = map[string]bool{
+	"single": true, "multiple": true, "one": true, "two": true, "three": true,
+	"optional": true, "required": true, "additional": true, "extra": true,
+	"first": true, "second": true, "third": true, "same": true, "other": true,
+	"every": true, "each": true, "any": true, "all": true, "only": true,
+	"top": true, "main": true, "primary": true, "key": true, "value": true,
+}
+
 var codeClaimStopWords = map[string]bool{
 	"children": true, "classname": true, "key": true, "ref": true,
 	"id": true, "name": true, "type": true, "value": true, "data": true,
@@ -71,7 +82,8 @@ func codeClaimIssues(sentence string, turns []Turn) []claimIssue {
 	var issues []claimIssue
 	for _, match := range identifiers {
 		identifier := strings.TrimSpace(match[1])
-		if identifier == "" || codeClaimStopWords[strings.ToLower(identifier)] {
+		if identifier == "" || codeClaimStopWords[strings.ToLower(identifier)] ||
+			codeClaimAdjectives[strings.ToLower(identifier)] {
 			continue
 		}
 		all := joinObservationText(observations)
@@ -113,12 +125,28 @@ func codeClaimIssues(sentence string, turns []Turn) []claimIssue {
 // "<identifier> prop" / "prop <identifier>" shape without backticks.
 func adjacentIdentifierClaims(sentence string) [][]string {
 	var out [][]string
-	out = append(out, regexp.MustCompile(
+	add := func(matches [][]string) {
+		for _, match := range matches {
+			if len(match) < 2 {
+				continue
+			}
+			identifier := match[1]
+			// An unbackticked identifier must look like code. Lowercase prose
+			// adjectives ("single prop", "optional field") are not identifiers;
+			// treating them as names produced false reviews against a made-up
+			// subject such as the sentence's first capitalised word.
+			if !containsUpper(identifier) && !strings.Contains(identifier, "_") {
+				continue
+			}
+			out = append(out, match)
+		}
+	}
+	add(regexp.MustCompile(
 		`(?i)\b(?:props?|fields?|attributes?|parameters?|arguments?)\s+(?:named\s+|called\s+)?([A-Za-z_][A-Za-z0-9_]{2,})\b`).
-		FindAllStringSubmatch(sentence, -1)...)
-	out = append(out, regexp.MustCompile(
+		FindAllStringSubmatch(sentence, -1))
+	add(regexp.MustCompile(
 		`\b([A-Za-z_][A-Za-z0-9_]{2,})\s+(?:prop|field|attribute|parameter|argument)\b`).
-		FindAllStringSubmatch(sentence, -1)...)
+		FindAllStringSubmatch(sentence, -1))
 	return out
 }
 

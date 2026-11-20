@@ -2,9 +2,11 @@
 
 Verdict: **CONDITIONALLY READY**
 
-No critical authority, data-integrity, or trust defect found in the exercised
-paths remains unfixed. The remaining items are documented capability limits and
-provider-dependent verification gaps, not silent false-success paths.
+Closure result: the P0 public-stream boundary and the P1 edge-representation
+and entity-association items are closed. No critical authority, data-integrity,
+or trust defect found in the exercised paths remains unfixed. The remaining
+items are documented capability limits and provider-dependent verification
+gaps, not silent false-success paths.
 
 ## Gate A — Completion integrity
 
@@ -19,11 +21,21 @@ Evidence:
 - One bounded correction turn is available; a second failure is returned to the
   host as `NEEDS_REVIEW`.
 - The LongCat blog regression is satisfied in both directions: a careful
-  bounded overview completed, and a later “no tests”/“no ESLint config”
-  overclaim was correctly returned as `NEEDS_REVIEW`.
+  bounded overview completed, and a later “no tests” overclaim was correctly
+  returned as `NEEDS_REVIEW`.
+- A general entity-to-evidence association now reviews an explicit code span
+  that no observation contains, even when the sentence uses a predicate outside
+  the vocabulary.
+- A negative existential claim about an observed entity is reviewed as a
+  contradiction.
+- Real-model false positives were removed: a prose adjective is no longer an
+  invented member, and an explicit evidence gap is no longer a repository
+  absence.
 
-Residual limit: the claim audit is a finite deterministic vocabulary. A
-plausible unsupported claim outside the audited shapes can still pass.
+Residual limit: the association is general for explicit code entities, but the
+claim audit is still not a semantic parser. A plausible unsupported claim that
+names no code entity, or names an observed entity while asserting a behavior the
+observation does not establish, can still pass.
 
 ## Gate B — Authority integrity
 
@@ -44,7 +56,7 @@ That narrows capability and is documented.
 
 ## Gate C — Evidence integrity
 
-**Status: PASS with a documented edge-freshness limit.**
+**Status: PASS. Node and edge freshness are separate.**
 
 Evidence:
 
@@ -54,10 +66,13 @@ Evidence:
 - Native-first routing avoids external calls when native is sufficient.
 - Trace/search coordinates are verified against current source; missing/moved
   source is `STALE`, unreadable/outside-root is `UNAVAILABLE`.
+- A current endpoint set makes a relationship `UNVERIFIED`, never `CURRENT`.
+  The state is carried on the edge fact and stated once in the issues.
 - Stale external evidence downgrades the combined observation.
 - The structure header discloses sibling-module ambiguity.
 
-Residual limit: endpoint verification does not prove every edge is current.
+Residual limit: per-edge verification is not implemented. The representation
+is honest, not a proof of every current relationship.
 
 ## Gate D — Operational integrity
 
@@ -98,10 +113,12 @@ Evidence:
 **Status: PASS with provider availability gaps.**
 
 - `beam-free`, ERNIE, and LongCat were exercised on both repositories.
+- Closure-phase samples added LongCat (blog review, ecommerce completion),
+  Nemotron (blog and ecommerce), and Ling 3.2 Flash (429).
 - Cohere north-mini was absent from the live OpenRouter roster; recorded, not
   treated as an OHGO defect.
-- Prior LongCat 429s are recorded; one successful run is not a reliability
-  verdict.
+- Ling 3.2 Flash returned an upstream 429 with zero provider turns and zero
+  measured tokens.
 - No local model and no paid fallback was used.
 - Measured token usage is recorded for every completed run.
 
@@ -119,23 +136,28 @@ Executed:
 - `gofmt -l .` (empty)
 - `golangci-lint run ./...` (0 issues)
 - `make bench`
-- `make build`
-- `make build-multilang`
+- `make build` (portable hash `c1e6ef06…`)
+- `make build-multilang` (multi-language hash `a1d30334…`)
+
+Exact counts and per-gate evidence are in `VERIFICATION_EVIDENCE.md`; the
+file-by-file review is in `DIFF_REVIEW.md`.
 
 ## Why not PRODUCT READY
 
 The product is not declared fully ready because:
 
-1. Completion is deterministic but not complete: a plausible unsupported claim
-   outside the audited vocabulary can still pass.
+1. Claim grounding is general for explicit code entities but still not a
+   semantic parser; an unsupported claim outside the audited shapes can pass.
 2. Multi-module Go cross-module resolution remains unimplemented.
 3. No non-Go semantic resolution exists beyond syntax-level Tree-sitter facts.
-4. GRY edge freshness cannot be proven from the interface payload.
-5. The free-model matrix has a provider availability gap (cohere absent) and a
-   small LongCat sample.
+4. GRY relationships are honestly `UNVERIFIED`, but per-edge verification is
+   not implemented.
+5. The free-model matrix has a provider availability gap (cohere absent, Ling
+   429) and a small sample per model.
 
 None of these is a silent authority or data-integrity failure. They are explicit
-limits that a user can see and reason about.
+limits that a user can see and reason about. The public stream no longer leaks
+runtime directives, and an unverified edge is no longer presented as current.
 
 ## Protected repository integrity
 

@@ -94,3 +94,16 @@ func TestCodeClaimReachesGroundingAssessment(t *testing.T) {
 		t.Fatalf("grounding = %+v, want a code-claim review", assessment)
 	}
 }
+
+// "Based on the source, TerminalBlog accepts a single prop" is prose, not a
+// member named "single" on a component named "Based". The adjective must not
+// become an invented-identifier review.
+func TestCodeClaimIgnoresProseAdjectiveBeforeProp(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("components/TerminalBlog.tsx", terminalBlogSource),
+	}}}
+	answer := "Based on my investigation of the source code, `TerminalBlog` accepts a single `publishedAt` prop."
+	if issues := claimScopeIssues(answer, turns); len(issues) != 0 {
+		t.Fatalf("prose quantifier was treated as an identifier: %+v", issues)
+	}
+}

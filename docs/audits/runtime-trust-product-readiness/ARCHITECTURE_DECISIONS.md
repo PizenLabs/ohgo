@@ -88,3 +88,42 @@ The README now states:
 - DAP is observation-only for an already-authorized stopped session;
 - `ohgo update` refuses to replace a multi-language install with a portable
   release.
+
+## D9 — One online boundary for live and completed text
+
+The runtime state block is request-side orchestration. The public answer and the
+live delta channel are the same publication viewed at different times, so they
+share one sanitizer. The sanitizer is incremental: it holds only a line-start
+prefix that could still become a runtime line.
+
+Rejected alternative: sanitize only the completed answer. That leaves the live
+stream as a second, weaker publication path and makes the two outputs drift.
+
+Rejected alternative: buffer whole lines before publishing. That would delay
+ordinary prose at every line boundary and weaken the streaming contract.
+
+## D10 — Node freshness and edge freshness are separate facts
+
+A node can be current while the relationship between two nodes is stale. The
+adapter verifies endpoints cheaply and reports edges as `UNVERIFIED` unless a
+current structural observation or source read binds both endpoints.
+
+Rejected alternative: apply one observation-level freshness to every record.
+That is the defect this decision closes.
+
+Rejected alternative: verify every edge against source on every trace. That
+turns a bounded query into a repository scan and still does not prove semantic
+dispatch.
+
+## D11 — Entity association before predicate enumeration
+
+The claim audit may know only a finite predicate vocabulary, but it can always
+ask whether an explicit code name was observed. That question is independent of
+the verb and catches invented identifiers in novel sentence shapes.
+
+Rejected alternative: keep adding behavior verbs. The vocabulary grows without
+bound and still misses the next phrasing.
+
+Rejected alternative: use an LLM judge for every claim. That adds a second
+model, nondeterminism, cost, and a new authority surface to the completion
+boundary.

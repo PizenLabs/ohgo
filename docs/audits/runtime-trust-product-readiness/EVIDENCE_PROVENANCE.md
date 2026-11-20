@@ -41,6 +41,7 @@ correctness and never authorizes an action.
 | `STALE` | The source moved, disappeared, or no longer contains the symbol; the provider said stale; or a bounded result admits incompleteness. |
 | `UNKNOWN` | No freshness information and no endpoint could be verified. |
 | `UNAVAILABLE` | The source needed to establish freshness could not be read (missing root, outside-root path, unreadable or oversized file). |
+| `UNVERIFIED` | The endpoint coordinates are current, but the asserted relationship itself was not checked against current source or a current structural snapshot. A current node is not proof of a current edge. |
 
 `trace` and `search` payloads do not expose a generation today. The adapter
 therefore verifies their file/line/symbol coordinates against the current
@@ -54,8 +55,24 @@ workspace:
 This verifies endpoints, not every edge. The record keeps the provider's own
 observation flag and snapshot identity, and the summary says what was verified.
 
+Node and edge freshness are separate. Trace and context relationship records
+use `UNVERIFIED` when only their endpoints are current:
+
+- a node record (`declared_at`, `appears_in_context`) can be `CURRENT`;
+- an edge record (`CALLS`, `IMPORTS`, `depends_on`, …) is `UNVERIFIED` unless a
+  current structural observation or source read binds both endpoints;
+- an edge fact carries the state in the investigation output
+  (`[structural/gry UNVERIFIED]`), not only in a summary line;
+- a stale or unavailable observation downgrades both nodes and edges.
+
+This closes the representation defect: an unverified edge is never presented as
+a current fact. It does not implement per-edge verification, which remains a
+capability limit.
+
 `context` payloads do carry generation/freshness; their nodes and tests are
-also checked against current source.
+also checked against current source. Their `Relationships` rows use the same
+node/edge split: nodes can be `CURRENT`, relationships are `UNVERIFIED` unless
+the provider supplies a current per-edge proof.
 
 ## 3. Source verification and completion
 

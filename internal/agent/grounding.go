@@ -371,7 +371,7 @@ func negativeClaims(answer string) []negativeClaim {
 	var out []negativeClaim
 	add := func(value string, global bool) {
 		value = cleanClaimSubject(value)
-		if value == "" {
+		if value == "" || claimSubjectIsEvidenceGap(value) {
 			return
 		}
 		for _, existing := range out {
@@ -400,6 +400,13 @@ func negativeClaims(answer string) []negativeClaim {
 			if changeReportPattern.MatchString(answer[match[1]:]) {
 				continue
 			}
+			if claimIsEvidenceGap(answer, match[3]) {
+				// "No runtime or configuration evidence" is a statement about
+				// this run's observations, not a repository absence. Treating
+				// an epistemic limitation as a negative conclusion punishes the
+				// answer for being explicit about what it did not observe.
+				continue
+			}
 			value := answer[match[2]:match[3]]
 			global := repositoryWide || claimContextIsGlobal(answer, match[0], match[1])
 			add(value, global)
@@ -413,6 +420,42 @@ func negativeClaims(answer string) []negativeClaim {
 	addMatches(negativeMissingPattern, false)
 	addMatches(negativeAbsenceOfPattern, false)
 	return out
+}
+
+// claimSubjectIsEvidenceGap reports a subject that names the run's evidence
+// rather than a repository artifact.
+func claimSubjectIsEvidenceGap(subject string) bool {
+	subject = strings.ToLower(strings.TrimSpace(subject))
+	for _, suffix := range []string{"evidence", "observation", "observations", "information", "data"} {
+		if subject == suffix || strings.HasSuffix(subject, " "+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// claimIsEvidenceGap reports whether the words after an absence span make it a
+// statement about the run's evidence ("no runtime evidence", "no configuration
+// evidence available") rather than a claim that the repository lacks the thing.
+func claimIsEvidenceGap(answer string, end int) bool {
+	if end < 0 || end >= len(answer) {
+		return false
+	}
+	limit := end + 48
+	if limit > len(answer) {
+		limit = len(answer)
+	}
+	rest := strings.ToLower(strings.TrimSpace(answer[end:limit]))
+	for _, suffix := range []string{
+		"evidence", "evidence available", "evidence was available",
+		"evidence observed", "observation", "observations",
+		"data", "data available", "information", "information available",
+	} {
+		if strings.HasPrefix(rest, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // claimContextIsGlobal reports whether the sentence containing a claim names

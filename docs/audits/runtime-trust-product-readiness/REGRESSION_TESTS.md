@@ -13,6 +13,12 @@
 | `TestCodeClaimRejectsInventedPropAgainstObservedDeclaration` | An invented prop contradicted by the observed declaration is reviewed. |
 | `TestCodeClaimAcceptsObservedDeclaredProp` | A declared prop is accepted. |
 | `TestCodeClaimSkipsWhenNoSourceWasObserved` | A resumed answer is not punished for absent current evidence. |
+| `TestCodeClaimIgnoresProseAdjectiveBeforeProp` | “a single prop” is prose, not a member named `single`. |
+| `TestEntityClaimRejectsInventedIdentifierWithNovelPredicate` | A code name no observation contains is reviewed even with an unknown predicate. |
+| `TestEntityClaimAcceptsObservedIdentifier` | A code name the run observed is accepted. |
+| `TestEntityClaimDoesNotMatchInsideAnotherIdentifier` | `Order` is not supported by `NewOrderView`. |
+| `TestEntityClaimRejectsAbsenceContradictedByObservation` | “Does not exist” against an observed entity is reviewed. |
+| `TestEvidenceGapIsNotANegativeRepositoryClaim` | “No runtime or configuration evidence” is a run limitation, not a repository absence. |
 | `TestAnswerReviewCorrectsMissingFacetOnce` | One correction turn fixes a missing facet. |
 | `TestAnswerReviewStopsAfterOneCorrection` | A repeated failure does not loop. |
 | `TestAnswerReviewCorrectsInventedProp` | The corrected answer uses the observed declaration. |
@@ -53,11 +59,20 @@ go test ./internal/control/workspace ./cmd/ohgo -run 'Authority|Participial|Usin
 | `TestSanitizeAnswerKeepsLegitimateStandaloneSection` | A model's own `Verification:` section is preserved. |
 | `TestSanitizeAnswerLeavesFencedCodeUntouched` | Code fences are data, not orchestration. |
 | `TestSanitizeAnswerDoesNotFallBackToCopiedState` | An all-state answer becomes empty and is reviewed. |
+| `TestAnswerStreamWithholdsCopiedRuntimeStateAtEveryChunkBoundary` | Every split of the copied block is withheld and matches the completed answer. |
+| `TestAnswerStreamRemovesStandaloneRuntimeDirective` | A fixed no-tool directive is withheld live. |
+| `TestAnswerStreamWithholdsStandaloneRuntimeFields` | Internal fields are withheld before the header arrives. |
+| `TestAnswerStreamKeepsLegitimateProseAndFencedExamples` | Normal prose and code fences are unchanged. |
+| `TestLoopStreamsOnlyPublicAnswerText` | The loop's live channel and completed turn both withhold runtime state. |
+| `TestLiveTranscriptWithholdsRuntimeState` | The TUI's public delta channel and stored transcript withhold runtime state. |
+| `TestLoopWithholdsRuntimeStateFromReasoning` | A copied state block in reasoning does not reach the expanded reasoning view. |
 
 Run:
 
 ```sh
-go test ./internal/agent -run TestSanitize
+go test ./internal/agent -run 'TestSanitize|TestAnswerStream|TestLoopStreamsOnlyPublicAnswerText|TestTranscriptTurn'
+go test ./internal/agent -run 'TestEntityClaim|TestCodeClaim|TestEvidenceGap'
+go test ./internal/tui -run 'TestLiveTextDeltasRevealWithoutDuplication|TestLongTurnReachesTranscriptInOrder'
 ```
 
 ## Evidence and GRY
@@ -70,7 +85,8 @@ go test ./internal/agent -run TestSanitize
 | `TestSourceVerificationOutsideRootIsUnavailable` | Outside-root source is UNAVAILABLE. |
 | `TestSourceVerificationSymlinkOutsideRootIsUnavailable` | A symlink cannot smuggle an outside file into evidence. |
 | `TestSourceVerificationWithoutRootIsUnknown` | No root is UNKNOWN, not CURRENT. |
-| `TestTraceWithoutGenerationIsVerifiedAgainstSource` | A trace with no generation is verified against source. |
+| `TestTraceWithoutGenerationVerifiesEndpointsButNotEdges` | Endpoints are current; the relationship is `UNVERIFIED`. |
+| `TestContextKeepsNodeAndEdgeFreshnessSeparate` | Context nodes can be `CURRENT` while relationships are `UNVERIFIED`. |
 | `TestTraceStaleRowDowngradesObservation` | A stale trace row downgrades the observation. |
 | `TestStaleContextIsMarkedAndBounded` | Context freshness and truncation are preserved. |
 | `TestRouterNeverPresentsStaleExternalEvidenceAsCurrent` | Stale external evidence does not become current. |

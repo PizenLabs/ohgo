@@ -53,14 +53,24 @@ analysis cannot see.
 
 ## 2. Claim grounding
 
-Code-level claims are checked against observed source:
+Code-level claims are checked against observed evidence:
 
 - A prop/field/parameter/member marked as code must appear in a source
   observation from this run.
 - If the declaration of the named component/type was observed and the member is
   absent, that is a contradiction and a review boundary.
-- If no source was observed, the check does not invent a review from absence:
-  a resumed answer may rely on earlier evidence.
+- An explicit code span asserted as fact must appear in a successful
+  observation from this run, even when the sentence uses a predicate outside
+  the behavior vocabulary. Boundary matching prevents `Order` from being
+  supported by `NewOrderView`.
+- A negative existential claim about an observed entity is a contradiction.
+- If no observation exists, the check does not invent a review from absence: a
+  resumed answer may rely on earlier evidence.
+
+An explicit evidence gap is not a repository absence. “No runtime or
+configuration evidence” describes what this run observed; it does not assert
+that the project has no runtime or configuration. The negative-claim layer
+excludes evidence/observation/information/data subjects for that reason.
 
 Documentation-only terms, runtime-behavior claims, deployment claims, line
 counts, test counts, and global negative conclusions keep their existing
@@ -107,13 +117,18 @@ correction directive disables the retry.
 | “`TerminalBlog` accepts a `showDetails` prop” with only `posts` in the observed declaration. | REVIEW | Contradicts observed source. |
 | “`TerminalBlog` accepts a `posts` prop.” | PASS | Present in the observed declaration. |
 | A copied `# Runtime state …` block only. | REVIEW | Sanitized to empty; no project finding. |
+| “The `PaymentReconciler` harmonizes ledgers” with no observation of that name. | REVIEW | Entity-to-evidence association; the predicate is irrelevant. |
+| “The `PaymentReconciler` does not exist” while source contains it. | REVIEW | Negative existential claim contradicted by observation. |
+| “Based on the source, TerminalBlog accepts a single prop.” | PASS after calibration | `single` is prose, not a member name. |
+| “No source was read, so there is no runtime or configuration evidence.” | PASS after calibration | Evidence gap, not repository absence. |
 
 ## 6. Limits
 
-- The claim audit is a finite deterministic vocabulary. It does not judge
-  whether a supported claim is true.
-- A claim outside the audited shapes can still pass. The tested high-risk
-  shapes are named in the bug ledger.
+- Claim grounding is general for explicit code entities, but it is not a
+  semantic parser. It does not judge whether a supported claim is true.
+- A claim that names no code entity, or that names an observed entity while
+  asserting a behavior the observation does not establish, can still pass. The
+  tested high-risk shapes are named in the bug ledger.
 - The correction loop is bounded to one turn; it is not an unbounded agent
   retry.
 - A resumed answer's prior evidence is not replayed into the code-claim check;
