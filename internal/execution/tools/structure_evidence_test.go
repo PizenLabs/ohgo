@@ -3,6 +3,8 @@ package tools
 import (
 	"strings"
 	"testing"
+
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
 // A metadata-first overview cannot report zero packages or entrypoints as an
@@ -25,6 +27,38 @@ func TestOverviewQualifiesUnparsedCounts(t *testing.T) {
 		if !strings.Contains(result.Text, want) {
 			t.Fatalf("overview = %s\nmissing %q", result.Text, want)
 		}
+	}
+}
+
+// A targeted files view is path-scoped: it parses only the selected directory
+// and reports the rest as pending instead of paying for a whole repository
+// parse or silently implying the whole snapshot was analysed.
+func TestTargetedFilesViewParsesOnlySelectedPath(t *testing.T) {
+	root := structureFixture(t, map[string]string{
+		"alpha/a.go": "package alpha\n\nfunc Alpha() {}\n",
+		"beta/b.go":  "package beta\n\nfunc Beta() {}\n",
+	})
+	tool := NewStructureTool(NewStructuralSource(root))
+	result := tool.Execute(testContext(), map[string]any{
+		"view": "files", "path": "alpha", "activation": "targeted",
+	})
+	if result.IsError {
+		t.Fatalf("files: %s", result.Text)
+	}
+	details := structureDetails(t, result)
+	snapshot, ok := details["snapshot"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot = %T", details["snapshot"])
+	}
+	if snapshot["parsed_files"] != 1 || snapshot["pending_files"] != 1 {
+		t.Fatalf("snapshot = %+v, want parsed=1 pending=1", snapshot)
+	}
+	files, ok := details["files"].([]map[string]any)
+	if !ok || len(files) != 1 {
+		t.Fatalf("files = %+v, want the alpha row", details["files"])
+	}
+	if files[0]["state"] != string(ast.ParseStateParsed) {
+		t.Fatalf("file state = %v, want PARSED", files[0]["state"])
 	}
 }
 

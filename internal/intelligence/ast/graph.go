@@ -225,7 +225,7 @@ func buildPackageGraph(records map[string]fileRecord, module, moduleRoot, walkRo
 	}
 	names := map[string]*dirNames{}
 	for rel, rec := range records {
-		if !rec.parsed || rec.err != nil || rec.language != "go" {
+		if !rec.current() || rec.language != "go" {
 			continue
 		}
 		dir := packageDir(rel)
@@ -300,7 +300,7 @@ func buildPackageGraph(records map[string]fileRecord, module, moduleRoot, walkRo
 	// Second pass: aggregate imports into edges. External imports are a
 	// count; module-local imports that do not resolve are explicit.
 	for rel, rec := range records {
-		if !rec.parsed || rec.err != nil || rec.language != "go" {
+		if !rec.current() || rec.language != "go" {
 			continue
 		}
 		dir := packageDir(rel)
@@ -815,6 +815,9 @@ func (idx *Index) resolveGraphFocalLocked(query GraphQuery) (focal string, ambig
 	// declarations in one directory resolve to one package node.
 	dirs := map[string]bool{}
 	for rel, rec := range idx.files {
+		if !rec.current() {
+			continue
+		}
 		for _, sym := range rec.symbols {
 			if sym.Name == query.Symbol || sym.QualifiedName == query.Symbol {
 				dirs[packageDir(rel)] = true

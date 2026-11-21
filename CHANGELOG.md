@@ -7,6 +7,15 @@ immutable.
 
 ### Added
 
+- `ast.ParseState` gives every inventory row one explicit structural state:
+  `PARSED`, `PARTIAL`, `PENDING`, `FAILED`, `UNSUPPORTED`, `STALE`, or
+  `INVENTORY`. `SnapshotInfo.stale_files`, per-language `stale`, and structural
+  `coverage.stale_files` make unobservable declarations visible instead of
+  folding them into "parsed".
+- `ast.Index.EnsureParsedScope` parses only the pending source beneath a file
+  or directory. A targeted `structure` `files` view with `path` uses it, so a
+  scoped inventory no longer pays for a whole-repository parse; everything
+  outside the scope stays `PENDING` and is reported as such.
 - A deterministic terminal visualization engine:
   `internal/presentation/chart` owns a strongly typed dataset/spec, a
   rule-based planner, adaptive layout, an exact table, horizontal bars,
@@ -38,6 +47,11 @@ immutable.
 
 ### Fixed
 
+- A directory that becomes unreadable no longer keeps serving its last parsed
+  declarations as current. The retained record is marked `STALE`, excluded from
+  lookups, references, calls, entrypoints, tests, and every graph, and makes
+  `structural_complete` false. Recovering the entry clears the state and
+  re-parses it.
 - A medium-width exact chart table no longer truncates numeric row labels.
   `20,000` was shortened to `20,00`, which still looked like a number but
   changed the datum; numeric labels now force the stacked exact-value form

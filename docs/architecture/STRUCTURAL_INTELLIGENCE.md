@@ -141,6 +141,16 @@ Coverage is independent of evidence: `Coverage.State` describes what was
 observed (files, parse, edges, truncation), and `Coverage.Complete()` is the
 only place a consumer may read "repository-wide claim supported".
 
+A file carries one `ast.ParseState`, not an independent set of booleans:
+`PARSED`, `PARTIAL`, `PENDING`, `FAILED`, `UNSUPPORTED`, `STALE`, or
+`INVENTORY`. The state is the contract; the accompanying reason is only an
+explanation. `STALE` means the last parsed declarations are retained because
+the entry became unreadable. Those declarations are historical: they are
+excluded from lookups, references, calls, entrypoints, tests, and every graph,
+and they make `structural_complete` false. They remain visible as inventory so
+"cannot see" never becomes a clean not-found. `INVENTORY` names a non-source
+artifact, which is known to exist but has no structural parse to claim.
+
 ## 4. Strategy portfolio
 
 A strategy is a named, versioned, costed analysis step with an explicit
@@ -281,6 +291,12 @@ Two caches exist, with different jobs.
 1. **Snapshot freshness** is owned by `ast.Index`. It stats the tree, parses
    added/changed files, reuses retained syntax for unchanged files, and
    publishes a new snapshot identity. This is process-local and incremental.
+   `EnsureParsed` parses every pending supported file; `EnsureParsedScope`
+   parses only the pending source beneath one or more files or directories.
+   The rest stays `PENDING` and the rebuilt projections describe that partial
+   state honestly. A later `EnsureParsed` converges to the whole snapshot;
+   scoped parsing is a cheaper first answer, not a second snapshot model. The
+   `structure` tool uses it for a targeted `files` view with a path.
 2. **Analysis reuse** is owned by `structural`. Entries are keyed by
    `SHA-256(schema, analyzer version, adapter fingerprint, root, snapshot id,
    normalized request)`. A changed tree, schema, analyzer, adapter set, Go

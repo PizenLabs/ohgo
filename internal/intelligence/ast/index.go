@@ -108,6 +108,9 @@ type fileRecord struct {
 	// declarations parses them before answering.
 	parsed  bool
 	partial bool
+	// stale marks a retained record whose entry can no longer be observed.
+	// Its syntax is historical: queries must not serve it as current.
+	stale   bool
 	issues  []ParseIssue
 	symbols []Match
 	// imports, references, and calls are the retained syntactic projection.
@@ -123,6 +126,13 @@ type fileRecord struct {
 	tests             []TestDecl
 	entrypoints       []Match
 	err               error
+}
+
+// current reports whether the record's declarations describe the file as it is
+// now. A stale record keeps historical syntax for diagnostics only; it is
+// never a query answer or a graph input.
+func (rec fileRecord) current() bool {
+	return rec.parsed && !rec.stale && rec.err == nil
 }
 
 // indexedKinds is the symbol taxonomy.
@@ -739,6 +749,7 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 	sort.Strings(paths)
 
 	parsed, reused := 0, 0
+	staleChanged := false
 	shouldParse := parseAll || !idx.adaptive
 	for _, rel := range paths {
 		if err := ctx.Err(); err != nil {
@@ -746,6 +757,12 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 		}
 		sig := scan.files[rel]
 		old, hadOld := idx.files[rel]
+		if hadOld && old.stale {
+			// Recovery from an unreadable entry changes the observable
+			// snapshot even when the new record is only a pending inventory
+			// fact, so the projections must be rebuilt.
+			staleChanged = true
+		}
 		language, isSource := LanguageForPath(rel)
 		adapter, hasAdapter := idx.adapters.AdapterFor(rel)
 		kind := fileKindForLanguage(rel, language, isSource)
@@ -775,7 +792,7 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 			continue
 		}
 
-		if hadOld && old.parsed && old.adapter == adapter.Name() &&
+		if hadOld && old.parsed && !old.stale && old.adapter == adapter.Name() &&
 			idx.snapshot[rel] == sig && !forceFull {
 			records[rel] = old
 			reused++
@@ -809,12 +826,17 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 
 	// Preserve records from an unreadable subtree. Their absence from the
 	// scan is "cannot see", not "deleted", and dropping them would turn a
-	// permission error into a false clean negative.
+	// permission error into a false clean negative. The retained facts are
+	// marked stale so no query can serve them as current declarations.
 	for rel, rec := range idx.files {
 		if _, seen := scan.files[rel]; seen {
 			continue
 		}
 		if underUnreadable(rel, scan.unreadable) {
+			if !rec.stale {
+				rec.stale = true
+				staleChanged = true
+			}
 			records[rel] = rec
 		}
 	}
@@ -840,7 +862,7 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 	if idx.adaptive && parsed == 0 && !parseAll {
 		resolution = "inventory_only"
 	}
-	needsProjection := forceFull || parsed > 0 || deletedParsed ||
+	needsProjection := forceFull || parsed > 0 || deletedParsed || staleChanged ||
 		scan.moduleSig != idx.moduleSig || scan.scopeFingerprint != idx.scopeFingerprint ||
 		(!idx.adaptive && (graph == nil || symbolGraph == nil || languageGraph == nil))
 	if needsProjection {
@@ -907,12 +929,23 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 // TARGETED/IMPACT activation step: inventory-only overviews never call it, so
 // a project question does not build a full cross-reference graph.
 func (idx *Index) ensureParsedLockedCtx(ctx context.Context) error {
+	return idx.parsePendingLockedCtx(ctx, nil)
+}
+
+// parsePendingLockedCtx parses pending source records. A nil include parses
+// every pending file; otherwise only records the predicate accepts are parsed.
+// The projections always cover the whole snapshot: an out-of-scope pending
+// file simply contributes no declarations yet.
+func (idx *Index) parsePendingLockedCtx(ctx context.Context, include func(string) bool) error {
 	if idx == nil || !idx.adaptive {
 		return nil
 	}
 	paths := make([]string, 0, len(idx.files))
 	for rel, rec := range idx.files {
-		if rec.parsed || rec.err != nil || !IsSourcePath(rel) {
+		if rec.parsed || rec.stale || rec.err != nil || !IsSourcePath(rel) {
+			continue
+		}
+		if include != nil && !include(rel) {
 			continue
 		}
 		if _, ok := idx.adapters.AdapterFor(rel); !ok {
@@ -937,7 +970,6 @@ func (idx *Index) ensureParsedLockedCtx(ctx context.Context) error {
 		records[rel] = rec
 	}
 	parsed := 0
-	newlyFailed := 0
 	for _, rel := range paths {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -954,8 +986,6 @@ func (idx *Index) ensureParsedLockedCtx(ctx context.Context) error {
 		records[rel] = rec
 		if rec.parsed {
 			parsed++
-		} else if rec.err != nil {
-			newlyFailed++
 		}
 	}
 	// A parse error is a published fact about the snapshot, not a reason to
@@ -980,8 +1010,10 @@ func (idx *Index) ensureParsedLockedCtx(ctx context.Context) error {
 	idx.lastParsed = parsed
 	idx.lastReused = len(records) - parsed
 	idx.lastResolution = "targeted_parse"
+	if include != nil {
+		idx.lastResolution = "scoped_parse"
+	}
 	idx.activation = ActivationImpact
-	_ = newlyFailed
 	return nil
 }
 
@@ -1333,6 +1365,9 @@ func (idx *Index) Symbols() ([]Match, error) {
 
 	var out []Match
 	for _, rec := range idx.files {
+		if !rec.current() {
+			continue
+		}
 		out = append(out, rec.symbols...)
 	}
 	sortSymbols(out)
@@ -1372,6 +1407,9 @@ func (idx *Index) Lookup(name string) ([]Match, error) {
 
 	var out []Match
 	for _, rec := range idx.files {
+		if !rec.current() {
+			continue
+		}
 		for _, s := range rec.symbols {
 			if s.Name == name || s.QualifiedName == name ||
 				(s.Kind == KindMethod && methodBaseName(s.Name) == name) {
@@ -1411,8 +1449,19 @@ func (idx *Index) File(path string) ([]Match, error) {
 	if !ok {
 		return nil, fmt.Errorf("ast: no indexed file %q", rel)
 	}
+	if rec.stale {
+		return nil, fmt.Errorf("ast: file %q is stale: its last declarations were observed before the entry became unreadable", rel)
+	}
 	if rec.err != nil {
 		return nil, rec.err
+	}
+	if !rec.parsed {
+		if language, ok := LanguageForPath(rel); ok {
+			if _, supported := idx.adapterLanguageSupported(language); !supported {
+				return nil, fmt.Errorf("ast: no adapter for %s file %q", language, rel)
+			}
+		}
+		return nil, fmt.Errorf("ast: file %q is inventoried but not parsed", rel)
 	}
 	// update stores each file's symbols in coordinate order.
 	return append([]Match(nil), rec.symbols...), nil
@@ -1431,6 +1480,9 @@ func (idx *Index) Package(name string) ([]Match, error) {
 
 	var out []Match
 	for _, rec := range idx.files {
+		if !rec.current() {
+			continue
+		}
 		for _, s := range rec.symbols {
 			if s.Package == name {
 				out = append(out, s)
@@ -1512,6 +1564,14 @@ func (idx *Index) infoLocked() SnapshotInfo {
 			unsupported[pathExt(rel)]++
 			continue
 		}
+		if rec.stale {
+			// The path is a current inventory fact; its declarations are
+			// historical. Counting them as parsed would let a lookup or an
+			// absence claim use facts the index can no longer observe.
+			info.StaleFiles++
+			item.Stale++
+			continue
+		}
 		if rec.parsed {
 			info.ParsedFiles++
 			item.Parsed++
@@ -1539,6 +1599,8 @@ func (idx *Index) infoLocked() SnapshotInfo {
 			item.Coverage = "UNSUPPORTED"
 		case item.Failed > 0:
 			item.Coverage = "PARTIAL"
+		case item.Stale > 0:
+			item.Coverage = "STALE"
 		case item.Pending > 0:
 			item.Coverage = "UNPARSED"
 		case item.Parsed == item.Files:
@@ -1574,8 +1636,10 @@ func (idx *Index) infoLocked() SnapshotInfo {
 	info.NestedProjects = append([]ProjectBoundary(nil), idx.nestedProjects...)
 	info.InventoryComplete = len(idx.unreadable) == 0
 	info.StructuralComplete = info.FailedFiles == 0 && info.PendingFiles == 0 &&
+		info.StaleFiles == 0 &&
 		len(info.Unsupported) == 0 && !unsupportedSource && info.InventoryComplete
 	info.Partial = info.ParseFailures > 0 || info.FailedFiles > 0 || info.PendingFiles > 0 ||
+		info.StaleFiles > 0 ||
 		len(info.Unsupported) > 0 || unsupportedSource
 	return info
 }
@@ -1624,6 +1688,95 @@ func (idx *Index) EnsureParsed(ctx context.Context) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	return idx.ensureParsedLockedCtx(ctx)
+}
+
+// parseScope is one normalized parse boundary. A file scope names exactly one
+// indexed file; a directory scope contains everything beneath it.
+type parseScope struct {
+	path string
+	file bool
+}
+
+// contains reports whether rel belongs to the scope.
+func (s parseScope) contains(rel string) bool {
+	if s.file {
+		return rel == s.path
+	}
+	if s.path == "." || s.path == "" {
+		return true
+	}
+	return rel == s.path || strings.HasPrefix(rel, s.path+"/")
+}
+
+// EnsureParsedScope refreshes inventory and parses pending supported source
+// beneath paths. Each path must name an indexed file or directory.
+//
+// Pending source outside the scope stays PENDING. The projections are rebuilt
+// from every record, so a later EnsureParsed converges to the whole-snapshot
+// result; this is a cheaper first answer, not a second snapshot model.
+func (idx *Index) EnsureParsedScope(ctx context.Context, paths []string) error {
+	if len(paths) == 0 {
+		return idx.EnsureParsed(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := idx.ensureFreshGraph(ctx); err != nil {
+		return err
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	scopes, err := idx.parseScopesLocked(paths)
+	if err != nil {
+		return err
+	}
+	return idx.parsePendingLockedCtx(ctx, func(rel string) bool {
+		for _, scope := range scopes {
+			if scope.contains(rel) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// parseScopesLocked normalizes and validates parse boundaries against the
+// published inventory. An unknown path is a caller error: silently parsing
+// nothing would look like a successful empty answer.
+func (idx *Index) parseScopesLocked(paths []string) ([]parseScope, error) {
+	scopes := make([]parseScope, 0, len(paths))
+	for _, raw := range paths {
+		rel, err := normalizeIndexRel(idx.Root, raw)
+		if err != nil {
+			return nil, err
+		}
+		rel = strings.TrimPrefix(filepath.ToSlash(rel), "./")
+		if _, ok := idx.files[rel]; ok {
+			scopes = append(scopes, parseScope{path: rel, file: true})
+			continue
+		}
+		if rel == "." || rel == "" {
+			scopes = append(scopes, parseScope{path: "."})
+			continue
+		}
+		found := false
+		for existing := range idx.files {
+			if strings.HasPrefix(existing, rel+"/") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			// The path may exist but be outside the indexed scope (an ignored
+			// directory, for example). That is an empty parse scope, not a
+			// caller error: the inventory already decided it is not source.
+			if _, err := os.Stat(filepath.Join(idx.walkRoot, filepath.FromSlash(rel))); err != nil {
+				return nil, fmt.Errorf("ast: parse scope %q is not an indexed file or directory", raw)
+			}
+		}
+		scopes = append(scopes, parseScope{path: rel})
+	}
+	return scopes, nil
 }
 
 // Snapshot refreshes the snapshot and returns its provenance header.

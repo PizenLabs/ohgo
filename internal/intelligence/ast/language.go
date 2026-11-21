@@ -134,9 +134,12 @@ type LanguageCoverage struct {
 	Failed int `json:"failed"`
 	// Pending counts files not parsed yet (adaptive overview).
 	Pending int `json:"pending,omitempty"`
+	// Stale counts files whose last parsed facts are retained but can no
+	// longer be observed. They are not current declarations.
+	Stale int `json:"stale,omitempty"`
 	// Symbols is the number of canonical declarations.
 	Symbols int `json:"symbols,omitempty"`
-	// Coverage is COMPLETE, PARTIAL, UNPARSED, or UNSUPPORTED.
+	// Coverage is COMPLETE, PARTIAL, UNPARSED, STALE, or UNSUPPORTED.
 	Coverage string `json:"coverage"`
 }
 

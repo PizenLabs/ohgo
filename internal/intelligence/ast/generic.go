@@ -114,7 +114,7 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 	// stored in this projection.
 	for _, rel := range paths {
 		rec := records[rel]
-		if !rec.parsed || rec.err != nil {
+		if !rec.current() {
 			continue
 		}
 		for _, symbol := range rec.symbols {
@@ -148,7 +148,7 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 			return nil, err
 		}
 		rec := records[rel]
-		if !rec.parsed || rec.err != nil {
+		if !rec.current() {
 			continue
 		}
 		if rec.language != string(LanguageGo) {
@@ -730,7 +730,7 @@ func sortGenericGraph(graph *languageGraph) {
 // graph. Unresolved external modules remain import facts but produce no edge.
 func resolveRecordImports(records map[string]fileRecord, js jsPathConfig) {
 	for rel, rec := range records {
-		if !rec.parsed || rec.err != nil || rec.language == string(LanguageGo) {
+		if !rec.current() || rec.language == string(LanguageGo) {
 			continue
 		}
 		language := rec.languageValue()

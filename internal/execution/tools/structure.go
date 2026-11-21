@@ -64,7 +64,9 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"entrypoints, explicit relations, and bounded static impact. Select "+
 			"a view and optionally scope it with path, package, or symbol. "+
 			"Overview is metadata-first and does not parse source; targeted and "+
-			"impact views parse the pending supported files on demand. Every "+
+			"impact views parse the pending supported files on demand. A targeted "+
+			"files view with path parses only that path; source outside it stays "+
+			"PENDING and the snapshot reports it. Every "+
 			"result names its snapshot id, generation, activation, and four "+
 			"independent completeness axes: scope, inventory, structural, and "+
 			"result. Scope reports excluded_roots and nested repository "+
@@ -365,7 +367,14 @@ func (t *StructureTool) execute(ctx agent.Context, args map[string]any) agent.Re
 			FailureClass: agent.ToolFailureExecutionFailed}
 	}
 	if activation.ParsesSource() {
-		if err := idx.EnsureParsed(ctx.Ctx); err != nil {
+		if view == "files" && pathArg != "" {
+			// A path-scoped file inventory does not need declarations outside
+			// the selector. The rest stays PENDING and the snapshot says so.
+			if err := idx.EnsureParsedScope(ctx.Ctx, []string{pathArg}); err != nil {
+				return agent.Result{Text: fmt.Sprintf("parse repository structure: %v", err), IsError: true,
+					FailureClass: agent.ToolFailureExecutionFailed}
+			}
+		} else if err := idx.EnsureParsed(ctx.Ctx); err != nil {
 			return agent.Result{Text: fmt.Sprintf("parse repository structure: %v", err), IsError: true,
 				FailureClass: agent.ToolFailureExecutionFailed}
 		}
@@ -428,6 +437,9 @@ func (t *StructureTool) languageView(ctx agent.Context, idx *ast.Index, limit in
 		fmt.Fprintf(&text, "    parsed: %d\n", language.Parsed)
 		fmt.Fprintf(&text, "    pending: %d\n", language.Pending)
 		fmt.Fprintf(&text, "    failed: %d\n", language.Failed)
+		if language.Stale > 0 {
+			fmt.Fprintf(&text, "    stale: %d\n", language.Stale)
+		}
 		fmt.Fprintf(&text, "    symbols: %d\n", language.Symbols)
 	}
 	if len(result.Unsupported) > 0 {
@@ -819,11 +831,9 @@ func (t *StructureTool) files(ctx agent.Context, idx *ast.Index, pathArg, packag
 			if file.Test {
 				text.WriteString("    test: true\n")
 			}
-			if file.Unsupported {
-				text.WriteString("    unsupported: true\n")
-			}
-			if file.ParseError != "" {
-				fmt.Fprintf(&text, "    parse_error: %s\n", file.ParseError)
+			fmt.Fprintf(&text, "    state: %s\n", file.State)
+			if file.Reason != "" {
+				fmt.Fprintf(&text, "    reason: %s\n", file.Reason)
 			}
 			fmt.Fprintf(&text, "    symbols: %d\n", file.Symbols)
 			fmt.Fprintf(&text, "    size: %d\n", file.Size)
@@ -1536,6 +1546,7 @@ func snapshotMap(info ast.SnapshotInfo) map[string]any {
 		"parsed_files":       info.ParsedFiles,
 		"pending_files":      info.PendingFiles,
 		"failed_files":       info.FailedFiles,
+		"stale_files":        info.StaleFiles,
 		"directories":        info.Directories,
 		"packages":           info.Packages,
 		"symbols":            info.Symbols,
@@ -1584,6 +1595,7 @@ func languageMaps(languages []ast.LanguageCoverage) []map[string]any {
 			"parsed":    language.Parsed,
 			"failed":    language.Failed,
 			"pending":   language.Pending,
+			"stale":     language.Stale,
 			"symbols":   language.Symbols,
 			"coverage":  language.Coverage,
 		})
@@ -1654,9 +1666,8 @@ func fileMaps(files []ast.FileInfo) []map[string]any {
 		out = append(out, map[string]any{
 			"path": file.Path, "dir": file.Dir, "package": file.Package,
 			"language": file.Language, "adapter": file.Adapter, "kind": string(file.Kind),
-			"test": file.Test, "parsed": file.Parsed, "parse_error": file.ParseError,
-			"unsupported": file.Unsupported, "size": file.Size, "symbols": file.Symbols,
-			"exports": file.Exports,
+			"test": file.Test, "state": string(file.State), "reason": file.Reason,
+			"size": file.Size, "symbols": file.Symbols, "exports": file.Exports,
 		})
 	}
 	return out

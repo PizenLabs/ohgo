@@ -886,13 +886,10 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 	decls := map[packageKey]map[string][]Match{}
 	paths := make([]string, 0, len(records))
 	for rel, rec := range records {
-		if !rec.parsed || rec.language != "go" {
+		if !rec.current() || rec.language != "go" {
 			continue
 		}
 		paths = append(paths, rel)
-		if !rec.parsed || rec.err != nil {
-			continue
-		}
 		key := packageKey{dir: packageDir(rel), pkg: rec.packageName}
 		table := decls[key]
 		if table == nil {
@@ -922,7 +919,7 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 	callRefs := map[string]bool{}
 	for _, rel := range paths {
 		rec := records[rel]
-		if !rec.parsed || rec.err != nil {
+		if !rec.current() {
 			continue
 		}
 		fileKey := packageKey{dir: packageDir(rel), pkg: rec.packageName}
@@ -1810,6 +1807,9 @@ func (idx *Index) resolveRefTargetLocked(symbol, scope string) (RefTarget, bool,
 
 	var matches []Match
 	for rel, rec := range idx.files {
+		if !rec.current() {
+			continue
+		}
 		for _, sym := range rec.symbols {
 			if sym.Kind == KindPackage || sym.Kind == KindImport {
 				continue

@@ -223,6 +223,7 @@ type Coverage struct {
 	Parsed           int           `json:"parsed_files"`
 	Pending          int           `json:"pending_files"`
 	Failed           int           `json:"failed_files"`
+	Stale            int           `json:"stale_files"`
 	GraphNodes       int           `json:"graph_nodes"`
 	GraphEdges       int           `json:"graph_edges"`
 	Unresolved       int           `json:"unresolved_dependencies"`

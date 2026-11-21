@@ -138,10 +138,7 @@ func Build(inventory ast.Inventory, opts BuildOptions) *Snapshot {
 		}
 
 		class, classEvidence := classifyPath(file.Path, file.Test)
-		unobserved := !file.Parsed
-		if file.Unsupported {
-			unobserved = true
-		}
+		unobserved := file.State != ast.ParseStateInventory && !file.State.Current()
 		for _, id := range ancestorChain(projectID, workspaceID, chain) {
 			entry := nodes[id]
 			if entry == nil {
@@ -315,19 +312,48 @@ func (n *nodeAggregate) evidenceFor() Evidence {
 
 func fileEvidence(file ast.FileInfo) Evidence {
 	ref := EvidenceRef{Kind: KindInventory, Path: file.Path}
-	if file.ParseError != "" {
-		evidence := UnknownEvidence("parse failed: " + file.ParseError)
+	switch file.State {
+	case ast.ParseStateParsed, ast.ParseStateInventory:
+		if file.State == ast.ParseStateInventory {
+			return ObservedEvidence(KindInventory, ref)
+		}
+		return ObservedEvidence(KindAdapterFact, EvidenceRef{
+			Kind: KindAdapterFact, Path: file.Path, Adapter: file.Adapter,
+		})
+	case ast.ParseStatePartial:
+		evidence := ObservedEvidence(KindAdapterFact, EvidenceRef{
+			Kind: KindAdapterFact, Path: file.Path, Adapter: file.Adapter,
+		})
+		evidence.State = StatePartiallyObserved
+		evidence.Confidence = 0.6
+		evidence.Reason = "parse incomplete: " + file.Reason
+		return evidence
+	default:
+		evidence := UnknownEvidence(stateReason(file.State, file.Reason))
 		evidence.Refs = []EvidenceRef{ref}
 		return evidence
 	}
-	if !file.Parsed {
-		evidence := UnknownEvidence("file is inventoried but not parsed")
-		evidence.Refs = []EvidenceRef{ref}
-		return evidence
+}
+
+// stateReason turns a non-current parse state into the reason an evidence
+// consumer reads. The state is the contract; the file's own detail is only an
+// explanation.
+func stateReason(state ast.ParseState, detail string) string {
+	if detail != "" {
+		return strings.ToLower(string(state)) + ": " + detail
 	}
-	return ObservedEvidence(KindAdapterFact, EvidenceRef{
-		Kind: KindAdapterFact, Path: file.Path, Adapter: file.Adapter,
-	})
+	switch state {
+	case ast.ParseStateFailed:
+		return "parse failed"
+	case ast.ParseStatePending:
+		return "file is inventoried but not parsed"
+	case ast.ParseStateStale:
+		return "file is inventoried but its last parsed facts are stale"
+	case ast.ParseStateUnsupported:
+		return "file has no adapter in this build"
+	default:
+		return "file is inventoried but not parsed"
+	}
 }
 
 // includedWorkspaces returns the nested repository roots included in the
@@ -446,6 +472,7 @@ func coverageFor(inventory ast.Inventory, level Level, truncated bool, reason st
 		Parsed:       info.ParsedFiles,
 		Pending:      info.PendingFiles,
 		Failed:       info.FailedFiles,
+		Stale:        info.StaleFiles,
 		Truncated:    truncated,
 		Reason:       reason,
 	}
@@ -453,7 +480,8 @@ func coverageFor(inventory ast.Inventory, level Level, truncated bool, reason st
 	case info.Files == 0 && info.ScopeComplete:
 		coverage.State = StateObserved
 		coverage.Confidence = confidenceInventory
-	case truncated || info.PendingFiles > 0 || info.FailedFiles > 0 || !info.StructuralComplete:
+	case truncated || info.PendingFiles > 0 || info.FailedFiles > 0 ||
+		info.StaleFiles > 0 || !info.StructuralComplete:
 		coverage.State = StatePartiallyObserved
 		coverage.Confidence = 0.55
 	default:

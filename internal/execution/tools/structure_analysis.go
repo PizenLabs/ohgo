@@ -364,8 +364,8 @@ func writeSampleText(text *strings.Builder, samples []structural.Sample) {
 func writeCoverageText(text *strings.Builder, coverage structural.Coverage) {
 	fmt.Fprintf(text, "coverage: state=%s confidence=%.2f level=%s\n",
 		coverage.State, coverage.Confidence, coverage.Level)
-	fmt.Fprintf(text, "  files=%d materialized=%d parsed=%d pending=%d failed=%d\n",
-		coverage.Files, coverage.Materialized, coverage.Parsed, coverage.Pending, coverage.Failed)
+	fmt.Fprintf(text, "  files=%d materialized=%d parsed=%d pending=%d failed=%d stale=%d\n",
+		coverage.Files, coverage.Materialized, coverage.Parsed, coverage.Pending, coverage.Failed, coverage.Stale)
 	if coverage.DependenciesSeen {
 		fmt.Fprintf(text, "  dependencies: nodes=%d edges=%d unresolved=%d\n",
 			coverage.GraphNodes, coverage.GraphEdges, coverage.Unresolved)
@@ -626,6 +626,7 @@ func coverageDetail(coverage structural.Coverage) map[string]any {
 		"parsed_files":       coverage.Parsed,
 		"pending_files":      coverage.Pending,
 		"failed_files":       coverage.Failed,
+		"stale_files":        coverage.Stale,
 		"graph_nodes":        coverage.GraphNodes,
 		"graph_edges":        coverage.GraphEdges,
 		"unresolved":         coverage.Unresolved,
