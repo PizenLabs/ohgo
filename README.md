@@ -301,7 +301,7 @@ ohgo version
 /theme [auto|dark|light]                choose the appearance
 /settings                              configure interface preferences
 /connect /disconnect [provider]        provider credentials
-/status /usage /info                    workspace, cost, docs
+/status /usage /chart [dataset.json]   workspace, cost, charts, docs
 /update                                 install the latest release
 /doctor /diff [target]                  setup diagnosis, diff inspector
 /mcp [list|inspect|refresh]             MCP servers and capabilities

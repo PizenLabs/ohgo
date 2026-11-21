@@ -25,6 +25,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 	"github.com/PizenLabs/ohgo/internal/intelligence/structural"
+	"github.com/PizenLabs/ohgo/internal/presentation/chart"
 )
 
 func main() {
@@ -110,6 +111,63 @@ func runScale(name string, modules, dirs, files int) {
 	for _, row := range comparison {
 		fmt.Printf("| %s | %d | %+.3f |\n", row.name, row.communities, row.modularity)
 	}
+	fmt.Println()
+	reportTimings(name, []timingMetric{
+		{Label: "cold project", Duration: coldProject},
+		{Label: "cold architecture", Duration: coldArchitecture},
+		{Label: "warm architecture", Duration: warmArchitecture},
+		{Label: "incremental (1 file)", Duration: incrementalArchitecture},
+	})
+}
+
+// timingMetric is one measured benchmark duration.
+type timingMetric struct {
+	Label    string
+	Duration time.Duration
+}
+
+// reportTimings is the first production consumer of the chart engine: it
+// renders real measured benchmark values, not an illustration. The exact table
+// precedes the derived bar, and a chart failure never fails the benchmark.
+func reportTimings(scale string, metrics []timingMetric) {
+	points := make([]chart.Point, 0, len(metrics))
+	for _, metric := range metrics {
+		points = append(points, chart.Point{
+			Label: metric.Label,
+			Value: chart.Measured(float64(metric.Duration) / float64(time.Millisecond)),
+		})
+	}
+	data := chart.Dataset{
+		Title:  "structural analysis timings · " + scale,
+		XLabel: "metric",
+		Note:   "single measured run; wall-clock analysis time",
+		Provenance: chart.Provenance{
+			Kind:   chart.ProvenanceBenchmark,
+			ID:     "bench/structural",
+			Source: "structural",
+		},
+		Series: []chart.Series{{
+			Name:        "duration",
+			Unit:        chart.UnitMilliseconds,
+			Aggregation: chart.AggRaw,
+			Points:      points,
+		}},
+	}
+	spec, _, err := chart.Build(chart.PlanInput{
+		Data:    data,
+		Request: chart.Request{Kind: chart.KindBar},
+	}, 88)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chart %s: %v\n", scale, err)
+		return
+	}
+	text, err := chart.RenderText(spec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chart %s: %v\n", scale, err)
+		return
+	}
+	fmt.Println(text)
+	fmt.Println()
 }
 
 // runRealRepository validates the engine against a repository the author did not

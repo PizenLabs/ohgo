@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/presentation/chart"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -264,9 +265,20 @@ func BlockCopyText(entry Entry) string {
 		text = entry.Notice
 	case EntryTool:
 		if entry.Tool != nil {
+			if entry.Tool.Chart != nil {
+				if exact, err := chart.ExactText(*entry.Tool.Chart); err == nil && exact != "" {
+					return logicalText(exact)
+				}
+			}
 			text = entry.Tool.Text
 			if strings.TrimSpace(text) == "" {
 				text = entry.Tool.Summary
+			}
+		}
+	case EntryChart:
+		if entry.Chart != nil {
+			if exact, err := chart.ExactText(*entry.Chart); err == nil {
+				text = exact
 			}
 		}
 	case EntryShell:

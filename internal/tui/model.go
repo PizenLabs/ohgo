@@ -18,6 +18,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/presentation/chart"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/tokens"
 	diffview "github.com/PizenLabs/ohgo/internal/tui/diff"
@@ -95,6 +96,9 @@ type Entry struct {
 	SupportText string
 	// SupportIsQuestion marks a support question entry rather than an answer.
 	SupportIsQuestion bool
+	// Chart is set when Kind is EntryChart. It is the re-plannable input, not
+	// a spec rendered for a different terminal width.
+	Chart *chart.PlanInput
 }
 
 // EntryKind discriminates an Entry.
@@ -131,6 +135,9 @@ const (
 	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
 	// but never persisted and never enters the model's context (§10.2, I17).
 	EntrySupport EntryKind = "support"
+	// EntryChart is a runtime-owned visualization. Its structured input is
+	// re-planned at the current width; it is never raw terminal art.
+	EntryChart EntryKind = "chart"
 )
 
 // ReasoningEntry is the live state of one reasoning trace.
@@ -231,6 +238,9 @@ type ToolEntry struct {
 	// presentation metadata, not execution state: every member keeps its own
 	// lifecycle, result, and identity.
 	run *toolRun
+	// Chart is the structured input a chart capability returned, or nil. It
+	// is UI-only: Text carries the compact acknowledgement the model saw.
+	Chart *chart.PlanInput
 }
 
 // toolRun is one adjacent batch of tool calls. The collapsed projection is a
@@ -1336,6 +1346,12 @@ func (s *State) Apply(event Event) {
 		tool.Path = e.Path
 		tool.Operation = e.Operation
 		tool.Truncated = e.Truncated
+		tool.Chart = e.Chart
+		if e.Chart != nil {
+			// A chart is the artifact the call produced, not hidden detail.
+			// Expansion remains presentation-only and never re-executes.
+			tool.Expanded = true
+		}
 		if e.IsError {
 			tool.Status = ToolError
 		} else {
@@ -1349,6 +1365,12 @@ func (s *State) Apply(event Event) {
 				tool.run.phaseStart = s.Status.Workspace
 			}
 			tool.run.phaseEnd = s.Status.Workspace
+			if e.Chart != nil {
+				// The chart is the artifact this call produced. Opening the
+				// batch is presentation-only and reveals the already-rendered
+				// body; it never re-executes the call.
+				tool.run.isOpen = true
+			}
 		}
 		s.bumpEntry(idx)
 		s.bumpToolRun(tool.run)
@@ -1445,6 +1467,14 @@ func (s *State) Apply(event Event) {
 		}
 		s.bumpEntry(idx)
 		s.growScroll(1)
+
+	case ChartShown:
+		// A chart is an ordinary owned transcript block: it participates in
+		// scrolling, selection, resize reflow, and live mode through the same
+		// document path as every other block.
+		input := e.Input
+		s.pushEntry(Entry{Kind: EntryChart, Chart: &input, AppearedAt: e.At})
+		s.growScroll(8)
 
 	case Notice:
 		s.pushEntry(Entry{Kind: EntryNotice, Notice: e.Text})
@@ -3669,7 +3699,10 @@ type ToolFinished struct {
 	Operation string
 	IsError   bool
 	Truncated bool
-	At        time.Time
+	// Chart is the UI-only structured input a chart capability produced. The
+	// model-facing Text remains the compact acknowledgement.
+	Chart *chart.PlanInput
+	At    time.Time
 	// Seq identifies the turn. Zero accepts any turn for legacy callers.
 	Seq int
 }
@@ -3746,6 +3779,16 @@ type ShellFinished struct {
 }
 
 func (ShellFinished) eventKind() string { return "shell_finished" }
+
+// ChartShown appends a runtime-owned visualization. The payload is the
+// re-plannable input, never a rendered chart: a resize must reflow the same
+// data instead of scaling art produced for another width.
+type ChartShown struct {
+	Input chart.PlanInput
+	At    time.Time
+}
+
+func (ChartShown) eventKind() string { return "chart_shown" }
 
 // Notice adds a system line.
 type Notice struct{ Text string }
@@ -4682,6 +4725,7 @@ var Commands = []CommandSpec{
 	{Name: "status", Usage: "status", Description: "show workspace, session, and authority status", Category: CommandGroupControl},
 	{Name: "update", Usage: "update", Description: "install the latest release if one is available", Category: CommandGroupControl},
 	{Name: "usage", Usage: "usage", Description: "inspect token usage, cost, and providers", Category: CommandGroupControl},
+	{Name: "chart", Usage: "chart [dataset.json]", Description: "render runtime telemetry or a structured dataset as a chart (no model call)", Category: CommandGroupControl},
 	{Name: "info", Usage: "info", Description: "show documentation and changelog", Category: CommandGroupControl},
 	{Name: "about", Usage: "about", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "docs", Usage: "docs", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},

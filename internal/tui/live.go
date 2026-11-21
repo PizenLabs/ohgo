@@ -550,6 +550,12 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		renderShell(&b, e.Shell, pal, layout)
 		return splitLines(b.String())
 
+	case EntryChart:
+		if e.Chart == nil {
+			return nil
+		}
+		return append(renderChartInput(e.Chart, pal, textWidth(layout)), "")
+
 	case EntryNotice:
 		wrapped := wrapPlain(e.Notice, layout)
 		out := make([]string, 0, len(wrapped)+1)

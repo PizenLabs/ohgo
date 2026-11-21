@@ -79,17 +79,18 @@ var domainOf = map[string]string{
 	"internal/experience": "experience",
 
 	// Application services and presentation.
-	"internal/prompt":       "prompt",
-	"internal/promptopt":    "prompt",
-	"internal/commit":       "application",
-	"internal/startup":      "application",
-	"internal/update":       "application",
-	"internal/history":      "application",
-	"internal/gryhook":      "application",
-	"internal/tui":          "presentation",
-	"internal/tui/design":   "presentation",
-	"internal/tui/diff":     "presentation",
-	"internal/architecture": "governance",
+	"internal/prompt":             "prompt",
+	"internal/promptopt":          "prompt",
+	"internal/commit":             "application",
+	"internal/startup":            "application",
+	"internal/update":             "application",
+	"internal/history":            "application",
+	"internal/gryhook":            "application",
+	"internal/tui":                "presentation",
+	"internal/tui/design":         "presentation",
+	"internal/tui/diff":           "presentation",
+	"internal/presentation/chart": "presentation",
+	"internal/architecture":       "governance",
 }
 
 // agentAllowedImports is the complete module-level import allow-list for the
@@ -135,6 +136,7 @@ var dependencyFree = []string{
 	"internal/intelligence/wire",
 	"internal/jsonschema",
 	"internal/memory",
+	"internal/presentation/chart",
 	"internal/promptopt",
 	"internal/security",
 	"internal/state",
