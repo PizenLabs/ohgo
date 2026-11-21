@@ -321,12 +321,26 @@ func startsLowerWord(token string) bool {
 	return token != "" && token[0] >= 'a' && token[0] <= 'z'
 }
 
-// termSet returns the content terms in the supplied texts.
+// termSet returns the observed vocabulary.
+//
+// It deliberately does not use ContentTerms: that function caps its output at
+// the documentation vocabulary size, which is correct for what the answer may
+// be told but wrong for an absence comparison. A large source file has more
+// than 192 distinct tokens before the line that names a database driver, so the
+// capped set omitted terms the run actually read. The documentation-only audit
+// then vetoed "postgres" even though main.go contained it. The retained
+// observation is already bounded when it enters the ledger, so this scan covers
+// every token the run can still inspect.
 func termSet(texts []string) map[string]bool {
 	out := map[string]bool{}
 	for _, text := range texts {
-		for _, term := range ContentTerms(text) {
-			out[term] = true
+		for _, raw := range strings.Fields(splitTermText(text)) {
+			token := strings.ToLower(strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_#|/-"))
+			token = stripVersionSuffix(token)
+			if len(token) < 3 || genericProvenanceTerm(token) {
+				continue
+			}
+			out[token] = true
 		}
 	}
 	return out

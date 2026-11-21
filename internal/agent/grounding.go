@@ -33,6 +33,11 @@ var (
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:is|are)\s+(?:not\s+present|absent)\b`)
 	negativeMissingPattern = regexp.MustCompile(
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:is|was|are|were)\s+(?:missing|not\s+found)\b`)
+	// conditionalAbsencePattern marks the condition of a behavior rule. "It
+	// redirects to /cart when the cart is missing" describes a branch, not a
+	// repository absence.
+	conditionalAbsencePattern = regexp.MustCompile(
+		`(?i)\b(?:when|if|unless|whenever|until)\b[^.;\n]{0,50}$`)
 	// negativeAbsenceOfPattern catches the noun form of a repository absence:
 	// "the absence of tests". It is the same conclusion as "there are no tests"
 	// and must earn the same coverage.
@@ -44,7 +49,7 @@ var (
 	// them, and they are not the existence claim the negative-conclusion check
 	// exists to police.
 	changeReportPattern = regexp.MustCompile(
-		`(?i)^\s*(?:(?:was|were|is|are|has\s+been|have\s+been|had\s+been|got)\s+)?` +
+		`(?i)^\s*(?:content\s+)?(?:(?:was|were|is|are|has\s+been|have\s+been|had\s+been|got)\s+)?` +
 			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited` +
 			`|read|inspected|examined|reviewed|opened|loaded|queried|searched|sampled|observed)\b`)
 	globalScopePattern = regexp.MustCompile(
@@ -57,13 +62,21 @@ var (
 		`(?i)\b(?:(?:repo(?:sitory)?|project|workspace|directory|folder)?[\s-]*root|top[- ]level)\b`)
 	insufficientSearchPattern = regexp.MustCompile(
 		`(?i)\b(?:i\s+)?(?:could\s+not|couldn't|cannot|can't|was\s+unable\s+to|unable\s+to)\s+(?:be\s+)?(?:find|found|locate|located|read|access|accessed|see|seen)\b`)
+	// boundedRunLimitPattern names the run's own resource bound. "The Readme
+	// could not be read before the evidence window closed" is a truthful
+	// limitation of this run, not a claim that the file was inaccessible; the
+	// completion audit must not demand a call the budget never allowed.
+	boundedRunLimitPattern = regexp.MustCompile(
+		`(?i)\b(?:before\s+(?:the\s+)?(?:evidence\s+|turn\s+|time\s+)?(?:window|run|budget|deadline|turn|turns)|` +
+			`within\s+(?:the\s+)?(?:evidence|turn|time)\s+(?:window|budget)|` +
+			`ran\s+out\s+of\s+(?:turns|budget|time|evidence))\b`)
 	// An epistemic limit is not a repository absence. "No contradiction to
 	// arbitrate" says the comparison cannot be made; it does not assert what
 	// the repository contains. The distinction matters when no second evidence
 	// provider (runtime or Gry) was used: the answer must say the comparison was
 	// not assessable, and completion must not demand a file scan for it.
 	negativeEpistemicPattern = regexp.MustCompile(
-		`(?i)\bno\s+[^.\n]{0,80}?\bto\s+(?:arbitrate|assess|establish|verify|compare|evaluate|resolve|determine|inspect|test|run|read|measure|observe)\b`)
+		`(?i)\bno\s+[^.\n]{0,80}?\bto\s+(?:arbitrate|assess|establish|verify|compare|evaluate|resolve|determine|inspect|test|run|read|measure|observe|report|describe|present|provide|offer|demonstrate|quantify)\b`)
 	performedActionPattern = regexp.MustCompile(
 		`(?i)\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:inspected|checked|reviewed|read|examined|scanned|analy[sz]ed|searched|looked\s+at|opened)\b`)
 	restatedObjectivePattern = regexp.MustCompile(
@@ -96,6 +109,25 @@ var (
 	// subject: "no server was executed", "no deployment was published".
 	negatedLeadPattern = regexp.MustCompile(
 		`(?i)\b(?:no|not|never|without|nor|neither)\s+$`)
+	// negatedListLeadPattern marks a negator that introduces a coordinated
+	// subject list ending at the claim's subject: "No tests, server, or
+	// binary were executed". One negator distributes over every item, so no
+	// listed event happened.
+	negatedListLeadPattern = regexp.MustCompile(
+		`(?i)\b(?:no|not|never|without|nor|neither)\b`)
+	// finiteVerbPattern reports a clause predicate. A negator before a list
+	// that already contains one governs its own clause only: "No tests were
+	// run, but the deployment was executed" keeps the deployment claim.
+	finiteVerbPattern = regexp.MustCompile(
+		`(?i)\b(?:was|were|is|are|has|have|had|been|did|does|do|ran|run|executed|deployed|published|pushed|triggered|completed|succeeded|passed|started|launched)\b`)
+	// subjectListArticle is a determiner, not a list item. "No, the server
+	// was executed" is a discourse marker followed by a claim, not a
+	// distributed negation over "the".
+	subjectListArticle = map[string]bool{
+		"the": true, "a": true, "an": true, "this": true, "that": true,
+		"these": true, "those": true, "its": true, "their": true,
+		"or": true, "and": true, "nor": true, "but": true,
+	}
 	// uncertaintyPattern marks an honest report about external state: the
 	// answer names the claim in order to say it cannot be established.
 	uncertaintyPattern = regexp.MustCompile(
@@ -175,15 +207,18 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 	if grounding == nil {
 		return assessment
 	}
-	add := func(code, detail string) {
-		for _, issue := range assessment.Issues {
-			if issue.Code == code && issue.Detail == detail {
+	addIssue := func(issue contract.GroundingIssue) {
+		for _, existing := range assessment.Issues {
+			if existing.Code == issue.Code && existing.Detail == issue.Detail {
 				return
 			}
 		}
-		assessment.Issues = append(assessment.Issues, contract.GroundingIssue{Code: code, Detail: detail})
-		assessment.Reasons = append(assessment.Reasons, detail)
+		assessment.Issues = append(assessment.Issues, issue)
+		assessment.Reasons = append(assessment.Reasons, issue.Detail)
 		assessment.Verdict = contract.GroundingReview
+	}
+	add := func(code, detail string) {
+		addIssue(contract.GroundingIssue{Code: code, Detail: detail})
 	}
 
 	// Grounding only reads the definite-mutation flag; ordering is decided by
@@ -253,8 +288,14 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 	// happened.
 	if claims := externalClaims(answer); len(claims) > 0 {
 		if !collectGroundingCoverage(turns).external {
-			add("unsupported_external_state",
-				"the answer states external state the run never observed: "+claims[0])
+			addIssue(contract.GroundingIssue{
+				Code:        "unsupported_external_state",
+				Detail:      "the answer states external state the run never observed: " + claims[0],
+				Claim:       claims[0],
+				Category:    "runtime",
+				Requirement: "runtime observation",
+				Action:      "execute the operation or qualify the claim as unverified",
+			})
 		}
 	}
 
@@ -286,8 +327,19 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 					"the answer treats %q as absent, but the observed inventory already reports %d test file(s); inspect them or bound the claim to what was inspected",
 					claim.Subject, coverage.testFiles)
 			}
-			add("unsupported_negative_conclusion", detail)
-			break
+			addIssue(contract.GroundingIssue{
+				Code:        "unsupported_negative_conclusion",
+				Detail:      detail,
+				Claim:       claim.Subject,
+				Location:    claimLocation(answer, claim.Subject),
+				Category:    "absence",
+				Requirement: "complete current inventory",
+				Reference:   claim.Subject,
+				Action:      "inspect the observed subject or bound the claim to the inspected scope",
+			})
+			if len(assessment.Issues) >= MaxRepairInstructions {
+				break
+			}
 		}
 	}
 	// Claim scope: declared configuration and dependency manifests establish
@@ -297,7 +349,7 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 	// and verification evidence instead of this answer-level audit.
 	if intent.Kind == contract.ObjectiveInformational {
 		for _, issue := range claimScopeIssues(answer, turns) {
-			add(issue.Code, issue.Detail)
+			addIssue(issue.groundingIssue())
 		}
 	}
 	// The explicit deliverable contract is separate from claim scope: an answer
@@ -305,23 +357,34 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 	// for. The facet check owns that obligation.
 	if facets := AssessRequiredFacets(intent, turns, answer); !facets.Pass() {
 		for _, issue := range facets.Issues {
-			add(issue.Code, issue.Detail)
+			addIssue(issue)
 		}
 	}
-	if insufficientSearchPattern.MatchString(answerLower) &&
-		(intent.Kind != contract.ObjectiveMutation || grounding.HasAction(contract.GroundingInvestigate)) {
-		detail := "the answer reports an inability to find evidence as the result"
-		// "I could not read it" is not the same as "the request could not be
-		// answered": when the run listed the path, the statement is about a
-		// call that was never made, and the reader needs the path, not the
-		// admission. A capability gap (no adapter for this language) is the
-		// usual origin: it says nothing about access to the file.
-		if path := collectGroundingCoverage(turns).declinesObservedPath(answerLower); path != "" {
-			detail = fmt.Sprintf(
-				"the answer reports it could not read the evidence, but this run observed %s; that gap is a call the run did not make, not a file it could not access",
-				path)
+	if intent.Kind != contract.ObjectiveMutation || grounding.HasAction(contract.GroundingInvestigate) {
+		for _, match := range insufficientSearchPattern.FindAllStringIndex(answerLower, -1) {
+			// A limitation the sentence itself attributes to the run's
+			// evidence window is not an unavailable capability. The model
+			// reported why it stopped, which is the honest answer the
+			// completion boundary asks for.
+			window := uncertaintyWindow(answerLower, match[0], match[1])
+			if boundedRunLimitPattern.MatchString(window) {
+				continue
+			}
+			detail := "the answer reports an inability to find evidence as the result"
+			// "I could not read it" is not the same as "the request could not
+			// be answered": when the run listed the path, the statement is
+			// about a call that was never made, and the reader needs the path,
+			// not the admission. A capability gap (no adapter for this
+			// language) is the usual origin: it says nothing about access to
+			// the file.
+			if path := collectGroundingCoverage(turns).declinesObservedPath(answerLower); path != "" {
+				detail = fmt.Sprintf(
+					"the answer reports it could not read the evidence, but this run observed %s; that gap is a call the run did not make, not a file it could not access",
+					path)
+			}
+			add("unverified_negative_result", detail)
+			break
 		}
-		add("unverified_negative_result", detail)
 	}
 	return assessment
 }
@@ -386,7 +449,7 @@ func negativeClaims(answer string) []negativeClaim {
 			return
 		}
 		for _, existing := range out {
-			if existing.Subject == value && existing.Global == global {
+			if claimSubjectKey(existing.Subject) == claimSubjectKey(value) && existing.Global == global {
 				return
 			}
 		}
@@ -395,6 +458,9 @@ func negativeClaims(answer string) []negativeClaim {
 	addMatches := func(pattern *regexp.Regexp, repositoryWide bool) {
 		for _, match := range pattern.FindAllStringSubmatchIndex(answer, -1) {
 			if len(match) < 4 || match[2] < 0 || match[3] < 0 {
+				continue
+			}
+			if pattern == negativeMissingPattern && conditionalAbsenceForm(answer, match[0]) {
 				continue
 			}
 			window := uncertaintyWindow(answer, match[0], match[1])
@@ -433,12 +499,30 @@ func negativeClaims(answer string) []negativeClaim {
 	return out
 }
 
+// conditionalAbsenceForm reports an absence phrase inside a behavior
+// condition ("when the cart is missing").
+func conditionalAbsenceForm(answer string, start int) bool {
+	left := start - 64
+	if left < 0 {
+		left = 0
+	}
+	return conditionalAbsencePattern.MatchString(strings.ToLower(answer[left:start]))
+}
+
 // claimSubjectIsEvidenceGap reports a subject that names the run's evidence
 // rather than a repository artifact.
 func claimSubjectIsEvidenceGap(subject string) bool {
 	subject = strings.ToLower(strings.TrimSpace(subject))
 	for _, suffix := range []string{"evidence", "observation", "observations", "information", "data"} {
 		if subject == suffix || strings.HasSuffix(subject, " "+suffix) {
+			return true
+		}
+	}
+	// "I make no claim about test coverage" is an epistemic limit, not a
+	// statement that the repository has no tests. The noun after "no" is the
+	// claim the answer declines to make, not an artifact it asserts absent.
+	for _, prefix := range []string{"claim", "claims", "statement", "statements", "assertion", "assertions", "conclusion", "conclusions"} {
+		if subject == prefix || strings.HasPrefix(subject, prefix+" ") {
 			return true
 		}
 	}
@@ -461,6 +545,8 @@ func claimIsEvidenceGap(answer string, end int) bool {
 		"evidence", "evidence available", "evidence was available",
 		"evidence observed", "observation", "observations",
 		"data", "data available", "information", "information available",
+		"is not evidence", "isn't evidence", "is not proof", "is not a claim",
+		"does not establish", "doesn't establish",
 	} {
 		if strings.HasPrefix(rest, suffix) {
 			return true
@@ -591,7 +677,58 @@ func negatedEventForm(answer string, subjectStart, verbStart int) bool {
 	if lead < 0 {
 		lead = 0
 	}
-	return negatedLeadPattern.MatchString(strings.ToLower(answer[lead:subjectStart]))
+	return negatedLeadPattern.MatchString(strings.ToLower(answer[lead:subjectStart])) ||
+		negatedSubjectList(answer, subjectStart)
+}
+
+// negatedSubjectList reports a negator that introduces a coordinated subject
+// list ending at the claim's subject: "No tests, server, or binary were
+// executed". The negator distributes over every item, so the event did not
+// happen for any of them.
+//
+// The span before the subject must contain no predicate of its own. That is
+// what keeps "No tests were run, but the deployment was executed" a claim
+// about the deployment: the earlier clause already has its verb. A discourse
+// marker ("No, the server was executed") is not a list either, so the span
+// must name at least one content subject, not just a determiner.
+func negatedSubjectList(answer string, subjectStart int) bool {
+	if subjectStart <= 0 || subjectStart > len(answer) {
+		return false
+	}
+	start := subjectStart - 96
+	if start < 0 {
+		start = 0
+	}
+	if cut := strings.LastIndexAny(answer[start:subjectStart], ".;:\n"); cut >= 0 {
+		start += cut + 1
+	}
+	before := answer[start:subjectStart]
+	loc := negatedListLeadPattern.FindStringIndex(before)
+	if loc == nil {
+		return false
+	}
+	segment := before[loc[1]:]
+	if finiteVerbPattern.MatchString(segment) {
+		return false
+	}
+	return subjectListHasContent(segment)
+}
+
+// subjectListHasContent reports a noun token in the list span. Articles and
+// conjunctions alone are not a coordinated subject.
+func subjectListHasContent(segment string) bool {
+	for _, item := range strings.FieldsFunc(segment, func(r rune) bool {
+		return r == ',' || r == ';'
+	}) {
+		for _, raw := range strings.Fields(strings.ToLower(item)) {
+			token := strings.Trim(raw, " \t\r\n\"'`*_")
+			if token == "" || subjectListArticle[token] {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // uncertaintyWindow returns the sentence around a claim, so a hedge in the same
@@ -609,13 +746,70 @@ func uncertaintyWindow(answer string, start, end int) string {
 	return answer[left:right]
 }
 
+// claimLocation returns the sentence around a claim, bounded for a repair
+// instruction. The offset is only a locator for the model; it is never an
+// evidence coordinate.
+func claimLocation(answer, claim string) string {
+	claim = strings.TrimSpace(claim)
+	if claim == "" {
+		return ""
+	}
+	lower := strings.ToLower(answer)
+	needle := strings.ToLower(claim)
+	index := -1
+	for offset := 0; offset < len(lower); {
+		found := strings.Index(lower[offset:], needle)
+		if found < 0 {
+			break
+		}
+		start := offset + found
+		end := start + len(needle)
+		// "ddd" inside "middle" is not the claim. Locate the token, not a
+		// substring, so the repair points at the sentence the audit read.
+		if (start == 0 || !codeIdentByte(lower[start-1])) &&
+			(end == len(lower) || !codeIdentByte(lower[end])) {
+			index = start
+			break
+		}
+		offset = start + 1
+	}
+	if index < 0 {
+		return ""
+	}
+	left := index
+	for left > 0 && !strings.ContainsRune(".!?\n", rune(answer[left-1])) {
+		left--
+	}
+	right := index + len(claim)
+	for right < len(answer) && !strings.ContainsRune(".!?\n", rune(answer[right])) {
+		right++
+	}
+	return boundRepair(strings.TrimSpace(answer[left:right]), 180)
+}
+
+// claimSubjectKey collapses spelling variants of one absence claim. A single
+// sentence can produce "known test", "tests", and "test files" from
+// overlapping patterns; they are one gap, not three repair instructions.
+func claimSubjectKey(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "known ")
+	switch {
+	case strings.Contains(value, "test"):
+		return "test"
+	case value == "file" || value == "files":
+		return "file"
+	}
+	return value
+}
+
 // cleanClaimSubject trims a captured negative subject to the thing named,
 // without swallowing a qualifier into the claim.
 func cleanClaimSubject(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimPrefix(value, "known ")
 	value = strings.Trim(value, " .,;:!?")
 	for _, suffix := range []string{
-		" yet", " currently", " at all", " here",
+		" yet", " currently", " at all", " here", " known",
 		" in this repository", " in this project", " at the moment", " right now",
 	} {
 		if strings.HasSuffix(value, suffix) {
@@ -675,18 +869,42 @@ func (c groundingCoverage) contradicts(subject string) string {
 	if len(tokens) == 0 {
 		return ""
 	}
+	// A package or directory name refutes absence only when the claim is
+	// about a file-like artifact. "No portfolio file" is refuted by
+	// portfolio.tsx; "no productcatalog existence check" is not refuted by the
+	// productcatalog directory, because the claim is about a check, not the
+	// package's existence.
+	head := tokens[len(tokens)-1]
+	allowModifiers := fileArtifactHead(head)
 	for _, path := range c.observedPaths {
 		stem := strings.ToLower(pathStem(path))
 		if stem == "" {
 			continue
 		}
 		for _, token := range tokens {
+			if !allowModifiers && token != head {
+				continue
+			}
 			if stem == token {
 				return path
 			}
 		}
 	}
 	return ""
+}
+
+// fileArtifactHead reports a noun whose modifiers may name the artifact: a
+// "portfolio file" is refuted by a portfolio path, while a "cart check" is not
+// refuted by the cart directory.
+func fileArtifactHead(token string) bool {
+	switch token {
+	case "file", "files", "module", "modules", "component", "components",
+		"directory", "directories", "folder", "folders", "artifact", "artifacts",
+		"path", "paths", "script", "scripts", "config", "configuration",
+		"manifest", "package", "packages", "template", "templates":
+		return true
+	}
+	return false
 }
 
 // declinesObservedPath returns the observed path an answer says it could not
@@ -698,7 +916,10 @@ func (c groundingCoverage) declinesObservedPath(answer string) string {
 		if len(stem) < 3 || genericClaimNoun(stem) {
 			continue
 		}
-		if strings.Contains(answer, stem) && len(stem) > len(strings.ToLower(pathStem(best))) {
+		// A stem must be a whole token: "auth" inside "authentication" is not
+		// the observed backend/auth path, and matching it would attribute an
+		// unrelated limitation to a file the run never named.
+		if tokenObservedBoundary(answer, stem) && len(stem) > len(strings.ToLower(pathStem(best))) {
 			best = path
 		}
 	}

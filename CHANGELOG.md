@@ -7,6 +7,47 @@ immutable.
 
 ### Added
 
+- Claim-level answer repair. `GroundingIssue` now carries the rejected claim,
+  its sentence location, category, required evidence class, reference, and
+  permitted action; the grounding, provenance, citation, entity, line-count,
+  absence, and facet audits populate them. `ReviewInformationalRepairs` is a
+  projection of the same audit, `ClaimRepairRequest` names at most five claims,
+  and the loop renders only those instead of a full-answer correction reason.
+- A per-correction tool budget (`CorrectionToolCalls`, default 3). The loop
+  enforces it before tool execution across concurrent batches, reports the
+  remaining allowance in the correction runtime block, and fails closed with
+  `ToolFailureCorrectionBudget`; reused observations do not consume it.
+- The pre-answer review now runs the documentation-only provenance audit when
+  the host supplies the last projection summary, so a documented claim is
+  attributed or verified before completion rather than after it.
+- A bounded negative report is not widened by the intensifier "at all".
+  "No tests were found in the inspected scope" stays a report about the
+  inspected evidence even when another clause says "at all".
+- `conclude` is a terminal control observation, not repair evidence. It does
+  not consume the correction tool allowance, so a model that repairs its
+  claims and then concludes is not forced into another answer by a budget
+  error.
+- The TUI publishes model text only when its turn completes and the turn is
+  publishable. It no longer streams text while the request is open, because
+  that text can be a rejected candidate or an answer the model abandons for a
+  tool call. The final answer is the only answer shown.
+- Assistant prose that is followed by a tool call is not published as an
+  answer. The call and its result remain; the prose was investigation the
+  model replaced. Together with candidate suppression, a run that emits a
+  rejected answer, an abandoned answer, and a final answer publishes only the
+  final one.
+- A rejected answer candidate is suppressed, not published. The loop keeps it
+  in the provider context so the correction request can see the claim, marks
+  it `Suppressed`, and the transcript, plain output, persistence, and next
+  request project it away. Informational answer text is not streamed while an
+  answer review is active; the accepted final answer is published once.
+- Assistant turns persist their measured provider usage in the session
+  transcript. A benchmark can separate the initial investigation from the
+  answer correction instead of reading only an aggregate session total; usage
+  is audit data and does not change replay.
+- A paged read of one file keeps its opening window instead of overwriting it.
+  The merged value is bounded and not completeness evidence, but it preserves
+  the document's identity definition.
 - `ast.ParseState` gives every inventory row one explicit structural state:
   `PARSED`, `PARTIAL`, `PENDING`, `FAILED`, `UNSUPPORTED`, `STALE`, or
   `INVENTORY`. `SnapshotInfo.stale_files`, per-language `stale`, and structural
@@ -19,6 +60,11 @@ immutable.
 - `investigate` focus reports now include a bounded call-edge projection
   (direction, symbol, call-site path and line) and importer paths. A flow
   answer can trace observed calls instead of reporting only counts.
+- Source grounding now credits shell content reads (`cat`, `sed`, `head`,
+  `tail`, `nl`, `bat`) as the same observation as the `read` tool. A model that
+  pages a file through `sed` no longer gets "the run never read it", and the
+  requirement ledger counts the content it actually saw. A phrase such as
+  "first ~90 lines" is treated as a read window, not an unsupported file total.
 - Trust propagation across the pipeline: `investigate` facts and records now
   carry the structural snapshot identity and project stale/incomplete coverage
   onto `STALE`/`UNVERIFIED`/`CURRENT` freshness. Survey evidence is demoted by
@@ -84,6 +130,66 @@ immutable.
 
 ### Fixed
 
+- A concrete line count inside a parenthetical annotation is bound to the path
+  that introduces the parenthesis. "`order_factory.go` (read in full, 97 lines)
+  and `order.go` (read, 413 lines)" had the 97 count assigned to order.go by
+  distance, vetoing a corrected answer that already named the right file.
+- A behavior condition ("redirects to `/cart` when the cart is missing") is not
+  a repository absence; a package directory does not refute a claim about a
+  check inside it ("no productcatalog existence check" is not refuted by
+  `backend/productcatalog/`); and an explicit open question ("stays open
+  pending a read of …") is a limitation, not an unsupported claim.
+- A path named to say it was not opened is a limitation, not a source citation.
+  A paged source read keeps the document's opening window, so a chunked README
+  no longer loses the definition that names the project.
+- Common domain and architecture nouns (`customer`, `color`, `documents`,
+  `ui`, `adapters`, `ports`, `domain`) are not documentation-only claims. The
+  provenance audit is for a specific documented term, not the product's
+  ordinary subject vocabulary.
+- A type-qualified member (`StockReserver.Reserve`, `httpHandler.Checkout`) is
+  supported by its interface block or receiver declaration in the observed
+  source; runtime status tokens (`NOT_OBSERVED`, `PARTIAL`) are not code
+  entities; and a directive list item ("files and lines you inspected") is not
+  a required project entity.
+- The documentation-only provenance audit compares against the full retained
+  observation, not the capped answer vocabulary. A large source file has more
+  than the 192-token output cap before the line that names its database driver,
+  so `postgres` in `main.go` was reported as documentation-only and vetoed a
+  source-verified answer. The runtime state block now also names the
+  documentation-only terms before the answer, so the model can attribute them
+  or read the source that carries them instead of learning the boundary from a
+  rejected answer.
+- A source citation backed by a grep-shaped observation (`path:line: content`)
+  is credited when the cited line window contains an observed match. The model
+  traced `OrderPaid` through `grep -rn`, cited the reported lines, and was told
+  the file was never opened. A listing, a bare path, or a match outside the
+  cited window still does not support the citation.
+- A package-qualified identifier is supported by its declaration in the named
+  package. The run read `backend/checkout/bounded_context.go` (`func New`) and
+  the answer's `checkout.New` was reviewed as an unobserved identifier. An
+  undeclared member of the same package is still reviewed.
+- A run-bounded limitation is not an unavailable capability. "The Readme could
+  not be read before the evidence window closed" reports the turn/evidence
+  budget, not an inaccessible file. `I make no claim about test coverage`,
+  `there is no static-vs-runtime comparison to report`, and `no runtime
+  behavior to describe` are epistemic limits, not repository-absence
+  conclusions. Path stems in the declined-read check now match whole tokens, so
+  `authentication` is no longer attributed to an observed `auth` path.
+- A negator that introduces a coordinated subject list now governs every item.
+  "No tests, server, or binary were executed" was reviewed twice — as an
+  external-state claim that the server ran, and as the repository conclusion
+  "no tests", even when the inventory had already reported 110 test files. One
+  negator now distributes over the list; a clause with its own predicate
+  ("no tests were run, but the deployment was executed") and a discourse marker
+  ("No, the server was executed") keep their claim. The unexecuted-test report
+  is a run fact, not an absence conclusion.
+- An answer-correction request now reports the same action surface it offers.
+  The answer review reopened the loop's tool set but the projection still
+  published the previous answer-only verdict ("no tool is available"), so the
+  model spent the correction turn reconciling contradictory runtime state. The
+  correction request carries `Correcting`, removes only the answer-boundary
+  closure, keeps authority/scope/language/budget exclusions, and is not
+  answer-eligible.
 - A directory that becomes unreadable no longer keeps serving its last parsed
   declarations as current. The retained record is marked `STALE`, excluded from
   lookups, references, calls, entrypoints, tests, and every graph, and makes

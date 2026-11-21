@@ -237,3 +237,15 @@ func TestGroundingPreservesUnresolvedAlternative(t *testing.T) {
 		t.Fatalf("ambiguities = %+v, missing unresolved_alternative", intent.Grounding.Ambiguities)
 	}
 }
+
+// "Cite only files and lines you inspected" is an instruction, not a list of
+// named projects. Requiring the answer to preserve "lines you inspected" as an
+// entity turned a citation directive into an entity-loss review.
+func TestGroundingDoesNotRequireDirectiveClauses(t *testing.T) {
+	intent := BuildIntentContract("Investigate the order flow. Cite only files and lines you inspected.")
+	for _, entity := range intent.Grounding.Entities {
+		if strings.Contains(strings.ToLower(entity.Value), "inspected") {
+			t.Fatalf("a directive clause became entity %q (all: %+v)", entity.Value, intent.Grounding.Entities)
+		}
+	}
+}

@@ -348,10 +348,36 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		candidates.AnswerOnly = true
 		suff.Next = nil
 	}
+	// The previous answer failed review: the loop reopens the constructed
+	// surface for this one request, so the runtime block must describe the
+	// same tools. A terminal or missing-capability verdict is not overridden;
+	// no call could close it, and the loop keeps the surface closed.
+	correcting := false
+	if req.Correcting && len(gaps) == 0 &&
+		suff.Kind != BlockCapabilityFailure && suff.Kind != BlockProgressStalled {
+		// Remove only the answer-boundary closure: authority, scope, language,
+		// and budget exclusions still apply, so the reopened surface is the
+		// same one the task shape permits, not the full constructed set.
+		offered, excluded := correctionCandidates(shape, execution, req.Tools, p.Facts, suff)
+		if len(offered) > 0 {
+			candidates.Tools = offered
+			candidates.Excluded = excluded
+			candidates.Notices = nil
+			candidates.AnswerOnly = false
+			suff.Next = nil
+			correcting = true
+		}
+	}
 
 	messages, report := projectMessages(req.Messages, p.Evidence, options)
 	state := RenderState(shape, p.Evidence, execution, suff, candidates,
 		options.StateBlockBytes, options.StateBlockItems)
+	if correcting {
+		// The budget is runtime state, not a suggestion: the loop refuses the
+		// call after it is spent. Naming it beside the reopened surface keeps
+		// the model from planning a second investigation.
+		state += fmt.Sprintf("Correction budget: %d tool call(s) remaining; repair only the named claims and keep the rest of the answer.\n", req.CorrectionBudget)
+	}
 	if len(advice.Hints) > 0 {
 		state = appendExperienceHints(state, advice.Hints, options.StateBlockBytes)
 	}
@@ -397,6 +423,11 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.AnswerEligible = req.ForceAnswer || informationalEvidenceBoundary(shape, suff) ||
 		suff.Stage == StageComplete ||
 		(shape.Kind == contract.ObjectiveInformational && suff.Kind == BlockCapabilityFailure)
+	if correcting {
+		// A tool call during the correction request is evidence gathering,
+		// not continuation after a finished answer.
+		report.AnswerEligible = false
+	}
 	report.Terminal = suff.Kind == BlockCapabilityFailure || suff.Kind == BlockProgressStalled
 	switch {
 	case len(gaps) > 0:
@@ -416,6 +447,9 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		options.ExactKeepBytes, options.DiagnosticKeepBytes, options.ExternalKeepBytes, options.StructuralKeepBytes)
 	if len(report.Elisions) == 0 && state == "" && len(candidates.Tools) == len(req.Tools) {
 		report.Reason = "no projection change"
+	}
+	if correcting {
+		report.Reason = "answer correction: the permitted action surface is reopened for the evidence the review named"
 	}
 
 	result := agent.ProjectionResult{

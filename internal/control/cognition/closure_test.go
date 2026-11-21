@@ -160,3 +160,51 @@ func TestMCPDiscoveryDoesNotSatisfyExternalObservation(t *testing.T) {
 		t.Fatalf("sufficiency missing = %v, want external_observation", suff.Missing)
 	}
 }
+
+// The answer review asks the model to correct an unsupported claim. The loop
+// reopens the constructed tool set for that one turn, so the runtime block must
+// describe the same surface: the previous answer-only verdict told the model
+// that no tool existed while 23 tools were still in the request.
+func TestCorrectionRequestReopensOnlyThePermittedSurface(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "# Project\n\nA coding agent."),
+		readEvidenceForTest("read-2", "docs/architecture.md", "# Architecture\n"),
+		readEvidenceForTest("read-3", "main.go", "package main\n"),
+		readEvidenceForTest("read-4", "go.mod", "module example.com/project\n"),
+	)
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "ls", tier: agent.TierRead},
+		testTool{name: "write", tier: agent.TierWrite, ops: []contract.ChangeOp{contract.ChangeCreate}},
+	}
+
+	closed := NewProjector(shape, state.Clone(), RepositoryFacts{Go: true}).Project(agent.ProjectionRequest{
+		Tools: tools, ForceAnswer: true,
+	})
+	if len(closed.Tools) != 0 || !closed.Report.AnswerEligible {
+		t.Fatalf("answer-only request offered %d tool(s), eligible=%v", len(closed.Tools), closed.Report.AnswerEligible)
+	}
+
+	corrected := NewProjector(shape, state.Clone(), RepositoryFacts{Go: true}).Project(agent.ProjectionRequest{
+		Tools: tools, ForceAnswer: true, Correcting: true,
+	})
+	var names []string
+	for _, tool := range corrected.Tools {
+		names = append(names, tool.Name())
+	}
+	if strings.Join(names, ",") != "read,ls" {
+		t.Fatalf("correction surface = %v, want the read-only tools the ASK shape permits", names)
+	}
+	if corrected.Report.AnswerEligible {
+		t.Fatal("a correction request with tools was reported answer-eligible")
+	}
+	runtime := strings.Join(corrected.Runtime, "\n")
+	if strings.Contains(runtime, "No tool is available") {
+		t.Fatalf("correction runtime still claims no tool is available:\n%s", runtime)
+	}
+	if !strings.Contains(runtime, "Available actions: read") {
+		t.Fatalf("correction runtime does not name the reopened surface:\n%s", runtime)
+	}
+}

@@ -1152,22 +1152,35 @@ func (s *EvidenceState) addRead(outcome agent.ToolOutcome, path string, details 
 	if item.Source.StartLine > 0 && totalLines > 0 {
 		item.Source.EndLine = min(item.Source.StartLine+max(limit, 1)-1, totalLines)
 	}
-	if previous, ok := s.Find(item.ID); ok && previous.Digest != "" && previous.Digest != item.Digest {
-		if mutationSeq, changed := s.LastMutationSeq[path]; changed && mutationSeq > previous.Seq {
-			// The runtime changed the file; the new read is the current truth.
-		} else if sameReadWindow(previous, item) {
-			// Two observations of the same window disagree without a runtime
-			// mutation between them. That is a real conflict.
-			item.Status = StatusConflicting
-			item.Conflict = "the file changed without a recorded runtime mutation"
-			item.Summary = bound(path+": CONFLICTING content observed at two different times", MaxEvidenceSummaryBytes)
-			if item.Value == "" {
-				item.Value = previous.Value
+	if previous, ok := s.Find(item.ID); ok {
+		if previous.Digest != "" && previous.Digest != item.Digest {
+			if mutationSeq, changed := s.LastMutationSeq[path]; changed && mutationSeq > previous.Seq {
+				// The runtime changed the file; the new read is the current truth.
+			} else if sameReadWindow(previous, item) {
+				// Two observations of the same window disagree without a runtime
+				// mutation between them. That is a real conflict.
+				item.Status = StatusConflicting
+				item.Conflict = "the file changed without a recorded runtime mutation"
+				item.Summary = bound(path+": CONFLICTING content observed at two different times", MaxEvidenceSummaryBytes)
+				if item.Value == "" {
+					item.Value = previous.Value
+				}
 			}
 		}
 		// Different windows of one file are different observations, not a
-		// contradiction. Comparing their digests directly would manufacture a
-		// conflict when a model pages through a large file.
+		// contradiction. Keep both: the opening window carries a document's
+		// identity definition, and a later page used to overwrite it, so the
+		// project's own name became "documentation-only" and vetoed an answer
+		// that merely repeated it. The value stays bounded and is not
+		// completeness evidence.
+		if !sameReadWindow(previous, item) && previous.Value != "" && item.Value != "" {
+			merged := mergeReadWindows(previous, item)
+			if merged != item.Value {
+				item.Value = merged
+				item.Complete = false
+				item.Digest = digest(merged)
+			}
+		}
 	}
 	return s.upsert(item)
 }
@@ -1183,6 +1196,24 @@ func sameReadWindow(previous, current EvidenceItem) bool {
 	}
 	return previous.Source.StartLine == current.Source.StartLine &&
 		previous.Source.EndLine == current.Source.EndLine
+}
+
+// mergeReadWindows keeps the opening window first and appends the later page,
+// bounded. The opening window is what names the document; a later page alone
+// does not define the project.
+func mergeReadWindows(previous, current EvidenceItem) string {
+	first, second := previous.Value, current.Value
+	if current.Source.StartLine > 0 && current.Source.StartLine <= 1 &&
+		previous.Source.StartLine > 1 {
+		first, second = current.Value, previous.Value
+	}
+	if strings.Contains(first, second) {
+		return first
+	}
+	if strings.Contains(second, first) {
+		return second
+	}
+	return bound(first+"\n\n"+second, MaxEvidenceValueBytes)
 }
 
 // addListing records a directory listing as structural evidence.
@@ -2032,6 +2063,53 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Value:      text,
 			Digest:     digest(text),
 			Source:     Source{Tool: "bash", CallID: outcome.CallID},
+			Seq:        seq,
+		}) {
+			changed = true
+		}
+	}
+	if s.addShellSourceReads(outcome, command, text, seq) {
+		changed = true
+	}
+	return changed
+}
+
+// addShellSourceReads records the source files a shell command opened. A shell
+// content read is the same observation as the read tool's: the model saw the
+// bytes, so the requirement ledger must not keep asking for a source read it
+// already has. A command that concatenated several files is content evidence
+// but not a complete observation of any one of them.
+func (s *EvidenceState) addShellSourceReads(outcome agent.ToolOutcome, command, text string, seq int) bool {
+	if outcome.Result.IsError || outcome.Refused() || strings.TrimSpace(text) == "" {
+		return false
+	}
+	reads := agent.ShellSourceReads(command)
+	if len(reads) == 0 {
+		return false
+	}
+	changed := false
+	truncated := agent.ShellOutputTruncated(text)
+	for _, read := range reads {
+		path := cleanPath(read.Path)
+		if path == "" {
+			continue
+		}
+		summary := path + " — shell content read"
+		if len(reads) == 1 {
+			if first := firstContentLine(text); first != "" {
+				summary += " — " + bound(first, 120)
+			}
+		}
+		if s.upsert(EvidenceItem{
+			ID:         "file:" + path,
+			Status:     StatusKnown,
+			Retention:  RetentionExact,
+			Provenance: classifyPathProvenance(path),
+			Summary:    bound(summary, MaxEvidenceSummaryBytes),
+			Value:      text,
+			Digest:     digest(text),
+			Complete:   read.WholeFile && len(reads) == 1 && !truncated,
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
 			Seq:        seq,
 		}) {
 			changed = true

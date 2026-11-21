@@ -114,6 +114,18 @@ const ProtocolRecoveryRequest = `Runtime protocol recovery: your previous messag
 // user turn, and never shown in the transcript.
 const CompletionReviewRequest = `Runtime completion review: the previous answer cannot be accepted because {{reason}}. Correct it now using evidence already observed, or use an available tool to obtain the missing evidence. Do not repeat a claim the evidence does not support. If the missing fact cannot be established, state that limitation explicitly instead of completing the claim.`
 
+// ClaimRepairRequest is the bounded, claim-level correction. It is used in
+// place of CompletionReviewRequest when the review can name the rejected
+// claims. The model must repair only those sentences, keep the rest of the
+// answer, and stay inside the correction's small tool allowance. It is
+// runtime-authored, never persisted as a user turn, and never shown in the
+// transcript.
+const ClaimRepairRequest = `Runtime completion review: {{count}} claim(s) in the previous answer lack sufficient evidence. Repair only these claims; keep every other sentence, structure, and supported claim exactly as it is. The initial observations are already in the conversation — do not repeat a read, listing, or structural query that is already present unless the listed repair says the evidence is stale or missing. You may use at most {{budget}} tool call(s), only for the evidence named below. If a claim cannot be evidenced, qualify or remove that sentence and state the remaining uncertainty.
+
+{{repairs}}
+
+Audit reason: {{reason}}`
+
 // WorkspaceContract returns the semantic contract for a workspace, or "" for
 // an unknown name.
 //

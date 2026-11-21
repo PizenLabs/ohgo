@@ -259,13 +259,23 @@ may also sit in the claim itself: “no tests detected in inspected scope”,
 what was inspected or what never ran, so they are reports, not repository
 conclusions. The global-scope veto outranks every bounded form: one bounded
 phrase cannot excuse a repository-wide claim in the same sentence. A claim
-that a check did not run (“no tests were run”) is a fact about the run, not a
-repository property. The same holds for a change report: “no files were
-modified” describes what the run did to the workspace. It is not an absence
+that a check did not run (“no tests were run”, “no tests, server, or binary were
+executed”) is a fact about the run, not a repository property. The coordinated
+form distributes the negator over its items; a separate existence predicate
+(“no tests exist, server was executed”) keeps the repository conclusion. The
+same holds for a change report: “no files were modified” describes what the run
+did to the workspace. It is not an absence
 claim about repository contents, and no file scan could ever cover it. An
 inspection report follows the same rule: “no source files were read beyond the
 README” reports this run's observations, not that the repository has no source
 files.
+
+A behavior condition ("redirects to `/cart` when the cart is missing") is a
+branch description, not a repository absence. A package directory does not
+refute a claim about a check inside it: `backend/productcatalog/` does not
+establish that a productcatalog existence check is present. An explicit open
+question and next read ("stays open pending a read of …") is a limitation, not
+an unsupported claim.
 
 A **local configuration** claim is different again from an **external state**
 claim. A workflow file proves what is configured: the schedule, the trigger, the
@@ -276,10 +286,18 @@ run observed the remote surface itself: a knowledge call, an MCP capability, or
 a command that talked to a remote (`gh`, `git push`, `git ls-remote`, `curl`,
 `ssh`, a cloud CLI). A sentence that names the claim only to report it as
 unverified ("I cannot establish whether it ran") is an epistemic report, not a
-claim, and completes. The same is true of a negated event: “no server/database
-was executed” reports non-occurrence, not use. The negator must attach to the
-event's own subject phrase, so “no tests were run, but the deployment was
-executed” is still a claim about the deployment.
+claim, and completes. The same holds for a comparison or report the run cannot
+offer (“there is no static-vs-runtime comparison to report”, “no runtime
+behavior to describe”): the noun names the missing analysis, not a repository
+artifact. “I make no claim about test coverage” is the same kind of limit, not a
+statement that the repository has no tests. The same is true of a negated
+event: “no server/database was executed” reports non-occurrence, not use. A
+negator that introduces a coordinated subject list distributes over every item,
+so “no tests, server, or binary were executed” reports what the run did not do.
+The negator governs its own clause only: a clause with its own predicate ends
+the scope, so “no tests were run, but the deployment was executed” is still a
+claim about the deployment. A discourse marker followed by a determiner (“No,
+the server was executed”) is not a list and stays a claim.
 
 ### 4.6 Claim scope
 
@@ -293,6 +311,12 @@ source read               what the implementation does
 successful execution      what actually ran
 directory listing         names and sizes, not content or line counts
 ```
+
+A shell content read (`cat`, `sed`, `head`, `tail`, `nl`, `bat`) is the same
+source observation as the `read` tool: the model saw the bytes, so the claim
+and evidence audits credit it. A paged read is content, not a whole-file
+measurement; only a whole-file read or a line-count command establishes a
+file's total.
 
 The runtime keeps the claim classes explicit. The status is a projection of the
 same evidence ledger the answer audit uses, never a second evidence store:
@@ -447,8 +471,12 @@ not promoted to a concept absence. Only the leading item of an absence list is
 read as the conclusion (“No JWT, RabbitMQ client code, …”); a bare “no X”
 elsewhere in the sentence stays with the inventory facts.
 
-A concrete line count needs the file's read `totalLines` (or a line-count
-command). A directory listing's byte size is not a line count; a gross
+A concrete line count needs the file's read `totalLines`, a whole-file shell
+read, or a line-count command. A paged shell read reports the page, not the
+file total, and a phrase such as "first ~90 lines" is a read window rather than
+a total. A count inside a parenthetical annotation belongs to the path that
+introduces the parenthesis ("`order_factory.go` (read, 97 lines) and
+`order.go` (read, 413 lines)"), not to the next path in the sentence. A directory listing's byte size is not a line count; a gross
 contradiction between the answer and the observed total is reviewed. An
 independent-deployment conclusion needs a Dockerfile, Kubernetes, Helm, or
 deploy manifest observation; separate Compose service declarations are
@@ -456,6 +484,18 @@ topology, not a deployment boundary. A path-scoped inference (“`supabase/`
 likely contains schema/edge functions”) needs the inferred category in an
 observation of that path; a general inference with no path is left to the
 evidence and provenance layers.
+
+An explicit source citation (`path`, optionally with a line range) is supported
+by a whole or paged read, a shell content read, or a grep-shaped observation
+that reports `path:line: content` for a line inside the cited window. A
+listing or `find` result that only names the path is not content; an observed
+match outside the cited window does not support it. A sentence that names the
+path only to say it was not opened, read, or inspected is a limitation, not a
+citation. A package- or type-qualified reference (`checkout.New`,
+`StockReserver.Reserve`, `httpHandler.Checkout`) is supported by its package
+declaration, interface block, or receiver method in the observed source even
+though the dotted spelling never appears there. Runtime status tokens
+(`NOT_OBSERVED`, `PARTIAL`) are the runtime's vocabulary, not code entities.
 
 The claim audit applies to informational answers only. A mutation answer is
 judged by target, mutation, and verification evidence, not by its prose. The
@@ -470,7 +510,12 @@ the test inventory is complete, whether scope is partial or truncated, and
 whether dependency evidence is only declared or imported. The frontier never
 hardcodes project names; component identities come from the structural and
 source coordinates. The model sees what the run can claim before writing, and
-the completion audit still reviews a claim that exceeds it.
+the completion audit still reviews a claim that exceeds it. The block also names
+the documentation-only vocabulary — terms the documentation uses and the
+observed source does not — so the answer can attribute them or inspect the
+source that carries them before the correction boundary. The observed-term
+comparison scans the full retained observation; it is not capped by the bounded
+output vocabulary, because a term past the output cap is still observed source.
 
 ### 4.7 Completion integrity
 
@@ -504,6 +549,25 @@ earlier failure remains in the durable ledger. Recovery never fabricates the
 evidence the failed call would have produced, never erases a valid observation,
 and never promotes a task to `PROVEN` by itself. Only the completion evaluator,
 using the answer and the evidence contract, can do that.
+
+An answer correction is a bounded, claim-level recovery, not a second
+investigation. Each repairable audit issue carries the claim, its location, its
+category, the evidence class it needs, a reference, and the permitted action.
+The correction names at most `MaxRepairInstructions` claims and tells the model
+to keep every other sentence, reuse the observations already in the
+conversation, and stay within a small per-correction tool allowance
+(`CorrectionToolCalls`, default 3). Calls beyond the allowance fail closed
+before execution; a reused observation does not consume it. The allowance is
+per correction, not per run, so the initial investigation's budget is unchanged.
+The pre-answer review also runs the documentation-only provenance audit when the
+host supplies the last projection's provenance, so a documented claim is
+repaired before completion instead of surfacing as a terminal review. When the
+evidence still cannot be obtained, the answer must qualify or remove the claim;
+the runtime never accepts it to finish the task.
+
+A paged read keeps the document's opening window. Different windows are not a
+conflict, and a later window no longer overwrites the definition that names the
+project. The merged value is bounded and is not completeness evidence.
 
 ## 5. Escalation thresholds
 

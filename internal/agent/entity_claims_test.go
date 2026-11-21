@@ -141,3 +141,57 @@ func TestEntityClaimSkipsRetractedIdentifier(t *testing.T) {
 		t.Fatalf("issues = %+v, want an unsupported_code_entity", issues)
 	}
 }
+
+// A package-qualified reference names the declaration by its package. The run
+// read backend/checkout/bounded_context.go, which declares `func New`, and the
+// answer wrote the import-path spelling `checkout.New`. Requiring the literal
+// dotted token reviewed a source-verified constructor as invented.
+func TestEntityClaimAcceptsPackageQualifiedDeclaration(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("backend/checkout/bounded_context.go",
+			"1\tpackage checkout\n2\t\n3\tfunc New(db *sql.DB) {}\n"),
+	}}}
+	answer := "The `checkout.New` constructor takes locally-declared interfaces."
+	if issues := claimScopeIssues(answer, turns); len(issues) != 0 {
+		t.Fatalf("a package-qualified observed declaration was reviewed: %+v", issues)
+	}
+
+	// A member the package does not declare is still invented.
+	invented := "The `checkout.Reconcile` constructor takes locally-declared interfaces."
+	if issues := claimScopeIssues(invented, turns); len(issues) == 0 {
+		t.Fatal("an undeclared package member was accepted")
+	}
+}
+
+// An answer names a method by its type (`StockReserver.Reserve`,
+// `httpHandler.Checkout`). The declaration spells it as an interface method or
+// a receiver method, so the literal dotted token never appears. A member the
+// type does not declare is still invented.
+func TestEntityClaimAcceptsTypeQualifiedMembers(t *testing.T) {
+	source := "type StockReserver interface {\n\tReserve(ctx context.Context, quantities map[string]int) error\n}\n\n" +
+		"type OrderStorage interface {\n\tSave(ctx context.Context, order *Order) error\n}\n\n" +
+		"func (handler httpHandler) Checkout(w http.ResponseWriter, r *http.Request) {}\n"
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("backend/checkout/app/checkout.go", source),
+	}}}
+	answer := "`StockReserver.Reserve`, `OrderStorage.Save`, and `httpHandler.Checkout` are the seams."
+	if issues := claimScopeIssues(answer, turns); len(issues) != 0 {
+		t.Fatalf("type-qualified observed members were reviewed: %+v", issues)
+	}
+	invented := "`StockReserver.Save` and `httpHandler.Place` are the seams."
+	if issues := claimScopeIssues(invented, turns); len(issues) == 0 {
+		t.Fatal("members the types do not declare were accepted")
+	}
+}
+
+// The runtime state block prints evidence statuses in backticks. Quoting
+// `NOT_OBSERVED` is a status report, not an invented declaration.
+func TestEntityClaimIgnoresRuntimeStatusTokens(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("main.go", "package main\n"),
+	}}}
+	answer := "Runtime was `NOT_OBSERVED`; the index is `PARTIAL` and `UNPARSED`."
+	if issues := claimScopeIssues(answer, turns); len(issues) != 0 {
+		t.Fatalf("runtime status tokens were reviewed as code entities: %+v", issues)
+	}
+}

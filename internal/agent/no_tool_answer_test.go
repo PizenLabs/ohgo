@@ -87,6 +87,7 @@ type informationalResult struct {
 	turns    []agent.Turn
 	intent   contract.IntentContract
 	report   agent.ProjectionReport
+	reports  []agent.ProjectionReport
 	requests int64
 	err      error
 }
@@ -95,6 +96,14 @@ type informationalResult struct {
 // The script is consumed one message per provider request; running past it is a
 // failure, so the test observes exactly how many requests the runtime made.
 func runInformational(t *testing.T, script []ai.AssistantMessage) informationalResult {
+	t.Helper()
+	return runInformationalWithReview(t, script, nil)
+}
+
+// runInformationalWithReview is runInformational with the host's answer review
+// installed. A review is the bounded correction path: it may ask for one more
+// answer, and the run must be able to gather the evidence the correction names.
+func runInformationalWithReview(t *testing.T, script []ai.AssistantMessage, review func([]agent.Turn, string) string) informationalResult {
 	t.Helper()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/ohgo\n\ngo 1.24\n"), 0o644); err != nil {
@@ -118,6 +127,7 @@ func runInformational(t *testing.T, script []ai.AssistantMessage) informationalR
 
 	var requests atomic.Int64
 	var lastReport agent.ProjectionReport
+	var reports []agent.ProjectionReport
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
 		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
@@ -127,20 +137,26 @@ func runInformational(t *testing.T, script []ai.AssistantMessage) informationalR
 			}
 			return ai.NewCompletedStream(script[index]), nil
 		},
-		Tools:     []agent.Tool{evidenceReadTool{}, evidenceListTool{}},
-		Project:   projector.Project,
-		Authorize: allowRead{},
-		MaxTurns:  6,
+		Tools:                   []agent.Tool{evidenceReadTool{}, evidenceListTool{}},
+		Project:                 projector.Project,
+		Authorize:               allowRead{},
+		MaxTurns:                6,
+		CompletionReviewRequest: "Runtime completion review: {{reason}}. Correct the answer or state the limitation.",
 		OnProjection: func(report agent.ProjectionReport) {
 			lastReport = report
+			reports = append(reports, report)
 		},
 	})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
+	if review != nil {
+		loop.SetAnswerReview(review)
+		defer loop.SetAnswerReview(nil)
+	}
 
 	turns, err := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: prompt}})
-	return informationalResult{turns: turns, intent: intent, report: lastReport, requests: requests.Load(), err: err}
+	return informationalResult{turns: turns, intent: intent, report: lastReport, reports: reports, requests: requests.Load(), err: err}
 }
 
 func readCall(id string) []ai.ContentBlock {
@@ -612,5 +628,102 @@ func TestPreparatoryPlanIsNotAnAnswerOnAClosedSurface(t *testing.T) {
 	}
 	if !strings.Contains(got.Reason, "answer") {
 		t.Fatalf("completion reason = %q, want an answer-substance reason", got.Reason)
+	}
+}
+
+// The answer review rejects the first candidate and names the gap. The
+// correction request must be able to close it: the previous answer-only verdict
+// closed the projected surface, and a model that follows the review's "use an
+// available tool" instruction must get a tool that can actually run.
+func TestAnswerCorrectionCanGatherEvidenceTheProjectionClosed(t *testing.T) {
+	reviewed := false
+	review := func(_ []agent.Turn, answer string) string {
+		if !reviewed && strings.Contains(answer, "Draft") {
+			reviewed = true
+			return "the answer does not name the module the repository declares"
+		}
+		return ""
+	}
+	result := runInformationalWithReview(t, []ai.AssistantMessage{
+		{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: "Draft: a small project."}}},
+		{
+			Content: []ai.ContentBlock{ai.ToolCall{
+				ID: "turn-3-license", Name: "read", Arguments: map[string]any{"path": "LICENSE"},
+			}},
+			StopReason: ai.StopToolUse,
+		},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: "ohgo is a coding agent with a controlled runtime."}}},
+	}, review)
+
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 4 {
+		t.Fatalf("model requests = %d, want 4 (survey, rejected answer, correction read, corrected answer)", result.requests)
+	}
+	if len(result.turns) != 4 {
+		t.Fatalf("turns = %d, want 4", len(result.turns))
+	}
+	correction := result.turns[2]
+	if len(correction.Results) != 1 || correction.Results[0].ToolName != "read" {
+		t.Fatalf("correction results = %+v, want the LICENSE read to execute", correction.Results)
+	}
+	if got := correction.Results[0].Args["path"]; got != "LICENSE" {
+		t.Fatalf("correction path = %v, want LICENSE", got)
+	}
+	found := false
+	for _, report := range result.reports {
+		if !strings.HasPrefix(report.Reason, "answer correction:") {
+			continue
+		}
+		found = true
+		if report.AnswerEligible {
+			t.Fatal("the correction request was reported answer-eligible with tools on offer")
+		}
+		offered := strings.Join(report.ToolNames, ",")
+		if !strings.Contains(offered, "read") {
+			t.Fatalf("correction offered %q, want read for the named gap", offered)
+		}
+	}
+	if !found {
+		t.Fatal("no correction projection was reported")
+	}
+}
+
+// The projected correction surface lasts for the whole correction, not one
+// request. A repair that reads one file and then another must execute both;
+// otherwise a two-step repair is impossible even though the tool budget allows
+// it.
+func TestProjectedCorrectionSurfaceSpansMultipleRequests(t *testing.T) {
+	reviewed := false
+	review := func(_ []agent.Turn, answer string) string {
+		if !reviewed && strings.Contains(answer, "Draft") {
+			reviewed = true
+			return "the answer is missing the module name"
+		}
+		return ""
+	}
+	read := func(id, path string) []ai.ContentBlock {
+		return []ai.ContentBlock{ai.ToolCall{ID: id, Name: "read", Arguments: map[string]any{"path": path}}}
+	}
+	result := runInformationalWithReview(t, []ai.AssistantMessage{
+		{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: "Draft answer."}}},
+		{Content: read("turn-3", "LICENSE"), StopReason: ai.StopToolUse},
+		{Content: read("turn-4", "NOTICE"), StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: "ohgo is a coding agent with a controlled runtime."}}},
+	}, review)
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 5 {
+		t.Fatalf("model requests = %d, want 5 (survey, draft, read, read, answer)", result.requests)
+	}
+	if len(result.turns) != 5 {
+		t.Fatalf("turns = %d, want 5", len(result.turns))
+	}
+	if got := result.turns[3].Results; len(got) != 1 || got[0].ToolName != "read" {
+		t.Fatalf("second correction read did not execute: %+v", got)
 	}
 }

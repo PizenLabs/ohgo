@@ -86,15 +86,26 @@ func AssessRequiredFacets(intent contract.IntentContract, turns []Turn, answer s
 		// facet would crowd the review reason with duplicates.
 		return assessment
 	}
-	add := func(code, detail string) {
-		for _, issue := range assessment.Issues {
-			if issue.Code == code && issue.Detail == detail {
+	addIssue := func(issue contract.GroundingIssue) {
+		for _, existing := range assessment.Issues {
+			if existing.Code == issue.Code && existing.Detail == issue.Detail {
 				return
 			}
 		}
-		assessment.Issues = append(assessment.Issues, contract.GroundingIssue{Code: code, Detail: detail})
-		assessment.Reasons = append(assessment.Reasons, detail)
+		assessment.Issues = append(assessment.Issues, issue)
+		assessment.Reasons = append(assessment.Reasons, issue.Detail)
 		assessment.Verdict = contract.GroundingReview
+	}
+	add := func(code, detail string) {
+		issue := contract.GroundingIssue{Code: code, Detail: detail}
+		switch code {
+		case "required_facet_missing", "required_facet_unverified",
+			"required_facet_incomplete_list", "required_facet_contradicted":
+			issue.Category = "facet"
+			issue.Requirement = "the requested facet's evidence"
+			issue.Action = "report the facet from observed evidence or state it as unverified"
+		}
+		addIssue(issue)
 	}
 	for _, facet := range facets {
 		pattern := facetTermPatterns[facet.Facet]

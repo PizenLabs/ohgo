@@ -6035,10 +6035,13 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// so a later turn never inherits an objective it did not state.
 	p.loop.SetGrounding(intent.Grounding)
 	defer p.loop.SetGrounding(nil)
-	p.loop.SetAnswerReview(func(turns []agent.Turn, answer string) string {
-		return agent.ReviewInformationalAnswer(intent, turns, answer)
+	p.loop.SetInformationalReviews(intent, func() agent.EvidenceProvenance {
+		if p.task.ProjectionProvenance != nil {
+			return p.task.ProjectionProvenance()
+		}
+		return agent.EvidenceProvenance{}
 	})
-	defer p.loop.SetAnswerReview(nil)
+	defer p.loop.ClearInformationalReviews()
 
 	request := append(append([]agent.Message(nil), history...), user)
 
@@ -6058,16 +6061,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// deltas that reach the event channel count as revealed — a dropped
 	// delta stays the completed turn's job below, never silently lost.
 	var live, liveThinking strings.Builder
-	p.loop.SetTextDeltaHook(func(delta string) {
-		if delta == "" {
-			return
-		}
-		for _, chunk := range splitAssistantChunks(delta) {
-			if p.publishOK(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq}) {
-				live.WriteString(chunk)
-			}
-		}
-	})
+	// Model text is published only when its turn is complete and publishable.
+	// Streaming it while the request is open would show a full answer the
+	// model then abandons for a tool call, or one the answer review rejects.
+	// The completed turn carries the same text and its suppression flags.
+	p.loop.SetTextDeltaHook(nil)
 	// Reasoning is its own channel, so the transcript can represent it as a
 	// collapsed block. It is published live for the same reason text is: a
 	// long trace must be observable while it is happening, not reconstructed
@@ -6245,6 +6243,18 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// double-counted.
 	var seenIn, seenOut int
 	p.loop.SetTurnHook(func(turn agent.Turn) {
+		// The turn is complete. Publish its text only when it is a
+		// publishable answer: a rejected candidate and prose that continued
+		// into a tool call are investigation, not conclusions.
+		if !turn.Suppressed && !turn.SuppressText {
+			if text := turn.Assistant.Text(); text != "" {
+				for _, chunk := range splitAssistantChunks(text) {
+					if p.publishOK(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq}) {
+						live.WriteString(chunk)
+					}
+				}
+			}
+		}
 		seenIn += turn.Assistant.Usage.Input
 		seenOut += turn.Assistant.Usage.Output
 		if seenIn == 0 && seenOut == 0 && turn.Assistant.Usage.Total == 0 {
@@ -6533,6 +6543,9 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	streamed := live.String()
 	consumed := 0
 	for _, rawTurn := range turns {
+		if rawTurn.Suppressed {
+			continue
+		}
 		turn := agent.TranscriptTurn(rawTurn)
 		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
 			// The turn contained only answer-required control refusals. It

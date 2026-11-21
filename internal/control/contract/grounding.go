@@ -306,11 +306,42 @@ const (
 )
 
 // GroundingIssue is one machine-readable reason for a verdict.
+//
+// The optional repair fields turn a rejection reason into a bounded repair
+// instruction. They are a projection of the same audit that produced Detail,
+// never a second evidence check: a caller can show the model exactly which
+// claim to repair, what evidence class it needs, and which action is permitted.
+// An issue with no Category is a general answer-level reason and keeps the
+// existing prose correction.
 type GroundingIssue struct {
 	// Code is a stable identity, e.g. "entity_missing".
 	Code string `json:"code"`
 	// Detail explains the observation.
 	Detail string `json:"detail,omitempty"`
+	// Claim is the rejected assertion or the subject that carries it.
+	Claim string `json:"claim,omitempty"`
+	// Location identifies the claim's place in the answer, when known.
+	Location string `json:"location,omitempty"`
+	// Category is the claim class: absence, runtime, attribution, citation,
+	// entity, line_count, facet, or search.
+	Category string `json:"category,omitempty"`
+	// Requirement names the evidence class the claim needs.
+	Requirement string `json:"requirement,omitempty"`
+	// Reference names the path, symbol, term, or entity the claim is about.
+	Reference string `json:"reference,omitempty"`
+	// Action is the permitted next investigation or wording action.
+	Action string `json:"action,omitempty"`
+}
+
+// Repairs returns the issues that can be repaired claim by claim.
+func (a GroundingAssessment) Repairs() []GroundingIssue {
+	var out []GroundingIssue
+	for _, issue := range a.Issues {
+		if issue.Category != "" {
+			out = append(out, issue)
+		}
+	}
+	return out
 }
 
 // GroundingAssessment is the result of validating a proposal or answer.

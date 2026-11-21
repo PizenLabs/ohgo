@@ -901,6 +901,11 @@ type StoredMessage struct {
 	// context; flattening them into Text plus Calls made a resumed transcript
 	// reorder the conversation and lose reasoning entirely.
 	Blocks []StoredBlock `json:"blocks,omitempty"`
+	// Usage is the provider's measured usage for an assistant turn. It is
+	// audit data, not replay content: keeping it lets a benchmark separate the
+	// initial investigation from the answer correction instead of reading only
+	// an aggregate session total.
+	Usage *ai.Usage `json:"usage,omitempty"`
 }
 
 // Stored block kinds.
@@ -946,6 +951,10 @@ func FromAgentMessage(msg agent.Message) (StoredMessage, error) {
 			Text:       m.Message.Text(),
 			Model:      m.Message.Model.ID,
 			StopReason: string(m.Message.StopReason),
+		}
+		if used := m.Message.Usage; used.Input > 0 || used.Output > 0 ||
+			used.CacheRead > 0 || used.CacheWrite > 0 || used.Total > 0 {
+			out.Usage = &used
 		}
 		for _, block := range m.Message.Content {
 			switch b := block.(type) {

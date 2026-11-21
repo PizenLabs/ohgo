@@ -876,6 +876,37 @@ the model said. Two properties keep the loop honest and small:
   corrected-invocation window before that forced boundary, so malformed
   proposals cannot consume turns but a valid correction is never mistaken for a
   repeated outage.
+- **An answer correction reopens the permitted surface.** When the answer-level
+  review rejects a candidate answer, the next request may gather the evidence
+  the review named. The loop reopens the surface for that turn
+  (`ProjectionRequest.Correcting`; the constructed set when no projector is
+  installed), and the projection reports the same surface: the answer-boundary
+  closure is removed, while mutation authority,
+  scope, language, external, and budget exclusions still apply. The request is
+  not answer-eligible, so a call during it is evidence gathering rather than
+  continuation after a finished answer. Without this synchronisation the model
+  reads a stale "no tool is available" verdict next to a live tool block and
+  spends the correction turn reconciling the contradiction.
+- **A correction is proportional to its rejected claims.** The answer audit
+  projects each repairable issue into the shared `GroundingIssue` contract
+  (claim, location, category, required evidence, reference, permitted action).
+  The loop's `AnswerRepairs` planner is a projection of the same audit, never a
+  second check, and `ClaimRepairRequest` renders at most
+  `MaxRepairInstructions` claims with a tool-call allowance. The correction
+  keeps the initial conversation and evidence; the directive explicitly forbids
+  re-reading what is already present. A reused observation is answered from the
+  loop's replay cache and does not consume the correction allowance.
+  `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 3) is enforced
+  before tool execution and survives concurrent batches; calls beyond it fail
+  closed with `ToolFailureCorrectionBudget` and the model must answer with the
+  evidence it has. The pre-answer review includes the documentation-only
+  provenance audit when the host supplies the last projection summary, so a
+  documented claim is repaired before completion rather than after it.
+- **A paged read keeps the document's opening identity.** A later window of the
+  same file no longer overwrites the opening window in the evidence ledger. The
+  merged value is bounded and not completeness evidence, but it preserves the
+  definition that names the project; without it a chunked README made the
+  project's own name documentation-only.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
   refused, the turn could not change the runtime's state; this is true even when

@@ -91,3 +91,48 @@ func TestTranscriptTurnKeepsNonAnswerRefusals(t *testing.T) {
 		t.Fatalf("projection = %+v, want the grounding refusal preserved", got)
 	}
 }
+
+// A rejected candidate is model context, not a user-visible answer. It must
+// not reach the transcript, plain output, persistence, or the next request.
+func TestTranscriptTurnHidesSuppressedCandidate(t *testing.T) {
+	turn := Turn{
+		Assistant: ai.AssistantMessage{
+			Content: []ai.ContentBlock{ai.TextContent{Text: "The first, unsupported answer."}},
+		},
+		Suppressed: true,
+	}
+	if got := TranscriptTurn(turn); got.Assistant.Text() != "" || len(got.Results) != 0 {
+		t.Fatalf("suppressed turn was published: %+v", got)
+	}
+	if got := ConversationMessages([]Turn{turn}); len(got) != 0 {
+		t.Fatalf("suppressed turn entered the next request: %+v", got)
+	}
+}
+
+// Prose followed by a tool call is investigation, not a conclusion. The call
+// and its evidence stay; the abandoned answer text does not.
+func TestTranscriptTurnDropsProseBeforeToolCall(t *testing.T) {
+	turn := Turn{
+		Assistant: ai.AssistantMessage{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: "Here is the full answer I will replace after one more read."},
+				ai.ToolCall{ID: "read", Name: "read", Arguments: map[string]any{"path": "a.go"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+		SuppressText: true,
+		Results: []ToolOutcome{
+			{CallID: "read", ToolName: "read", Result: Result{Text: "package a"}},
+		},
+	}
+	got := TranscriptTurn(turn)
+	if text := got.Assistant.Text(); text != "" {
+		t.Fatalf("prose published: %q", text)
+	}
+	if calls := got.Assistant.ToolCalls(); len(calls) != 1 || calls[0].ID != "read" {
+		t.Fatalf("calls = %+v, want the read call", calls)
+	}
+	if len(got.Results) != 1 || got.Results[0].CallID != "read" {
+		t.Fatalf("results = %+v, want the read evidence", got.Results)
+	}
+}

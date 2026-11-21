@@ -59,6 +59,10 @@ const (
 	// workspace. Nothing ran, so this is a control decision, not a failed
 	// action.
 	ToolFailureOutsideWorkspace = "outside_workspace"
+	// ToolFailureCorrectionBudget is the answer-correction window refusing a
+	// call beyond its small per-repair allowance. Nothing ran; the model must
+	// answer from evidence it already has.
+	ToolFailureCorrectionBudget = "correction_budget_exhausted"
 	// ToolFailureCapabilityUnavailable is a proposal for a capability the task
 	// surface does not offer. Nothing ran. It is discovery feedback for the
 	// model, distinct from an execution failure, and the control plane blocks

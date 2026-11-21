@@ -77,7 +77,7 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	// target and verification evidence instead, so it does not spend the block
 	// on this distinction.
 	if shape.Kind == contract.ObjectiveInformational {
-		sections = append(sections, claimEvidenceBlock(evidence))
+		sections = append(sections, claimEvidenceBlock(shape, evidence))
 	}
 	var contractLine strings.Builder
 	fmt.Fprintf(&contractLine, "Task shape: %s\n", shape.Summary())
@@ -287,7 +287,7 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 // informational answer. It is the generation-side half of the completion
 // claim audit: the model is told which observations support which class before
 // it writes, instead of learning the boundary only from a review.
-func claimEvidenceBlock(evidence *EvidenceState) string {
+func claimEvidenceBlock(shape TaskShape, evidence *EvidenceState) string {
 	summary := evidence.ClaimSummary()
 	var line strings.Builder
 	line.WriteString("Claim evidence: implementation=")
@@ -345,6 +345,20 @@ func claimEvidenceBlock(evidence *EvidenceState) string {
 	line.WriteString("Claim rule: configuration declares topology, not execution; " +
 		"absence needs a complete untruncated inventory (else \"not found in inspected scope\"); " +
 		"Implementation status and behavior need source/runtime evidence.\n")
+	// A term the documentation uses and the observed source does not is the
+	// exact vocabulary the completion audit will review. Naming it before the
+	// answer lets the model attribute the claim or read the source that carries
+	// it, instead of learning the boundary only from a rejected answer.
+	if provenance := evidence.Provenance(shape); provenance.RequireAttribution &&
+		len(provenance.DocumentationTerms) > 0 {
+		terms := provenance.DocumentationTerms
+		if len(terms) > 10 {
+			terms = terms[:10]
+		}
+		line.WriteString("Documentation-only terms: ")
+		line.WriteString(bound(strings.Join(terms, ", "), 220))
+		line.WriteString(" — attribute each to the documentation or verify it in source before presenting it as an implementation fact.\n")
+	}
 	frontier := summary.EvidenceFrontier()
 	if len(frontier) == 0 && !summary.HasImplementation {
 		frontier = []string{"implementation -> SOURCE_CONTENT missing; next: inspect the component entrypoint or implementation files"}

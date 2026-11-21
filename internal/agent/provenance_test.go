@@ -204,3 +204,79 @@ func TestBareSmallIntegerIsNotADocumentationClaim(t *testing.T) {
 		t.Fatal("a concrete documented metric passed as an observed fact")
 	}
 }
+
+// A documentation-only term is a repairable claim, not a generic answer
+// rejection. The correction must name the term and the action, so the model can
+// attribute it or read the source without re-running the investigation.
+func TestProvenanceReviewCarriesAClaimRepair(t *testing.T) {
+	assessment := AssessAnswerProvenance(provenanceContract("analyze this project"),
+		"The frontend uses HTMX for interactivity.",
+		EvidenceProvenance{RequireAttribution: true, DocumentationTerms: []string{"htmx"}})
+	if assessment.Pass() {
+		t.Fatal("a documentation-only term was accepted")
+	}
+	repairs := assessment.Repairs()
+	if len(repairs) != 1 {
+		t.Fatalf("repairs = %+v, want one claim", repairs)
+	}
+	repair := repairs[0]
+	if repair.Category != "attribution" || repair.Reference != "htmx" || repair.Requirement == "" || repair.Action == "" {
+		t.Fatalf("repair = %+v, want attribution/htmx/requirement/action", repair)
+	}
+	if !strings.Contains(repair.Location, "HTMX") {
+		t.Fatalf("location = %q, want the claim's sentence", repair.Location)
+	}
+}
+
+// The pre-answer review can reject a documentation-only claim before the
+// answer is published. The repair is the same structured attribution claim the
+// completion audit would produce, so the loop can ask for a targeted fix.
+func TestInformationalReviewRejectsDocumentationOnlyClaimBeforeCompletion(t *testing.T) {
+	intent := provenanceContract("analyze this project")
+	provenance := EvidenceProvenance{RequireAttribution: true, DocumentationTerms: []string{"htmx"}}
+	answer := "The frontend uses HTMX for interactivity."
+	if reason := ReviewInformationalAnswerWithProvenance(intent, nil, answer, provenance); reason == "" {
+		t.Fatal("the pre-answer review accepted a documentation-only claim")
+	}
+	repairs := ReviewInformationalRepairsWithProvenance(intent, nil, answer, provenance)
+	if len(repairs) != 1 || repairs[0].Category != "attribution" || repairs[0].Reference != "htmx" {
+		t.Fatalf("repairs = %+v, want one attribution repair for htmx", repairs)
+	}
+}
+
+// A correction must see every documentation-only claim in one pass. Reporting
+// only the first one leaves the model to fix it, answer, and be rejected again
+// for the next term — the regeneration loop this repair path exists to avoid.
+func TestProvenanceReviewCollectsEveryDocumentedClaim(t *testing.T) {
+	assessment := AssessAnswerProvenance(provenanceContract("analyze this project"),
+		"The frontend uses HTMX for interactivity. The backend is a DDD example.",
+		EvidenceProvenance{RequireAttribution: true, DocumentationTerms: []string{"htmx", "ddd"}})
+	repairs := assessment.Repairs()
+	if len(repairs) != 2 {
+		t.Fatalf("repairs = %+v, want both documented claims", repairs)
+	}
+	if repairs[0].Reference != "htmx" || repairs[1].Reference != "ddd" {
+		t.Fatalf("repairs = %+v, want htmx and ddd", repairs)
+	}
+}
+
+// Ordinary domain nouns are the product's subject, not a specific documented
+// claim. "Customer", "color", and "documents" are not provenance violations.
+func TestCommonDomainNounsAreNotDocumentationClaims(t *testing.T) {
+	answer := "The customer storefront offers color choices and documents the order flow."
+	assessment := AssessAnswerProvenance(provenanceContract("analyze this project"), answer,
+		EvidenceProvenance{RequireAttribution: true, DocumentationTerms: []string{"customer", "color", "documents"}})
+	if !assessment.Pass() {
+		t.Fatalf("domain nouns were reviewed as documentation claims: %s", assessment.Reason())
+	}
+}
+
+// Negation and "shared" are ordinary prose, not documentation-only claims.
+func TestProseNegationIsNotADocumentationClaim(t *testing.T) {
+	answer := "There is no runtime observation; the shared kernel is documented."
+	assessment := AssessAnswerProvenance(provenanceContract("analyze this project"), answer,
+		EvidenceProvenance{RequireAttribution: true, DocumentationTerms: []string{"no", "shared"}})
+	if !assessment.Pass() {
+		t.Fatalf("prose was reviewed as documentation claims: %s", assessment.Reason())
+	}
+}
