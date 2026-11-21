@@ -112,6 +112,12 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
+	if opts.usage != nil {
+		// The chart capability reads the same measured ledger /usage reads.
+		// It is added only where a session ledger exists, so a tool that
+		// could not produce a truthful chart is never advertised.
+		toolSet = append(toolSet, tools.NewRenderChartTool(newUsageChartProvider(opts.usage)))
+	}
 	toolSet = append(toolSet, externalTools(opts.settings, opts.root, opts.mcpRuntime)...)
 
 	// The task tool is added last and gets a spawner that stands up a sibling

@@ -7,6 +7,25 @@ immutable.
 
 ### Added
 
+- A deterministic terminal visualization engine:
+  `internal/presentation/chart` owns a strongly typed dataset/spec, a
+  rule-based planner, adaptive layout, an exact table, horizontal bars,
+  single-series Braille and multi-series marker lines, independent-scale small
+  multiples, and before/after change grids. Units, aggregations, missing
+  values, capped points, provenance, and scale decisions survive to the
+  renderer. The engine emits semantic spans, never ANSI or terminal geometry;
+  the TUI maps them onto the existing palette.
+- `/chart` renders measured session telemetry (token totals and transcript tool
+  calls) as an ordinary transcript block without a model call or a token cost.
+  `/chart <dataset.json>` presents a user-selected structured dataset through
+  the same deterministic planner and renderer, with strict bounded parsing and
+  explicit file provenance.
+- `render_chart` lets the model select a registered source and form only. The
+  host validates the source, plans the presentation, renders it in the TUI, and
+  returns a one-line summary instead of the chart, so visualization cannot
+  amplify context or become an authority bypass.
+- `bench/structural` now renders its measured analysis timings through the same
+  engine, with the exact table before the derived bar.
 - NVIDIA NIM as a provider: `NVIDIA_API_KEY` against
   `https://integrate.api.nvidia.com/v1` through the shared Chat Completions
   transport. Eight bundled models (Nemotron 3 Ultra, Nemotron 3.5 Super VL,
@@ -19,6 +38,10 @@ immutable.
 
 ### Fixed
 
+- A medium-width exact chart table no longer truncates numeric row labels.
+  `20,000` was shortened to `20,00`, which still looked like a number but
+  changed the datum; numeric labels now force the stacked exact-value form
+  instead of shrinking.
 - An answer that retracts an identifier is no longer audited as a claim that
   the withdrawn name exists. A rejected answer could not be repaired: the
   correction had to quote the wrong qualified name to retract it, so intent

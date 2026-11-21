@@ -23,8 +23,8 @@
                             │                          (the only package main outside bench/scripts)
         ┌───────────────────┴───────────────────┐
         │                                       │
-   internal/tui                          internal/{commit,startup,update,
-   (+ tui/design, tui/diff)               history,gryhook}        application services
+   internal/tui · presentation/chart    internal/{commit,startup,update,
+   (+ tui/design, tui/diff)              history,gryhook}        application services
         │                                       │
         └───────────────┬───────────────────────┘
                         │
@@ -86,7 +86,7 @@ create a boundary that does not exist.
 | **vcs** | `vcs` | Git primitives | Whether a commit is allowed |
 | **prompt** | `prompt`, `promptopt` | System prompt text, `AGENTS.md` discovery, mention context; deterministic prompt compression and title sanitization | Deciding what to do with it, model calls |
 | **application** | `commit`, `startup`, `update`, `history`, `gryhook` | The `/commit` workflow; the initialization gate; the updater; durable prompt history and ephemeral oversized-prompt scratch; GRY lifecycle hooks | Execution authority |
-| **presentation** | `tui`, `tui/design`, `tui/diff` | State machine, renderer, command registry, live mode, canonical design tokens, diff inspector | Task lifecycle, completion, authority |
+| **presentation** | `tui`, `tui/design`, `tui/diff`, `presentation/chart` | State machine, renderer, command registry, live mode, canonical design tokens, diff inspector, deterministic chart model/planner/renderers | Task lifecycle, completion, authority, terminal I/O from the chart engine |
 | **governance** | `architecture` | The machine-checked manifest and boundaries | Production behaviour (it has no non-test code) |
 
 ---
@@ -126,6 +126,7 @@ edges that are architecturally forbidden (the ones enforced today are marked).
 | `internal/experience` | verified execution experience | `agent`, `control/{budget,cognition,contract}`, `jsonschema`, `provider/ai` — **exactly these** | `execution/*`, `continuity/*`, `tui`, application services **\[ENFORCED]** |
 | `internal/configuration` (`config`, `state`, `project`) | settings, paths, identity | `state`, `vcs` | `agent`, `execution/*`, `tui` |
 | `internal/tui` | presentation | the whole tree **except** concrete capabilities and the task controller | `execution/tools`, `execution/mcp`, `continuity/task` **\[ENFORCED]** |
+| `internal/presentation/chart` | deterministic chart model, planner, layout, renderers | stdlib plus `x/ansi`/`go-runewidth` measurement; no module package **\[ENFORCED]** | terminal I/O, ANSI emission, the TUI viewport/style system, telemetry collection, authority, model calls |
 | `internal/{commit,startup,update,history,gryhook}` | application services | everything below them | being imported by anything below them **\[ENFORCED]** |
 | `internal/architecture` | governance | nothing (test-only) | every production package |
 | `cmd/ohgo` | composition | everything | being imported by anything **\[ENFORCED]** |
@@ -213,6 +214,12 @@ authority. Its enforced constraints: no `execution/tools`, no `execution/mcp`,
 no `continuity/task`. Task state arrives through `tui.TaskHooks`; the task
 vocabulary (`pending`/`active`/`done`, `COMPLETED`/`FAILED`/`CANCELLED`) is a
 deliberate string projection so the UI never imports the domain type.
+
+`presentation/chart` is a presentation-owned engine below the TUI: it owns the
+typed `ChartSpec`, the deterministic planner, adaptive layout, and renderers,
+but no terminal state, palette, or telemetry. It returns semantic spans; the
+TUI maps them to `design.Tokens`. The contract is canonical in
+[`VISUALIZATION.md`](VISUALIZATION.md).
 
 ### 4.6 The command is a leaf
 
@@ -303,6 +310,7 @@ reasoning, and `internal/architecture/rules_test.go` is the executable form.
 | **New security policy** | kernel rule in `internal/security`; derivation from trusted inputs in `cmd/ohgo/security.go` | Derive capability/scope from model-supplied fields; let settings widen authority |
 | **New CLI command** | `cmd/ohgo/<command>.go`; if interactive, also `internal/tui` command registry | Put domain logic in the command that has a package owner |
 | **New TUI projection** | `internal/tui` (state machine + renderer), fed by hooks/events | Make the projection authoritative; read `continuity/task` directly |
+| **New visualization** | data/planner/renderer in `internal/presentation/chart`; TUI adapter in `internal/tui/chartview.go`; capability in `internal/execution/tools/renderchart.go`; source adapter in `cmd/ohgo/chart.go` | Emit ANSI from the engine, let a model supply values/geometry, add a second viewport, or collect a second telemetry ledger |
 | **New execution-learning rule** | `internal/experience` (deterministic extractor + regression) and an advisory seam in `cognition` | Change authority, evidence, completion, or the task lifecycle |
 | **New recovery mechanism** | `internal/continuity/recovery` + `cmd/ohgo/recovery.go` wiring | Expose it as a model-reachable tool |
 | **New prompt text** | `internal/prompt` (or the tool's own constructor) | Inline a prompt string at a call site |

@@ -1417,6 +1417,16 @@ approval, shutting down) are computed per render, never stored.
   never derived from a screen row. Tools and reasoning share the same
   presentation-only expansion transition, selected by Ctrl+O or a click.
   `BlockCopyText` projects logical content, stripping SGR/OSC and padding.
+- `internal/presentation/chart` + `internal/tui/chartview.go`: deterministic
+  visualization. The engine owns the typed dataset, planner, adaptive layout,
+  and renderers; it emits semantic spans, never ANSI or terminal geometry.
+  `/chart` derives a dataset from the measured `UsageLog` totals and transcript
+  tool calls at zero model-token cost; `/chart <dataset.json>` presents a
+  user-selected strict `Dataset` through the same path. `render_chart` returns
+  only a compact acknowledgement to the model; its `Details` payload is
+  UI-only. A chart is an ordinary `EntryChart` block in the one
+  `TranscriptLayout`, re-planned at the current width on resize. The exact
+  table is authoritative; the chart is derived. Contract: [`VISUALIZATION.md`](VISUALIZATION.md).
 - `internal/tui/transcript_layout.go`: the geometry authority. Each block is projected
   once per revision and width into cached visual rows; a Fenwick tree maps
   document rows to blocks in O(log n). Width/theme/tier changes reflow all

@@ -78,6 +78,13 @@ func fadePhaseAt(age time.Duration) fadePhase {
 
 // entryFading reports whether a block is inside its entrance window at now.
 func entryFading(entry Entry, now time.Time) bool {
+	// A chart's series identity is carried by semantic color and glyphs; the
+	// generic entrance fade repaints every row in one color and would erase
+	// that identity for the duration of the animation. Charts settle
+	// immediately.
+	if entry.Kind == EntryChart {
+		return false
+	}
 	if entry.AppearedAt.IsZero() {
 		return false
 	}

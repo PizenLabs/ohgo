@@ -2099,6 +2099,15 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 			renderShell(sb, entry.Shell, pal, layout)
 		}
 
+	case EntryChart:
+		if entry.Chart != nil {
+			writeGap()
+			for _, line := range renderChartInput(entry.Chart, pal, textWidth(layout)) {
+				sb.WriteString(line + "\n")
+			}
+			sb.WriteString("\n")
+		}
+
 	case EntryNotice:
 		writeGap()
 		for _, wl := range wrapPlain(entry.Notice, layout) {
@@ -2606,7 +2615,7 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 	// Collapsed is the default: the body below only renders expanded.
 	// Expansion is presentation-only — the same semantic Text, bounded by
 	// the same truncation, wrapping, and sanitization as before.
-	if status == ToolRunning || !tool.Expanded || (tool.Text == "" && strings.TrimSpace(tool.Diff) == "") {
+	if status == ToolRunning || !tool.Expanded || (tool.Text == "" && strings.TrimSpace(tool.Diff) == "" && tool.Chart == nil) {
 		// separate is only for a one-off projection (an expanded block printed
 		// into scrollback) that needs a trailing gap after it. Inline
 		// transcripts pass false and let the following block own the gap, so a
@@ -2625,6 +2634,16 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 // node uses its branch continuation so the body stays visibly nested.
 func renderToolBody(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, indent string) {
 	if tool == nil {
+		return
+	}
+	if tool.Chart != nil {
+		width := textWidth(layout) - CellWidth(indent)
+		if width < 1 {
+			width = 1
+		}
+		for _, line := range renderChartInput(tool.Chart, pal, width) {
+			sb.WriteString(indent + line + "\n")
+		}
 		return
 	}
 	if strings.TrimSpace(tool.Diff) != "" {
@@ -2745,6 +2764,9 @@ func collapsedOutcome(tool *ToolEntry) string {
 // line already says: multi-line or truncated outcomes only. Trivial
 // single-line results stay hint-free so sequential runs stay scannable.
 func toolExpandable(tool *ToolEntry) bool {
+	if tool.Chart != nil {
+		return true
+	}
 	if strings.TrimSpace(tool.Diff) != "" {
 		return true
 	}

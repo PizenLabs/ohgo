@@ -58,6 +58,10 @@ type options struct {
 	// budget is the stable holder shared by the loop and every spawner, so a
 	// run boundary can install a fresh root grant without rebuilding tools.
 	budget *budget.Holder
+	// usage is the session's measured token ledger. It is shared by the UI,
+	// the harness, and the chart capability so runtime telemetry has one
+	// owner and a chart cannot reconstruct totals from text.
+	usage *agent.UsageLog
 	// deadline bounds the whole run in wall-clock time. The zero value is no
 	// limit.
 	deadline time.Time

@@ -2211,6 +2211,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.openUsage()
 		return nil
 
+	case "chart":
+		p.chartCommand(command.Args)
+		return nil
+
 	case "info", "about", "documentation", "docs", "changelog":
 		p.openInfo()
 		return nil
@@ -6126,6 +6130,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				Operation: operation,
 				IsError:   progress.Result.IsError,
 				Truncated: truncated,
+				Chart:     chartInput(progress.Result.Details),
 				At:        time.Now(),
 				Seq:       seq,
 			})
@@ -6590,6 +6595,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 					Operation: operation,
 					IsError:   outcome.Result.IsError,
 					Truncated: truncated,
+					Chart:     chartInput(outcome.Result.Details),
 					At:        time.Now(),
 					Seq:       seq,
 				})
