@@ -1279,15 +1279,16 @@ Four protocols, not one:
 
 The accumulator strategies differ on purpose — unifying the first two drops
 the first fragment of every call. One Chat Completions transport serves
-groq, together, fireworks, deepseek, cerebras, mistral, xai, Gemini's
-compatibility endpoint, plus OpenRouter (with attribution headers) and the
-OpenCode gateways (zen/go); the per-provider work is a base URL, a credential
-name, and (for the gateways) the `x-opencode-session` header named in catalog
-metadata and filled from the loop's session identity. Bedrock has its own
-transport because its Chat Completions route does not serve Claude models;
-authentication is an Amazon Bedrock API key. A user-declared OpenAI-compatible
-endpoint (`settings.endpoints`) reuses the Chat Completions transport, so local
-servers and internal gateways need no provider implementation. MODEL CONTROL's
+groq, together, fireworks, deepseek, cerebras, mistral, xai, NVIDIA NIM,
+Gemini's compatibility endpoint, plus OpenRouter (with attribution headers)
+and the OpenCode gateways (zen/go); the per-provider work is a base URL, a
+credential name, and (for the gateways) the `x-opencode-session` header named
+in catalog metadata and filled from the loop's session identity. Bedrock has
+its own transport because its Chat Completions route does not serve Claude
+models; authentication is an Amazon Bedrock API key. A user-declared
+OpenAI-compatible endpoint (`settings.endpoints`) reuses the Chat Completions
+transport, so local servers and internal gateways need no provider
+implementation. MODEL CONTROL's
 `+ Custom` row is the only endpoint surface: it reads the global settings
 authority, persists through `config.Save`, and refreshes the registry so the
 catalog is derived, never a second store. The editor exposes name, base URL,
@@ -1566,8 +1567,8 @@ approval, shutting down) are computed per render, never stored.
   `DiscoverModelsFresh` re-fetches one provider (24h disk cache in
   `~/.ohgo/cache`, stale fallback); pricing presence travels with each
   record so unknown is never presented as free. Dynamic set: `ollama`,
-  `ollama-cloud`, `openrouter`, `opencode-zen`, `opencode-go` (13th
-  provider overall: plain `ollama` has no bundled rows — local models exist
+  `ollama-cloud`, `openrouter`, `opencode-zen`, `opencode-go` (plain `ollama`
+  is part of the provider count with no bundled rows — local models exist
   only on the user's machine).
 
 ## Credentials and discovery

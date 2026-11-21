@@ -141,6 +141,31 @@ func TestOpenRouterMissingPricingIsUnknownNotFree(t *testing.T) {
 	t.Error("unpriced/model missing from the snapshot")
 }
 
+// TestBundledCreditMeteredRowsReportUnknownPricing pins NVIDIA NIM's money
+// contract. The API catalog bills trial usage in credits whose per-token price
+// NVIDIA does not publish, so the bundled zero schedule must not reach the
+// picker as a verified-free row or match its `free` filter.
+func TestBundledCreditMeteredRowsReportUnknownPricing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	entries, _ := SnapshotAll()
+	checked := 0
+	for _, entry := range entries {
+		if entry.Model.Provider != "nvidia" {
+			continue
+		}
+		checked++
+		if entry.PriceKnown {
+			t.Errorf("%s/%s claims a published price schedule", entry.Model.Provider, entry.Model.ID)
+		}
+		if entry.Free {
+			t.Errorf("%s/%s claims verified-free pricing", entry.Model.Provider, entry.Model.ID)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no bundled nvidia rows were checked")
+	}
+}
+
 func TestOpenRouterFreeModelsFlagged(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	server := servePayload(t, openRouterPayload, http.StatusOK, nil)

@@ -631,6 +631,7 @@ func TestOpenAICompatibleProvidersShareOneTransport(t *testing.T) {
 		"deepseek":  "DEEPSEEK_API_KEY",
 		"cerebras":  "CEREBRAS_API_KEY",
 		"mistral":   "MISTRAL_API_KEY",
+		"nvidia":    "NVIDIA_API_KEY",
 		"xai":       "XAI_API_KEY",
 		"google":    "GEMINI_API_KEY",
 	}

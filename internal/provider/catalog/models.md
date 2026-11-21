@@ -11,7 +11,11 @@ Upstream: `packages/catalog/src/models.json`
 real facts: id, provider, API, route, base URL, context window, max output,
 reasoning flag, input modalities, per-million-token prices, thinking ladder.
 
-Current content: **346 models across 16 providers** (see `ohgo models`).
+Current content: **354 models across 17 providers** (see `ohgo models`).
+
+NVIDIA NIM rows are transcribed from the vendor's published model cards
+(`docs.api.nvidia.com/nim/reference/<model>`) and its `/v1/models` roster;
+the upstream extractor has no NIM source, so a regen must keep them.
 
 Regen: `python3 scripts/extract-upstream.py [upstream-models.json]
 [catalog.json]`. It converts only rows this build can speak
@@ -40,14 +44,18 @@ skipped, tool-less OpenRouter rows are skipped (the harness always offers
 tools), and minimal gateway ids merge with bundled facts or not at all.
 Pricing presence is recorded (`priced`): a zero price with metadata is
 verified free, a missing pricing object is unknown — never rendered as
-free. Free-tier Zen rows are dropped in both the bundle and discovery:
-Console serves them only to the OpenCode client, so another harness would
-receive 403/429 even with a valid key. Go free models stay, because Go
-serves them to outside clients. Both gateways name
-`x-opencode-session` in provider metadata; transports forward the loop's
-per-session identity through it, with a stable provider fallback when no
-session store exists. Local Ollama ships no bundled rows at all: its models
-exist only on the user's machine, so discovery is the only honest source.
+free. A bundled row can declare `priceUnknown` for a provider that meters
+trial usage in credits without publishing a per-token schedule (NVIDIA NIM):
+the picker reports the price as unknown, the `free` filter skips the row,
+and the usage view shows an em dash rather than `$0.0000`. Free-tier Zen rows
+are dropped in both the bundle and discovery: Console serves them only to
+the OpenCode client, so another harness would receive 403/429 even with a
+valid key. Go free models stay, because Go serves them to outside clients.
+Both gateways name `x-opencode-session` in provider metadata; transports
+forward the loop's per-session identity through it, with a stable provider
+fallback when no session store exists. Local Ollama ships no bundled rows at
+all: its models exist only on the user's machine, so discovery is the only
+honest source.
 
 ## Picker snapshot and refresh
 

@@ -5,6 +5,18 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- NVIDIA NIM as a provider: `NVIDIA_API_KEY` against
+  `https://integrate.api.nvidia.com/v1` through the shared Chat Completions
+  transport. Eight bundled models (Nemotron 3 Ultra, Nemotron 3.5 Super VL,
+  Kimi K3.1 Pro, MiniMax M3.1 Flash, Mistral Large 4, Muse Glimmer, Step 5
+  Preview, Laguna XS 2.1) carry vendor-published context windows and output
+  ceilings; NIM ids keep their `vendor/model` namespace, so a reference has
+  two separators (`nvidia/meta/muse-glimmer-30b`). Trial access is
+  credit-metered and NVIDIA publishes no per-token price, so these rows report
+  pricing as unknown instead of verified-free.
+
 ### Fixed
 
 - An answer that retracts an identifier is no longer audited as a claim that
