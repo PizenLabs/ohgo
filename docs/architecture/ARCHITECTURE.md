@@ -1174,6 +1174,13 @@ inventory and the manifests it already observed; it starts no process.
    distinct from a check that passed.
 5. Go commands are scoped by `path` (`go test ./pkg/...`). Other ecosystems run
    at the manifest root and the result says the scope was not applied.
+6. Safety boundaries: the working directory must resolve inside the workspace;
+   the process environment is filtered of credential-shaped variables; a
+   `package.json` script body is inspected before planning and refused on
+   destructive or privileged shapes; the body is disclosed in discovery. A
+   package manager may still run pre/post lifecycle scripts, so approval
+   remains `TierExec`. This is not a sandbox: a check can write inside the
+   workspace and read files under `HOME`.
 
 A passing run reports `Verifies` with the strongest successful check
 (`test` > `build` > `vet`/static) and the command scope; a failing run is an

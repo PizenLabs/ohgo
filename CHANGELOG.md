@@ -16,6 +16,26 @@ immutable.
   or directory. A targeted `structure` `files` view with `path` uses it, so a
   scoped inventory no longer pays for a whole-repository parse; everything
   outside the scope stays `PENDING` and is reported as such.
+- `investigate` focus reports now include a bounded call-edge projection
+  (direction, symbol, call-site path and line) and importer paths. A flow
+  answer can trace observed calls instead of reporting only counts.
+- Trust propagation across the pipeline: `investigate` facts and records now
+  carry the structural snapshot identity and project stale/incomplete coverage
+  onto `STALE`/`UNVERIFIED`/`CURRENT` freshness. Survey evidence is demoted by
+  a truncated inventory or stale records, and stale/failed files are never
+  chosen as survey samples.
+- Execution safety for `check`: working directories are contained to the
+  workspace, credential-shaped environment variables are removed before a
+  check starts, `package.json` script bodies are disclosed and refused on
+  destructive or privileged shapes, and a refused command reports no
+  `Executes`/`Finished` evidence.
+- A cross-phase pipeline test (`cmd/ohgo`) runs structure → survey → drift →
+  investigate → check against one source state, then makes a subtree
+  unreadable and verifies that stale state, survey gaps, and evidence freshness
+  all change together and recover together.
+- `check` now reports the exact argv, execution directory, scope, exit code,
+  execution state, parsed counts, and strongest verification evidence, so a
+  passing check cannot be widened into a claim it did not cover.
 - `module-survey` makes a repository survey explicit: project and architecture
   analyses name every materialised module, select a representative production
   coordinate for modules degree-ranked sampling missed, and list modules with
