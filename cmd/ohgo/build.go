@@ -99,6 +99,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		bash,
 		tools.NewWaitTool(bash.Jobs()),
 		tools.NewVerifyTool(opts.root),
+		tools.NewCheckTool(structural),
 		tools.NewGlobTool(opts.root),
 		tools.NewGrepTool(opts.root),
 		tools.NewLsTool(opts.root),

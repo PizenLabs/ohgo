@@ -1156,6 +1156,30 @@ and answered a check while it stayed alive. The model sees a short summary, not
 a transcript dump. Completion still decides PROVEN; readiness, a tool call, or a
 zero exit code alone is not proof.
 
+## Repository checks
+
+`check` is the repository-wide verification capability, separate from the
+service lifecycle `verify` owns. Discovery reads the shared structural
+inventory and the manifests it already observed; it starts no process.
+
+1. `mode=discover` (the default) returns the ecosystem, the exact argv commands,
+   the directory each would run in, and every reason a command was omitted.
+2. `mode=run` executes only the requested kinds (default `test`), sequentially,
+   with one bounded timeout each and a 64 KiB output tail per command.
+3. Commands are argv, never a shell. A script name from `package.json` is
+   passed to the package manager as an argument, so manifest text cannot inject
+   shell syntax.
+4. Test counts are parsed from Go, pytest, Cargo, and common JS runner output.
+   `0 tests` becomes `NOT_RUN`, never `PASS`. A check that did not run is
+   distinct from a check that passed.
+5. Go commands are scoped by `path` (`go test ./pkg/...`). Other ecosystems run
+   at the manifest root and the result says the scope was not applied.
+
+A passing run reports `Verifies` with the strongest successful check
+(`test` > `build` > `vet`/static) and the command scope; a failing run is an
+observed failure with its exit code and bounded output, not an unavailable
+observation. Discovery reports `TierRead`; execution reports `TierExec`.
+
 ## Concurrency
 
 - Shared tools run in parallel; `Exclusive(args)` tools drain the batch

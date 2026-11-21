@@ -224,13 +224,14 @@ func TestBudgetBoundsStepsAndRequests(t *testing.T) {
 // runs and from routing architecture questions to an expensive debug row.
 func TestInferIntentIsDeterministic(t *testing.T) {
 	cases := map[string]planner.Intent{
-		"explain the architecture":             planner.IntentArchitecture,
-		"what depends on internal/agent?":      planner.IntentImpact,
-		"why does Serve panic at runtime?":     planner.IntentDebug,
-		"where is authentication implemented?": planner.IntentLocate,
-		"how does checkout charge a card?":     planner.IntentFlow,
-		"verify the change is complete":        planner.IntentVerify,
-		"what is this project?":                planner.IntentProject,
+		"explain the architecture":              planner.IntentArchitecture,
+		"what depends on internal/agent?":       planner.IntentImpact,
+		"why does Serve panic at runtime?":      planner.IntentDebug,
+		"where is authentication implemented?":  planner.IntentLocate,
+		"how does checkout charge a card?":      planner.IntentFlow,
+		"verify the change is complete":         planner.IntentVerify,
+		"compare documentation with the source": planner.IntentDrift,
+		"what is this project?":                 planner.IntentProject,
 	}
 	for question, want := range cases {
 		for run := 0; run < 3; run++ {

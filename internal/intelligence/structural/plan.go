@@ -28,6 +28,10 @@ const (
 	IntentImpact Intent = "impact"
 	// IntentIsolation asks whether a component is safe to change alone.
 	IntentIsolation Intent = "isolation"
+	// IntentDrift asks whether documentation claims still match the indexed
+	// repository. It compares documents with inventory facts; it never treats
+	// a README sentence as proof that implementation exists.
+	IntentDrift Intent = "drift"
 )
 
 // ParseIntent accepts the model-facing intent vocabulary.
@@ -45,6 +49,8 @@ func ParseIntent(value string) (Intent, bool) {
 		return IntentImpact, true
 	case IntentIsolation:
 		return IntentIsolation, true
+	case IntentDrift:
+		return IntentDrift, true
 	default:
 		return "", false
 	}
@@ -86,6 +92,8 @@ func defaultThreshold(intent Intent) float64 {
 		return 0.55
 	case IntentArchitecture:
 		return 0.70
+	case IntentDrift:
+		return 0.75
 	default:
 		return 0.65
 	}
@@ -303,6 +311,19 @@ func portfolio() []*strategy {
 			run:       runManifest,
 		},
 		{
+			name: "documentation-drift", version: "1",
+			purpose: "compare documented repository paths with the indexed inventory",
+			level:   LevelProject,
+			cost: func(size sizeEstimate) float64 {
+				return 0.15
+			},
+			relevance: map[Intent]float64{
+				IntentDrift: 1, IntentProject: 0.3, IntentArchitecture: 0.25,
+			},
+			mandatory: map[Intent]bool{IntentDrift: true},
+			run:       runDocumentationDrift,
+		},
+		{
 			name: "dependency-graph", version: "1",
 			purpose: "aggregate import evidence into a language-neutral directory graph",
 			level:   LevelPackage, needsGraph: true, needsParse: true,
@@ -408,6 +429,20 @@ func portfolio() []*strategy {
 				IntentProject: 0.9, IntentArchitecture: 0.7, IntentLocate: 0.6,
 			},
 			run: runSampling,
+		},
+		{
+			name: "module-survey", version: "1",
+			purpose: "check that every module is represented by at least one source coordinate",
+			level:   LevelModule,
+			cost: func(size sizeEstimate) float64 {
+				return 0.1 + float64(size.GraphNodes)/10000
+			},
+			relevance: map[Intent]float64{
+				IntentProject: 1, IntentArchitecture: 0.95, IntentDrift: 0.4,
+				IntentLocate: 0.5, IntentFlow: 0.5, IntentImpact: 0.5,
+			},
+			mandatory: map[Intent]bool{IntentProject: true, IntentArchitecture: true},
+			run:       runModuleSurvey,
 		},
 		{
 			name: "symbol-neighborhood", version: "1",

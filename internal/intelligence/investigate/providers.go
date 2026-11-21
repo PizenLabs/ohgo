@@ -97,6 +97,26 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 	for _, sample := range analysis.Samples {
 		record("file:"+sample.Path, "representative_of", sample.NodeID, sample.Evidence.State, sample.Evidence.Confidence, sample.Reason)
 	}
+	if analysis.Survey != nil {
+		survey := analysis.Survey
+		record("survey", "covers", fmt.Sprintf("%d/%d modules", survey.Explored, len(survey.Modules)),
+			survey.Evidence.State, survey.Evidence.Confidence, survey.Evidence.Reason)
+		observation.Facts = append(observation.Facts, Fact{
+			Provider: string(p.Name()), Subject: "repository survey",
+			Detail: fmt.Sprintf("%d modules, %d represented, %d unexplored (%s)",
+				len(survey.Modules), survey.Explored, len(survey.Unexplored), survey.Evidence.State),
+		})
+		for _, module := range survey.Unexplored {
+			observation.Facts = append(observation.Facts, Fact{
+				Provider: string(p.Name()), Subject: "unexplored module",
+				Detail: module + " has no sampled source coordinate",
+			})
+		}
+		if len(survey.Unexplored) > 0 {
+			observation.Issues = append(observation.Issues,
+				fmt.Sprintf("%d modules have no sampled source coordinate", len(survey.Unexplored)))
+		}
+	}
 	if analysis.Focus != nil {
 		switch {
 		case !analysis.Focus.Found:
@@ -114,6 +134,27 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 	}
 	for _, issue := range analysis.Issues {
 		observation.Issues = append(observation.Issues, issue.Code+": "+issue.Detail)
+	}
+	if analysis.Drift != nil {
+		report := analysis.Drift
+		record("documentation", "claims_checked", fmt.Sprintf("%d paths", report.Claims),
+			report.Evidence.State, report.Evidence.Confidence, report.Evidence.Reason)
+		observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()),
+			Subject: "documentation drift",
+			Detail: fmt.Sprintf("%d path claims, %d resolved, %d findings (%s)",
+				report.Claims, report.Resolved, len(report.Findings), report.Evidence.State)})
+		for _, finding := range report.Findings {
+			record("doc:"+finding.Document, "claims_path", finding.Target,
+				finding.Source.State, finding.Source.Confidence, finding.Detail)
+			observation.Facts = append(observation.Facts, Fact{
+				Provider: string(p.Name()), Source: "documentation",
+				Subject: fmt.Sprintf("%s:%d", finding.Document, finding.Line),
+				Detail:  fmt.Sprintf("%s [%s] %s", finding.Code, finding.Severity, finding.Target),
+			})
+		}
+		if len(report.Documents) == 0 {
+			observation.Issues = append(observation.Issues, "no documentation file was inventoried to compare")
+		}
 	}
 	observation.Sufficient = structuralSufficient(intent, analysis)
 	if req.Intent == planner.IntentVerify && (analysis.Focus == nil || analysis.Focus.Tests == 0) {
@@ -148,6 +189,10 @@ func structuralSufficient(intent structural.Intent, analysis structural.Analysis
 		return analysis.Focus != nil && analysis.Focus.Found
 	case structural.IntentIsolation:
 		return analysis.Focus != nil && analysis.Focus.Found
+	case structural.IntentDrift:
+		// A comparison with no documentation read did not answer anything; a
+		// report that read documents is sufficient even when it found drift.
+		return analysis.Drift != nil && len(analysis.Drift.Documents) > 0
 	default:
 		return false
 	}
@@ -169,6 +214,8 @@ func structuralRequest(req Request) (structural.Intent, string, bool) {
 		return structural.IntentLocate, req.Focus, true
 	case planner.IntentVerify:
 		return structural.IntentImpact, req.Focus, true
+	case planner.IntentDrift:
+		return structural.IntentDrift, "", true
 	default:
 		return "", "", false
 	}
@@ -185,6 +232,11 @@ func structuralCoverage(intent structural.Intent, analysis structural.Analysis) 
 		return 0.45
 	case structural.IntentImpact, structural.IntentIsolation:
 		return 0.5
+	case structural.IntentDrift:
+		if analysis.Drift != nil && len(analysis.Drift.Documents) > 0 {
+			return 0.8
+		}
+		return 0.2
 	default:
 		if analysis.Focus != nil && analysis.Focus.Found {
 			return 0.45

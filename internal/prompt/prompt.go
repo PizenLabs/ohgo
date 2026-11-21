@@ -59,9 +59,12 @@ Guidelines:
   exists. Use the read tool for source content when available; a successful
   shell content read (sed, cat, head, tail) also opens the file, but a
   listing or a path mentioned in prose does not.
-- Use verify for an acceptance check or test command that must count as
-  completion evidence. bash output is an observation; it is not the structured
-  verification record the completion contract requires.
+- Use check to discover the repository's own tests, static analysis, and build
+  commands, then run only the kinds the task needs. Discovery is read-only;
+  run mode returns structured outcomes and verification evidence. Use verify
+  when the acceptance requires starting a service, checking it while it is
+  live, and stopping it. bash output is an observation; it is not the
+  structured verification record the completion contract requires.
 - Make the smallest change that solves the problem. Do not refactor code the
   task did not ask you to touch.
 - Never guess a file's contents. Read it before editing it.
@@ -151,9 +154,10 @@ advice. Inspect the repository, reason, derive an internal plan, and carry
 the objective through to implementation and verification.
 Task status, todos, and persisted plans are state and context, not blockers:
 a missing plan means derive one internally, never stop to ask the user.
-After a repository change, run the runtime's verify tool for the acceptance
-check. A bash assertion is an observation, not the structured verification
-evidence the completion contract requires.
+After a repository change, run the runtime's check tool for the tests, static
+analysis, or build the change needs. Use verify when acceptance requires a
+live service. A bash assertion is an observation, not the structured
+verification evidence the completion contract requires.
 Mutations remain subject to the runtime security policy.`
 	}
 	return ""

@@ -83,7 +83,10 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"task-dependent analysis use view=analysis with an intent; it "+
 			"returns a plan, a multi-resolution summary, evidence states, "+
 			"coverage, and explicit issues, and view=expand returns one "+
-			"node's direct children. Semantic activation is unsupported and "+
+			"node's direct children. Intent drift compares documented paths with "+
+			"the indexed inventory and reports missing or unverifiable targets; "+
+			"it never treats a README claim as proof of implementation. "+
+			"Semantic activation is unsupported and "+
 			"fails explicitly.",
 		map[string]any{
 			"type":                 "object",
@@ -134,6 +137,7 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 					"type": "string",
 					"enum": []any{
 						"project", "architecture", "locate", "flow", "impact", "isolation",
+						"drift",
 					},
 					"description": "Analysis intent for view=analysis. It selects the cheapest sufficient strategy portfolio; locate/flow/impact/isolation also need path or symbol. Defaults to project.",
 				},
@@ -246,7 +250,7 @@ func (t *StructureTool) execute(ctx agent.Context, args map[string]any) agent.Re
 		parsed, ok := structural.ParseIntent(intentArg)
 		if !ok {
 			return requestError(agent.ToolFailureInvalidSelector,
-				"unsupported intent %q; nothing executed. Valid intents: project, architecture, locate, flow, impact, isolation.",
+				"unsupported intent %q; nothing executed. Valid intents: project, architecture, locate, flow, impact, isolation, drift.",
 				intentArg)
 		}
 		analysisIntent = parsed
@@ -1282,9 +1286,10 @@ func structureActivation(args map[string]any, view string, intent structural.Int
 	case "overview", "scope", "languages", "files", "configs", "expand":
 		required = ast.ActivationOverview
 	case "analysis":
-		// A project orientation is metadata-first; every other intent needs
-		// parsed declarations and edges to be answerable at all.
-		if intent == structural.IntentProject {
+		// A project orientation and a documentation comparison are
+		// metadata-first; every other intent needs parsed declarations and
+		// edges to be answerable at all.
+		if intent == structural.IntentProject || intent == structural.IntentDrift {
 			required = ast.ActivationOverview
 		} else {
 			required = ast.ActivationTargeted

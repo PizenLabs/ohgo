@@ -85,6 +85,29 @@ type FocusReport struct {
 	Evidence  Evidence           `json:"evidence"`
 }
 
+// SurveyModule is one module (or the finest available container) and whether
+// the analysis selected a source coordinate inside it.
+type SurveyModule struct {
+	Path     string `json:"path"`
+	Files    int    `json:"files"`
+	Sample   string `json:"sample,omitempty"`
+	Explored bool   `json:"explored"`
+}
+
+// SurveyReport is the repository-wide coverage check.
+//
+// It is a projection of the hierarchy plus the selected samples, not a second
+// tree walk. An unexplored module is named rather than silently omitted.
+type SurveyReport struct {
+	Level      string         `json:"level"`
+	Modules    []SurveyModule `json:"modules,omitempty"`
+	Explored   int            `json:"explored"`
+	Unexplored []string       `json:"unexplored,omitempty"`
+	Truncated  bool           `json:"truncated,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	Evidence   Evidence       `json:"evidence"`
+}
+
 // Analysis is one complete adaptive structural analysis.
 type Analysis struct {
 	SchemaVersion   string  `json:"schema_version"`
@@ -99,11 +122,16 @@ type Analysis struct {
 	Boundaries   []Boundary       `json:"boundaries,omitempty"`
 	Communities  []Community      `json:"communities,omitempty"`
 	Samples      []Sample         `json:"samples,omitempty"`
-	Focus        *FocusReport     `json:"focus,omitempty"`
-	Coverage     Coverage         `json:"coverage"`
-	Issues       []Issue          `json:"issues,omitempty"`
-	Cache        CacheState       `json:"cache"`
-	CacheReason  string           `json:"cache_reason,omitempty"`
+	// Survey reports which modules the analysis actually represented.
+	Survey *SurveyReport `json:"survey,omitempty"`
+	Focus  *FocusReport  `json:"focus,omitempty"`
+	// Drift is the documentation-versus-inventory comparison. It is present
+	// only when the selected intent asked for it.
+	Drift       *DriftReport `json:"documentation_drift,omitempty"`
+	Coverage    Coverage     `json:"coverage"`
+	Issues      []Issue      `json:"issues,omitempty"`
+	Cache       CacheState   `json:"cache"`
+	CacheReason string       `json:"cache_reason,omitempty"`
 }
 
 // Analyzer runs the adaptive engine over a Source.
@@ -143,8 +171,10 @@ type analysisState struct {
 	boundaries        []Boundary
 	architecture      Architecture
 	samples           []Sample
+	survey            *SurveyReport
 	manifest          ManifestTopology
 	focus             *FocusReport
+	drift             *DriftReport
 	issues            []Issue
 	degraded          bool
 }
@@ -268,6 +298,7 @@ func (a *Analyzer) Analyze(ctx context.Context, request Request) (Analysis, erro
 			return Analysis{}, err
 		}
 	}
+	state.samples = dedupeSamples(state.samples)
 
 	plan.Level = snapshot.Level
 	coverage := state.finalizeCoverage()
@@ -289,7 +320,9 @@ func (a *Analyzer) Analyze(ctx context.Context, request Request) (Analysis, erro
 	analysis.Boundaries = state.boundaries
 	analysis.Communities = state.communities.Communities
 	analysis.Samples = state.samples
+	analysis.Survey = state.survey
 	analysis.Focus = state.focus
+	analysis.Drift = state.drift
 	analysis.Coverage = coverage
 	analysis.Issues = issues
 
@@ -509,6 +542,25 @@ func (s *analysisState) finalizeCoverage() Coverage {
 	if s.degraded && coverage.Confidence > 0.6 {
 		coverage.Confidence = 0.6
 	}
+	if s.request.Intent == IntentDrift && s.drift != nil {
+		// Drift compares documents with inventory membership; unparsed source
+		// is not a gap for that comparison. The documentation pass reports its
+		// own completeness instead of inheriting the parse axis.
+		coverage.State = s.drift.Evidence.State
+		coverage.Confidence = s.drift.Evidence.Confidence
+		if s.drift.Evidence.Reason != "" {
+			coverage.Reason = s.drift.Evidence.Reason
+		}
+		if !s.inventory.Snapshot.ScopeComplete {
+			coverage.State = StatePartiallyObserved
+			if coverage.Confidence > 0.5 {
+				coverage.Confidence = 0.5
+			}
+			if coverage.Reason == "" {
+				coverage.Reason = "scope_incomplete"
+			}
+		}
+	}
 	if s.snapshot != nil {
 		s.snapshot.Coverage = coverage
 	}
@@ -545,6 +597,28 @@ func (s *analysisState) runtimeSkips() []Skip {
 		return nil
 	}
 	return []Skip{{Strategy: "betweenness-centrality", Reason: s.betweennessReason}}
+}
+
+// dedupeSamples keeps one sample per path. A higher-score degree sample
+// replaces a survey coordinate for the same file; the reason and evidence then
+// describe the stronger selection.
+func dedupeSamples(samples []Sample) []Sample {
+	if len(samples) < 2 {
+		return samples
+	}
+	seen := make(map[string]int, len(samples))
+	out := make([]Sample, 0, len(samples))
+	for _, sample := range samples {
+		if index, ok := seen[sample.Path]; ok {
+			if sample.Score > out[index].Score {
+				out[index] = sample
+			}
+			continue
+		}
+		seen[sample.Path] = len(out)
+		out = append(out, sample)
+	}
+	return out
 }
 
 // Summaries returns the top nodes at one resolution, ordered by file count then

@@ -547,8 +547,89 @@ func runSymbolNeighborhood(s *analysisState) error {
 	return nil
 }
 
-// representativeFile returns the first production file in dir, ordered by path.
-// It is a citation coordinate, not a sample of the file's content.
+// runModuleSurvey checks whether every module is represented by a sample and
+// selects a coordinate for modules the degree-ranked sampler did not cover.
+// It never invents a module: the hierarchy is the only source of containers.
+func runModuleSurvey(s *analysisState) error {
+	if s.snapshot == nil {
+		return errors.New("hierarchy was not built")
+	}
+	level := LevelModule
+	nodes := s.snapshot.AtLevel(level)
+	if len(nodes) == 0 {
+		level = LevelWorkspace
+		nodes = s.snapshot.AtLevel(level)
+	}
+	if len(nodes) == 0 {
+		s.survey = &SurveyReport{
+			Level: level.String(), Evidence: UnknownEvidence("no module or workspace container was materialised"),
+		}
+		return nil
+	}
+	const maxModules = 200
+	report := &SurveyReport{Level: level.String()}
+	refs := make([]EvidenceRef, 0, 4)
+	explored := 0
+	for index, node := range nodes {
+		if index >= maxModules {
+			report.Truncated = true
+			report.Reason = fmt.Sprintf("module list bounded to %d containers", maxModules)
+			break
+		}
+		entry := SurveyModule{Path: node.Path, Files: node.Files}
+		for _, sample := range s.samples {
+			if node.Path == "." || sample.Path == node.Path ||
+				strings.HasPrefix(sample.Path, strings.TrimSuffix(node.Path, "/")+"/") {
+				entry.Sample = sample.Path
+				entry.Explored = true
+				break
+			}
+		}
+		if !entry.Explored {
+			if candidate := s.representativeFile(node.Path); candidate != "" {
+				entry.Sample = candidate
+				entry.Explored = true
+				if len(s.samples) < 24 {
+					s.samples = append(s.samples, Sample{
+						Path: candidate, NodeID: node.ID,
+						Reason: "module not covered by degree-ranked sampling",
+						Evidence: ObservedEvidence(KindInventory, EvidenceRef{
+							Kind: KindInventory, Path: candidate, Rule: "module survey",
+						}),
+					})
+				} else {
+					report.Truncated = true
+					report.Reason = "sample budget reached before every module had a coordinate"
+				}
+			}
+		}
+		if entry.Explored {
+			explored++
+		} else {
+			report.Unexplored = append(report.Unexplored, node.Path)
+		}
+		report.Modules = append(report.Modules, entry)
+		if len(refs) < 4 {
+			refs = append(refs, EvidenceRef{Kind: KindInventory, Path: node.Path, Rule: "module hierarchy"})
+		}
+	}
+	report.Explored = explored
+	if len(refs) == 0 {
+		report.Evidence = UnknownEvidence("no module coordinate was observed")
+	} else {
+		report.Evidence = ObservedEvidence(KindInventory, refs...)
+	}
+	if len(report.Unexplored) > 0 {
+		report.Evidence.State = StatePartiallyObserved
+		report.Evidence.Reason = fmt.Sprintf("%d modules have no sampled source coordinate", len(report.Unexplored))
+	}
+	s.survey = report
+	return nil
+}
+
+// representativeFile returns a production source coordinate inside dir. It
+// prefers a direct child and falls back to the deepest subtree so a module
+// whose source lives in nested packages is still representable.
 func (s *analysisState) representativeFile(dir string) string {
 	for _, file := range s.inventory.Files {
 		if path.Dir(file.Path) != dir {
@@ -563,7 +644,29 @@ func (s *analysisState) representativeFile(dir string) string {
 		}
 		return file.Path
 	}
-	return ""
+	prefix := strings.TrimSuffix(dir, "/")
+	if prefix == "." {
+		prefix = ""
+	} else {
+		prefix += "/"
+	}
+	var best string
+	for _, file := range s.inventory.Files {
+		if prefix != "" && !strings.HasPrefix(file.Path, prefix) {
+			continue
+		}
+		if file.Test {
+			continue
+		}
+		class, _ := classifyPath(file.Path, false)
+		if class != ClassProduction {
+			continue
+		}
+		if best == "" || file.Path < best {
+			best = file.Path
+		}
+	}
+	return best
 }
 
 // dominantClass names the class a node's membership implies.

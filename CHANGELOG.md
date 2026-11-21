@@ -16,6 +16,23 @@ immutable.
   or directory. A targeted `structure` `files` view with `path` uses it, so a
   scoped inventory no longer pays for a whole-repository parse; everything
   outside the scope stays `PENDING` and is reported as such.
+- `module-survey` makes a repository survey explicit: project and architecture
+  analyses name every materialised module, select a representative production
+  coordinate for modules degree-ranked sampling missed, and list modules with
+  no production source as `Unexplored` instead of silently omitting them.
+- Documentation drift: `structure` `analysis` intent `drift` (and the matching
+  investigate/planner intent) reads bounded current documentation, extracts
+  repository path claims outside fenced code, and compares them with the same
+  inventory. Each finding carries the document line, the target, severity, and
+  both evidence sides; an incomplete or truncated inventory produces
+  `documented_path_unverified` instead of a missing-path claim.
+- `check` discovers the repository's own test, static-analysis, and build
+  commands from `go.mod`, `package.json`, `Cargo.toml`, Python config,
+  Maven/Gradle, Bundler, .NET, Mix, or CMake. `mode=discover` executes nothing;
+  `mode=run` executes only the requested kinds and returns status, exit code,
+  parsed counts (passed/failed/skipped/not run), bounded output, and
+  verification evidence. Go commands are path-scoped; commands are argv, never
+  a shell.
 - A deterministic terminal visualization engine:
   `internal/presentation/chart` owns a strongly typed dataset/spec, a
   rule-based planner, adaptive layout, an exact table, horizontal bars,
