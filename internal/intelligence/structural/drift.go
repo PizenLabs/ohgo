@@ -96,7 +96,7 @@ func runDocumentationDrift(s *analysisState) error {
 		s.drift = report
 		return nil
 	}
-	files, dirs := driftInventorySets(s.inventory)
+	files, dirs, prefixes := driftInventorySets(s.inventory)
 	documents, docTruncated := driftDocuments(s.inventory)
 	report.Truncated = docTruncated || s.inventory.FilesTruncated
 	inventoryBounded := s.inventory.FilesTruncated
@@ -127,7 +127,7 @@ func runDocumentationDrift(s *analysisState) error {
 			bytesPinned = true
 		}
 		report.Documents = append(report.Documents, document)
-		for _, claim := range driftClaims(document, string(data)) {
+		for _, claim := range driftClaims(document, string(data), prefixes, files, dirs) {
 			key := fmt.Sprintf("%s\x00%d\x00%s", document, claim.line, claim.target)
 			if claimsSeen[key] {
 				continue
@@ -221,9 +221,25 @@ type driftClaim struct {
 	line   int
 }
 
+// driftPrefixes are the directory names that make a code span a repository
+// path rather than a package or library name. root contains top-level
+// directories; module contains top-level directories under the owning module
+// (which is often a subdirectory such as backend/).
+type driftPrefixes struct {
+	root      map[string]bool
+	module    map[string]bool
+	moduleRel string
+}
+
 // driftClaims extracts local path claims from markdown. Fenced code blocks are
 // skipped: an example is not a claim that the path exists.
-func driftClaims(document, text string) []driftClaim {
+//
+// Markdown links are resolved relative to the document. Inline code spans are
+// ambiguous in practice, so a span that starts with a known repository or
+// module directory is resolved from that base first. This keeps a package
+// name such as `adapter/` or a library import such as `html/template` from
+// becoming a false missing-path finding.
+func driftClaims(document, text string, prefixes driftPrefixes, files, dirs map[string]bool) []driftClaim {
 	var out []driftClaim
 	inFence := false
 	for index, line := range strings.Split(text, "\n") {
@@ -236,12 +252,19 @@ func driftClaims(document, text string) []driftClaim {
 			continue
 		}
 		seen := map[string]bool{}
-		add := func(raw string) {
-			if !looksLikeDriftTarget(raw) {
+		add := func(raw string, isLink bool) {
+			candidates := driftCandidates(document, raw, isLink, prefixes, files, dirs)
+			if len(candidates) == 0 {
 				return
 			}
-			target, ok := resolveDriftTarget(document, raw)
-			if !ok || seen[target] {
+			target := candidates[0]
+			for _, candidate := range candidates {
+				if files[candidate] || dirs[candidate] {
+					target = candidate
+					break
+				}
+			}
+			if seen[target] {
 				return
 			}
 			seen[target] = true
@@ -249,21 +272,96 @@ func driftClaims(document, text string) []driftClaim {
 		}
 		for _, match := range driftLinkPattern.FindAllStringSubmatch(line, -1) {
 			if len(match) > 1 {
-				add(match[1])
+				add(match[1], true)
 			}
 		}
 		for _, match := range driftCodePattern.FindAllStringSubmatch(line, -1) {
 			if len(match) > 1 {
-				add(match[1])
+				add(match[1], false)
 			}
 		}
 	}
 	return out
 }
 
-// looksLikeDriftTarget rejects prose, URLs, commands, globs, and external
-// import paths. The remaining shapes are relative repository paths.
-func looksLikeDriftTarget(raw string) bool {
+// driftCandidates returns the repository-relative paths a claim could name, in
+// resolution order. The caller picks the first that exists.
+func driftCandidates(document, raw string, isLink bool, prefixes driftPrefixes, files, dirs map[string]bool) []string {
+	if !looksLikeDriftTarget(raw, isLink, prefixes) {
+		return nil
+	}
+	clean := cutDriftQuery(strings.TrimSpace(raw))
+	if unescaped, err := url.PathUnescape(clean); err == nil {
+		clean = unescaped
+	}
+	absolute := strings.HasPrefix(clean, "/")
+	if absolute {
+		if target, ok := driftTargetFrom(".", strings.TrimPrefix(clean, "/")); ok {
+			return []string{target}
+		}
+		return nil
+	}
+	first := strings.Split(clean, "/")[0]
+	var candidates []string
+	add := func(base string) {
+		if target, ok := driftTargetFrom(base, clean); ok {
+			for _, existing := range candidates {
+				if existing == target {
+					return
+				}
+			}
+			candidates = append(candidates, target)
+		}
+	}
+	if isLink {
+		add(path.Dir(document))
+		if prefixes.root[first] {
+			add(".")
+		}
+		if prefixes.module[first] {
+			add(prefixes.moduleRel)
+		}
+	} else {
+		if prefixes.root[first] {
+			add(".")
+		}
+		if prefixes.module[first] {
+			add(prefixes.moduleRel)
+		}
+		add(path.Dir(document))
+	}
+	if !isLink && !driftSourceExtension(path.Ext(clean)) &&
+		!prefixes.root[first] && !prefixes.module[first] {
+		// A code span with an unknown first segment and no source extension is
+		// usually a package or library name (`html/template`, `net/http`). It
+		// is only a path claim when a document-relative target actually exists.
+		for _, candidate := range candidates {
+			if files[candidate] || dirs[candidate] {
+				return []string{candidate}
+			}
+		}
+		return nil
+	}
+	return candidates
+}
+
+// driftTargetFrom joins a base directory and a claim, rejecting an escape from
+// the repository.
+func driftTargetFrom(base, target string) (string, bool) {
+	if base == "" {
+		base = "."
+	}
+	rel := path.Clean(path.Join(base, target))
+	rel = strings.TrimPrefix(rel, "./")
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	return rel, true
+}
+
+// looksLikeDriftTarget rejects prose, URLs, commands, globs, route paths, and
+// external import paths. The remaining shapes are relative repository paths.
+func looksLikeDriftTarget(raw string, isLink bool, prefixes driftPrefixes) bool {
 	target := strings.TrimSpace(raw)
 	if target == "" || target != raw {
 		return false
@@ -283,11 +381,34 @@ func looksLikeDriftTarget(raw string) bool {
 	if target == "" || target == "." || target == "/" {
 		return false
 	}
+	absolute := strings.HasPrefix(target, "/")
 	first := strings.Split(strings.TrimPrefix(target, "/"), "/")[0]
 	if strings.Contains(first, ".") && first != "." && first != ".." {
 		// A domain-shaped first segment is an external module or site, not a
 		// repository path.
 		return false
+	}
+	if !isLink && !driftSourceExtension(path.Ext(target)) && strings.Contains(path.Base(target), ".") {
+		// `domain.Document` is a Go qualified name, not a file. A real file
+		// with a dot has a known source or documentation extension.
+		return false
+	}
+	if absolute && !driftSourceExtension(path.Ext(target)) && !prefixes.root[first] {
+		// A leading slash in prose is usually an HTTP route (/products), not a
+		// repository path. Only a file-like target or a known top-level
+		// directory is treated as a path claim.
+		return false
+	}
+	if !isLink && !driftSourceExtension(path.Ext(target)) && !strings.Contains(target, "/") {
+		return false
+	}
+	if !isLink && !driftSourceExtension(path.Ext(target)) {
+		segments := strings.Split(strings.Trim(target, "/"), "/")
+		if len(segments) == 1 && !prefixes.root[segments[0]] && !prefixes.module[segments[0]] {
+			// A bare package name (`adapter/`, `domain/`) is not a repository
+			// path claim.
+			return false
+		}
 	}
 	if strings.HasSuffix(target, "/") {
 		return true
@@ -296,28 +417,6 @@ func looksLikeDriftTarget(raw string) bool {
 		return true
 	}
 	return strings.Contains(target, "/")
-}
-
-// resolveDriftTarget maps a claim onto the repository-relative path it names.
-// A leading slash is treated as repository-rooted; every other target is
-// relative to the document's directory. An escaping target is ignored.
-func resolveDriftTarget(document, raw string) (string, bool) {
-	target := cutDriftQuery(raw)
-	unescaped, err := url.PathUnescape(target)
-	if err == nil {
-		target = unescaped
-	}
-	var rel string
-	if strings.HasPrefix(target, "/") {
-		rel = strings.TrimPrefix(target, "/")
-	} else {
-		rel = path.Join(path.Dir(document), target)
-	}
-	rel = path.Clean(strings.TrimPrefix(rel, "./"))
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-		return "", false
-	}
-	return rel, true
 }
 
 func cutDriftQuery(target string) string {
@@ -370,19 +469,47 @@ func driftDocumentExcluded(rel string) bool {
 	return false
 }
 
-// driftInventorySets builds the two membership sets the comparison needs. They
-// are projections of one inventory, not a second tree walk.
-func driftInventorySets(inventory ast.Inventory) (files, dirs map[string]bool) {
+// driftInventorySets builds the membership sets and path prefixes the
+// comparison needs. They are projections of one inventory, not a second tree
+// walk.
+func driftInventorySets(inventory ast.Inventory) (files, dirs map[string]bool, prefixes driftPrefixes) {
 	files = make(map[string]bool, len(inventory.Files))
 	dirs = map[string]bool{".": true}
+	prefixes.root = map[string]bool{}
+	prefixes.module = map[string]bool{}
+	root := inventory.Snapshot.Root
+	if root != "" && inventory.Snapshot.ModuleRoot != "" {
+		// The index walk root is symlink-resolved while Snapshot.Root keeps
+		// the workspace spelling. Compare the resolved forms so a nested
+		// module is not mistaken for an outside path.
+		resolvedRoot := root
+		if value, err := filepath.EvalSymlinks(root); err == nil {
+			resolvedRoot = value
+		}
+		resolvedModule := inventory.Snapshot.ModuleRoot
+		if value, err := filepath.EvalSymlinks(inventory.Snapshot.ModuleRoot); err == nil {
+			resolvedModule = value
+		}
+		if rel, err := filepath.Rel(resolvedRoot, resolvedModule); err == nil {
+			rel = filepath.ToSlash(rel)
+			if rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") {
+				prefixes.moduleRel = rel
+			}
+		}
+	}
 	for _, file := range inventory.Files {
 		rel := path.Clean(strings.TrimPrefix(file.Path, "./"))
 		files[rel] = true
+		prefixes.root[strings.Split(rel, "/")[0]] = true
+		if prefixes.moduleRel != "" && strings.HasPrefix(rel, prefixes.moduleRel+"/") {
+			rest := strings.TrimPrefix(rel, prefixes.moduleRel+"/")
+			prefixes.module[strings.Split(rest, "/")[0]] = true
+		}
 		for dir := path.Dir(rel); dir != "." && dir != "/" && dir != ""; dir = path.Dir(dir) {
 			dirs[dir] = true
 		}
 	}
-	return files, dirs
+	return files, dirs, prefixes
 }
 
 func readDriftDocument(abs string) ([]byte, bool, error) {

@@ -64,6 +64,9 @@ type checkCommand struct {
 	argv  []string
 	dir   string
 	scope string
+	// script is the package.json script body when the command delegates to a
+	// package manager. It is disclosed and inspected before execution.
+	script string
 }
 
 func (c checkCommand) String() string { return strings.Join(c.argv, " ") }
@@ -101,7 +104,10 @@ type checkCounts struct {
 
 // checkResult is one executed command.
 type checkResult struct {
-	Command      checkCommand
+	Command checkCommand
+	// Executed reports that a process actually started. A refused directory or
+	// an empty plan did not execute anything.
+	Executed     bool
 	Status       string
 	ExitCode     int
 	Duration     time.Duration
@@ -357,6 +363,11 @@ func buildCheckPlan(root string, inventory ast.Inventory, scope *checkScope, kin
 				"sibling Go modules have no single owner; commands are planned per module candidate")
 		}
 		for _, dir := range dirsToCheck {
+			if !checkDirWithin(root, dir) {
+				plan.Notes = appendUnique(plan.Notes,
+					"Go module root is outside the workspace; commands run at the workspace root")
+				dir = root
+			}
 			target, scoped := goCheckTarget(dir, scope)
 			if scope != nil && !scoped {
 				plan.Notes = appendUnique(plan.Notes,
@@ -509,24 +520,88 @@ func nodeCheckCommands(root string, paths, dirs map[string]bool, scope *checkSco
 	manager := nodePackageManager(manifest.PackageManager, paths)
 	var out []checkCommand
 	var notes []string
-	if _, ok := manifest.Scripts["test"]; ok {
-		out = append(out, checkCommand{kind: checkTest, name: "node test", argv: []string{manager, "run", "test"}, dir: root, scope: "workspace"})
+	usedScript := false
+	addScript := func(kind checkKind, name, scriptName string) bool {
+		body, ok := manifest.Scripts[scriptName]
+		if !ok {
+			return false
+		}
+		if reason := inspectNodeScript(body); reason != "" {
+			notes = append(notes, fmt.Sprintf("package.json script %q was not planned: %s", scriptName, reason))
+			return false
+		}
+		out = append(out, checkCommand{
+			kind: kind, name: name, argv: []string{manager, "run", scriptName},
+			dir: root, scope: "workspace", script: capCheckText(body, 240),
+		})
+		usedScript = true
+		return true
+	}
+	if _, declared := manifest.Scripts["test"]; declared {
+		addScript(checkTest, "node test", "test")
 	} else if runner := nodeTestRunner(manifest.DevDependencies); runner != "" {
 		out = append(out, checkCommand{kind: checkTest, name: "node test", argv: nodeExecArgv(manager, nodeTestArgs(runner)...), dir: root, scope: "workspace"})
 	} else {
 		notes = append(notes, "package.json has no test script and no known test runner dependency")
 	}
-	if _, ok := manifest.Scripts["build"]; ok {
-		out = append(out, checkCommand{kind: checkBuild, name: "node build", argv: []string{manager, "run", "build"}, dir: root, scope: "workspace"})
-	}
+	addScript(checkBuild, "node build", "build")
 	if _, ok := manifest.Scripts["lint"]; ok {
-		out = append(out, checkCommand{kind: checkStatic, name: "node lint", argv: []string{manager, "run", "lint"}, dir: root, scope: "workspace"})
+		addScript(checkStatic, "node lint", "lint")
 	} else if _, ok := manifest.Scripts["typecheck"]; ok {
-		out = append(out, checkCommand{kind: checkStatic, name: "node typecheck", argv: []string{manager, "run", "typecheck"}, dir: root, scope: "workspace"})
+		addScript(checkStatic, "node typecheck", "typecheck")
 	} else if paths["tsconfig.json"] {
 		out = append(out, checkCommand{kind: checkStatic, name: "tsc", argv: nodeExecArgv(manager, "tsc", "--noEmit"), dir: root, scope: "workspace"})
 	}
+	if usedScript {
+		notes = append(notes, "package.json may run pre/post lifecycle scripts; only the named script was inspected")
+	}
 	return out, notes
+}
+
+// nodeScriptUnsafe lists command shapes that must not run as an unreviewed
+// package script. It is a conservative blocklist, not a sandbox: a safe script
+// can still use the package manager arbitrarily.
+var nodeScriptUnsafe = []struct {
+	pattern *regexp.Regexp
+	reason  string
+}{
+	{regexp.MustCompile(`\brm\s+-[a-z]*r[a-z]*f[a-z]*\s+(?:/|~|\.|\*|\$)`), "recursive delete of the root, home, current, wildcard, or a variable path"},
+	{regexp.MustCompile(`\brm\s+-[a-z]*f[a-z]*r[a-z]*\s+(?:/|~|\.|\*|\$)`), "recursive delete of the root, home, current, wildcard, or a variable path"},
+	{regexp.MustCompile(`\bsudo\b`), "privilege escalation"},
+	{regexp.MustCompile(`\bcurl\b[^\n|]*\|\s*(?:sh|bash)\b`), "remote script piped to a shell"},
+	{regexp.MustCompile(`\bwget\b[^\n|]*\|\s*(?:sh|bash)\b`), "remote script piped to a shell"},
+	{regexp.MustCompile(`\b(?:chmod|chown)\s+(?:-R\s+)?(?:777|root)\b`), "permission or ownership change"},
+	{regexp.MustCompile(`\bmkfs\b|\bdd\s+if=`), "filesystem or disk write"},
+	{regexp.MustCompile(`\b(?:shutdown|reboot|halt|poweroff)\b`), "machine shutdown"},
+	{regexp.MustCompile(`:\(\)\s*\{`), "fork bomb"},
+	{regexp.MustCompile(`\b(?:nc|ncat|netcat)\s+-|\b(?:ssh|scp)\s+`), "network shell or remote transfer"},
+	{regexp.MustCompile(`\bgit\s+push\b|\bnpm\s+publish\b|\bterraform\s+apply\b|\bkubectl\s+(?:apply|delete)\b|\bdocker\s+(?:push|run|system)\b`), "remote or infrastructure side effect"},
+	{regexp.MustCompile(`\b(?:aws|gcloud|az)\s+`), "cloud provider command"},
+	{regexp.MustCompile(`\bcurl\b[^\n]*(?:--data|-d\s|-X\s*POST)`), "network write"},
+	{regexp.MustCompile(`(?:^|[\s/])\.(?:ssh|aws|gnupg|config/gcloud)\b`), "credential directory access"},
+}
+
+// inspectNodeScript reports why a script is too risky to execute unreviewed.
+// An empty result means the script contains no known destructive shape.
+func inspectNodeScript(body string) string {
+	lower := strings.ToLower(body)
+	for _, rule := range nodeScriptUnsafe {
+		if match := rule.pattern.FindString(lower); match != "" {
+			return rule.reason + " (" + capCheckText(strings.TrimSpace(match), 80) + ")"
+		}
+	}
+	return ""
+}
+
+func capCheckText(text string, limit int) string {
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func nodePackageManager(declared string, paths map[string]bool) string {
@@ -686,6 +761,9 @@ func checkDiscoveryResult(plan checkPlan) agent.Result {
 			fmt.Fprintf(&text, " (scope %s)", command.scope)
 		}
 		fmt.Fprintf(&text, " in %s\n", checkDisplayDir(plan.scopeRoot, command.dir))
+		if command.script != "" {
+			fmt.Fprintf(&text, "  script: %s\n", command.script)
+		}
 	}
 	for _, note := range plan.Notes {
 		fmt.Fprintf(&text, "note: %s\n", note)
@@ -724,10 +802,19 @@ func (t *CheckTool) runPlan(ctx agent.Context, plan checkPlan, timeout time.Dura
 		if err := checkCancelled(ctx.Ctx); err != nil {
 			return agent.ErrorResult("%v", err)
 		}
+		if len(command.argv) == 0 || !checkDirWithin(t.Root, command.dir) {
+			results = append(results, checkResult{
+				Command:  command,
+				Status:   "FAIL",
+				ExitCode: -1,
+				Output:   "command refused: the working directory is outside the workspace or the argv is empty",
+			})
+			continue
+		}
 		started := t.Now()
 		execution := runner(ctx.Ctx, command, timeout)
 		result := checkResult{
-			Command: command, ExitCode: execution.exitCode,
+			Command: command, Executed: true, ExitCode: execution.exitCode,
 			Duration: t.Now().Sub(started),
 		}
 		if execution.err != nil && !errors.Is(execution.err, context.Canceled) &&
@@ -909,6 +996,13 @@ func checkRunResult(plan checkPlan, results []checkResult) agent.Result {
 	}
 	verification := strongestCheckVerification(results)
 	verifies := overall == "PASS" && passed > 0
+	executed := false
+	for _, result := range results {
+		if result.Executed {
+			executed = true
+			break
+		}
+	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "checks: %s (%d checks", overall, len(results))
 	if len(plan.Ecosystems) > 0 {
@@ -955,13 +1049,14 @@ func checkRunResult(plan checkPlan, results []checkResult) agent.Result {
 		"notes":        plan.Notes,
 		"scope":        plan.Scope,
 		"verifies":     verifies,
+		"executed":     executed,
 		"verification": verificationDetail(verification),
 	}
 	result := agent.Result{
 		Text:         strings.TrimRight(text.String(), "\n"),
 		Details:      details,
-		Executes:     true,
-		Finished:     true,
+		Executes:     executed,
+		Finished:     executed,
 		Verifies:     verifies,
 		Verification: verification,
 	}
@@ -1014,6 +1109,7 @@ func checkResultDetails(results []checkResult, root string) []map[string]any {
 			"dir":         checkDisplayDir(root, result.Command.dir),
 			"scope":       result.Command.scope,
 			"status":      result.Status,
+			"executed":    result.Executed,
 			"exit_code":   result.ExitCode,
 			"duration_ms": result.Duration.Milliseconds(),
 			"timed_out":   result.TimedOut,
@@ -1041,6 +1137,7 @@ func checkCommandDetails(commands []checkCommand, root string) []map[string]any 
 			"command": command.String(),
 			"dir":     checkDisplayDir(root, command.dir),
 			"scope":   command.scope,
+			"script":  command.script,
 		})
 	}
 	return out
@@ -1063,6 +1160,60 @@ func checkDisplayDir(root, dir string) string {
 		return "."
 	}
 	return rel
+}
+
+// checkDirWithin re-checks the execution directory after symlink resolution.
+// The plan already clamps Go module roots, but this is the last boundary
+// before a process starts.
+func checkDirWithin(root, dir string) bool {
+	if root == "" || dir == "" {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return withinRoot(root, dir)
+}
+
+// checkEnvironment removes credential-shaped variables from the process the
+// check starts. This is a boundary, not a sandbox: a check can still read
+// credential files under HOME, which is why approval remains TierExec.
+func checkEnvironment(base []string) []string {
+	out := make([]string, 0, len(base))
+	for _, entry := range base {
+		key := entry
+		if index := strings.IndexByte(entry, '='); index >= 0 {
+			key = entry[:index]
+		}
+		if sensitiveCheckEnv(key) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func sensitiveCheckEnv(key string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	for _, marker := range []string{
+		"TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "APIKEY",
+		"CREDENTIAL", "PRIVATE_KEY", "AUTH", "SESSION", "COOKIE",
+	} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	switch {
+	case strings.HasPrefix(upper, "AWS_"):
+		return upper != "AWS_REGION" && upper != "AWS_DEFAULT_REGION"
+	case strings.HasPrefix(upper, "NPM_CONFIG_") && strings.Contains(upper, "AUTH"):
+		return true
+	default:
+		return false
+	}
 }
 
 func verificationDetail(evidence *agent.VerificationEvidence) map[string]any {
@@ -1106,6 +1257,7 @@ func runCheckCommand(ctx context.Context, command checkCommand, timeout time.Dur
 	defer cancel()
 	process := exec.CommandContext(runCtx, command.argv[0], command.argv[1:]...)
 	process.Dir = command.dir
+	process.Env = checkEnvironment(os.Environ())
 	buffer := &checkBuffer{limit: CheckMaxOutputBytes}
 	process.Stdout = buffer
 	process.Stderr = buffer

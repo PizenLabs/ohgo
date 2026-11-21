@@ -10,13 +10,20 @@ import (
 // coordinate and stays unexplored.
 func TestProjectSurveyNamesUnexploredModule(t *testing.T) {
 	root := fixture(t, map[string]string{
-		"go.mod":         "module example.com/app\n\ngo 1.21\n",
-		"alpha/a.go":     "package alpha\n\nfunc A() {}\n",
-		"beta/b_test.go": "package beta\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) {}\n",
+		"go.mod":          "module example.com/app\n\ngo 1.21\n",
+		"alpha/a.go":      "package alpha\n\nfunc A() {}\n",
+		"beta/b_test.go":  "package beta\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) {}\n",
+		"docs/guide.md":   "# Guide\n",
+		"deploy/app.yaml": "name: app\n",
 	})
 	analysis := analyze(t, newIndex(t, root), Request{Intent: IntentProject}, nil)
 	if analysis.Survey == nil {
 		t.Fatal("project analysis returned no survey")
+	}
+	for _, module := range analysis.Survey.Modules {
+		if module.Path == "docs" || module.Path == "deploy" {
+			t.Fatalf("non-source container %q was counted as a module", module.Path)
+		}
 	}
 	unexplored := strings.Join(analysis.Survey.Unexplored, ",")
 	if !strings.Contains(unexplored, "beta") {
@@ -30,6 +37,64 @@ func TestProjectSurveyNamesUnexploredModule(t *testing.T) {
 	}
 	if analysis.Coverage.Pending == 0 {
 		t.Fatal("project survey parsed source; it must stay metadata-first")
+	}
+}
+
+// A truncated inventory cannot support a complete repository survey. The
+// survey names the bound and demotes its evidence instead of counting only the
+// rows that happened to fit.
+func TestSurveyDisclosesTruncatedInventory(t *testing.T) {
+	root := fixture(t, map[string]string{
+		"go.mod":     "module example.com/app\n\ngo 1.21\n",
+		"alpha/a.go": "package alpha\n\nfunc A() {}\n",
+		"beta/b.go":  "package beta\n\nfunc B() {}\n",
+	})
+	analysis := analyze(t, newIndex(t, root), Request{Intent: IntentProject, MaxFiles: 1}, nil)
+	if analysis.Survey == nil {
+		t.Fatal("project analysis returned no survey")
+	}
+	if !analysis.Survey.Truncated {
+		t.Fatalf("survey = %+v, want truncated", analysis.Survey)
+	}
+	if analysis.Survey.Evidence.State != StatePartiallyObserved {
+		t.Fatalf("survey evidence = %s, want PARTIALLY_OBSERVED", analysis.Survey.Evidence.State)
+	}
+	if !strings.Contains(analysis.Survey.Evidence.Reason, "truncated") {
+		t.Fatalf("survey reason = %q, want the inventory bound", analysis.Survey.Evidence.Reason)
+	}
+}
+
+func TestDocumentationDriftResolvesModulePathsAndRejectsNonPaths(t *testing.T) {
+	// A code span is ambiguous: it can be a package name, a library import, an
+	// HTTP route, or a repository path. Resolving known module/root prefixes
+	// first and dropping unknown extensionless spans prevents the common false
+	// positives while still reporting a clearly missing module file.
+	root := fixture(t, map[string]string{
+		"README.md":                "# App\n\nRoutes `/products`; packages `adapter/`; import `html/template`.\n",
+		"backend/go.mod":           "module example.com/app/backend\n\ngo 1.21\n",
+		"backend/cart/app/cart.go": "package app\n\nfunc Cart() {}\n",
+		"backend/cart/Readme.md": "# Cart\n\n" +
+			"See `backend/cart/app/cart.go` and `internal/missing.go`.\n",
+		"backend/internal/idempotency/idempotency.go": "package idempotency\n\nfunc Key() {}\n",
+	})
+	analysis := analyze(t, newIndex(t, root), Request{Intent: IntentDrift}, nil)
+	if analysis.Drift == nil {
+		t.Fatal("drift analysis returned no report")
+	}
+	var targets []string
+	for _, finding := range analysis.Drift.Findings {
+		targets = append(targets, finding.Target)
+		for _, falseTarget := range []string{"products", "adapter", "html/template"} {
+			if finding.Target == falseTarget || strings.Contains(finding.Detail, falseTarget) {
+				t.Fatalf("non-path claim became a finding: %+v", finding)
+			}
+		}
+	}
+	if len(targets) != 1 || targets[0] != "backend/internal/missing.go" {
+		t.Fatalf("findings = %v, want only backend/internal/missing.go", targets)
+	}
+	if analysis.Drift.Resolved < 1 {
+		t.Fatalf("resolved = %d, want the module-relative cart path", analysis.Drift.Resolved)
 	}
 }
 

@@ -111,6 +111,7 @@ func addStructuralProvenance(details map[string]any, idx *ast.Index, complete bo
 	details["parsed_files"] = info.ParsedFiles
 	details["pending_files"] = info.PendingFiles
 	details["failed_files"] = info.FailedFiles
+	details["stale_files"] = info.StaleFiles
 	details["test_files"] = info.TestFiles
 	details["scope_complete"] = info.ScopeComplete
 	details["scope_partial"] = !info.ScopeComplete

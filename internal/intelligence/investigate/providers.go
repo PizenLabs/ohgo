@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 	"github.com/PizenLabs/ohgo/internal/intelligence/evidence"
 	"github.com/PizenLabs/ohgo/internal/intelligence/planner"
 	"github.com/PizenLabs/ohgo/internal/intelligence/retrieval"
@@ -49,7 +50,11 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 	if !analysis.Coverage.Complete() {
 		outcome = OutcomePartial
 	}
-	snapshot := fmt.Sprintf("structural:%s:%d", analysis.AnalyzerVersion, analysis.Coverage.Files)
+	snapshotID := analysis.Snapshot.Source.SnapshotID
+	if snapshotID == "" {
+		snapshotID = fmt.Sprintf("structural:%s:%d", analysis.AnalyzerVersion, analysis.Coverage.Files)
+	}
+	freshness := structuralFreshness(analysis)
 	scope := evidence.Scope{Workspace: p.Root, Path: focus}
 	observation := Observation{
 		Outcome:    outcome,
@@ -57,9 +62,9 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 		State:      analysis.Coverage.State,
 		Confidence: analysis.Coverage.Confidence,
 		Coverage:   structuralCoverage(intent, analysis),
-		Summary: fmt.Sprintf("%d files, %d modules, architecture %s (%s), coverage %s",
+		Summary: fmt.Sprintf("%d files, %d modules, architecture %s (%s), coverage %s; freshness %s",
 			analysis.Coverage.Files, len(analysis.Manifests.Manifests),
-			analysis.Architecture.Pattern, analysis.Architecture.State, analysis.Coverage.State),
+			analysis.Architecture.Pattern, analysis.Architecture.State, analysis.Coverage.State, freshness),
 	}
 	if observation.Confidence <= 0 {
 		observation.Confidence = 0.4
@@ -68,15 +73,19 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 		observation.Records = append(observation.Records, evidence.Record{
 			Kind: evidence.KindRelationship, Provider: evidence.ProviderStructural,
 			Source: evidence.SourceAST, Subject: subject, Relation: relation, Object: object,
-			State: state, Confidence: confidence, Freshness: evidence.FreshnessCurrent,
-			Scope: scope, SnapshotID: snapshot, Note: capText(note, maxSummaryChars),
+			State: state, Confidence: confidence, Freshness: freshness,
+			Scope: scope, SnapshotID: snapshotID, Note: capText(note, maxSummaryChars),
+		})
+	}
+	addFact := func(subject, detail string) {
+		observation.Facts = append(observation.Facts, Fact{
+			Provider: string(p.Name()), Subject: subject, Detail: detail, Freshness: freshness,
 		})
 	}
 	for _, manifest := range analysis.Manifests.Manifests {
 		record("manifest:"+manifest.Path, "declares", manifest.Kind, evidence.Observed, 0.9,
 			strings.TrimSpace(manifest.Language+" "+manifest.Framework))
-		observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()),
-			Subject: manifest.Path, Detail: strings.TrimSpace(manifest.Kind + " " + manifest.Language + " " + manifest.Framework)})
+		addFact(manifest.Path, strings.TrimSpace(manifest.Kind+" "+manifest.Language+" "+manifest.Framework))
 	}
 	for _, workspace := range analysis.Manifests.Workspaces {
 		record("workspace:"+workspace, "member_of", "module:"+analysis.Manifests.Module, evidence.Observed, 0.9, "")
@@ -85,14 +94,14 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 	if architecture.Pattern != "" && architecture.Pattern != "not-established" {
 		record("repository", "architecture", architecture.Pattern, architecture.State, architecture.Confidence,
 			architecture.Basis+" "+strings.Join(architecture.Evidence, "; "))
-		observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()), Subject: "architecture",
-			Detail: fmt.Sprintf("%s (%s, confidence %.2f)", architecture.Pattern, architecture.State, architecture.Confidence)})
+		addFact("architecture", fmt.Sprintf("%s (%s, confidence %.2f)",
+			architecture.Pattern, architecture.State, architecture.Confidence))
 	}
 	for _, boundary := range analysis.Boundaries {
 		record("boundary:"+boundary.From, "crosses_to", boundary.To, boundary.Evidence.State, boundary.Evidence.Confidence,
 			fmt.Sprintf("%d crossings", boundary.Crossings))
-		observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()),
-			Subject: "boundary", Detail: fmt.Sprintf("%s -> %s (%d crossings, %s)", boundary.From, boundary.To, boundary.Crossings, boundary.Evidence.State)})
+		addFact("boundary", fmt.Sprintf("%s -> %s (%d crossings, %s)",
+			boundary.From, boundary.To, boundary.Crossings, boundary.Evidence.State))
 	}
 	for _, sample := range analysis.Samples {
 		record("file:"+sample.Path, "representative_of", sample.NodeID, sample.Evidence.State, sample.Evidence.Confidence, sample.Reason)
@@ -101,16 +110,10 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 		survey := analysis.Survey
 		record("survey", "covers", fmt.Sprintf("%d/%d modules", survey.Explored, len(survey.Modules)),
 			survey.Evidence.State, survey.Evidence.Confidence, survey.Evidence.Reason)
-		observation.Facts = append(observation.Facts, Fact{
-			Provider: string(p.Name()), Subject: "repository survey",
-			Detail: fmt.Sprintf("%d modules, %d represented, %d unexplored (%s)",
-				len(survey.Modules), survey.Explored, len(survey.Unexplored), survey.Evidence.State),
-		})
+		addFact("repository survey", fmt.Sprintf("%d modules, %d represented, %d unexplored (%s)",
+			len(survey.Modules), survey.Explored, len(survey.Unexplored), survey.Evidence.State))
 		for _, module := range survey.Unexplored {
-			observation.Facts = append(observation.Facts, Fact{
-				Provider: string(p.Name()), Subject: "unexplored module",
-				Detail: module + " has no sampled source coordinate",
-			})
+			addFact("unexplored module", module+" has no sampled source coordinate")
 		}
 		if len(survey.Unexplored) > 0 {
 			observation.Issues = append(observation.Issues,
@@ -126,10 +129,21 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 			observation.Issues = append(observation.Issues,
 				"structural focus is ambiguous: "+strings.Join(analysis.Focus.Candidates, ", "))
 		default:
-			observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()), Subject: analysis.Focus.Selector,
-				Detail: fmt.Sprintf("%d references, %d callers, %d callees, %d importers, %d tests",
-					analysis.Focus.References, analysis.Focus.Callers, analysis.Focus.Callees,
-					analysis.Focus.Importers, analysis.Focus.Tests)})
+			addFact(analysis.Focus.Selector, fmt.Sprintf("%d references, %d callers, %d callees, %d importers, %d tests",
+				analysis.Focus.References, analysis.Focus.Callers, analysis.Focus.Callees,
+				analysis.Focus.Importers, analysis.Focus.Tests))
+			for _, call := range analysis.Focus.Calls {
+				relation := "calls"
+				if call.Direction == "caller" {
+					relation = "called_by"
+				}
+				record(analysis.Focus.Selector, relation, call.Symbol, evidence.Observed, 0.9,
+					fmt.Sprintf("%s:%d", call.Path, call.Line))
+				addFact(call.Direction, fmt.Sprintf("%s at %s:%d", call.Symbol, call.Path, call.Line))
+			}
+			for _, importer := range analysis.Focus.ImporterPaths {
+				addFact("importer", importer)
+			}
 		}
 	}
 	for _, issue := range analysis.Issues {
@@ -139,22 +153,26 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 		report := analysis.Drift
 		record("documentation", "claims_checked", fmt.Sprintf("%d paths", report.Claims),
 			report.Evidence.State, report.Evidence.Confidence, report.Evidence.Reason)
-		observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()),
-			Subject: "documentation drift",
-			Detail: fmt.Sprintf("%d path claims, %d resolved, %d findings (%s)",
-				report.Claims, report.Resolved, len(report.Findings), report.Evidence.State)})
+		addFact("documentation drift", fmt.Sprintf("%d path claims, %d resolved, %d findings (%s)",
+			report.Claims, report.Resolved, len(report.Findings), report.Evidence.State))
 		for _, finding := range report.Findings {
 			record("doc:"+finding.Document, "claims_path", finding.Target,
 				finding.Source.State, finding.Source.Confidence, finding.Detail)
 			observation.Facts = append(observation.Facts, Fact{
 				Provider: string(p.Name()), Source: "documentation",
-				Subject: fmt.Sprintf("%s:%d", finding.Document, finding.Line),
-				Detail:  fmt.Sprintf("%s [%s] %s", finding.Code, finding.Severity, finding.Target),
+				Subject:   fmt.Sprintf("%s:%d", finding.Document, finding.Line),
+				Detail:    fmt.Sprintf("%s [%s] %s", finding.Code, finding.Severity, finding.Target),
+				Freshness: freshness,
 			})
 		}
 		if len(report.Documents) == 0 {
 			observation.Issues = append(observation.Issues, "no documentation file was inventoried to compare")
 		}
+	}
+	if analysis.Snapshot.Source.StaleFiles > 0 {
+		observation.Issues = append(observation.Issues, fmt.Sprintf(
+			"%d source files are stale; their declarations are excluded and the analysis is partial",
+			analysis.Snapshot.Source.StaleFiles))
 	}
 	observation.Sufficient = structuralSufficient(intent, analysis)
 	if req.Intent == planner.IntentVerify && (analysis.Focus == nil || analysis.Focus.Tests == 0) {
@@ -166,11 +184,41 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 	return observation, nil
 }
 
+// structuralFreshness projects the analysis coverage onto the evidence
+// freshness vocabulary. A stale record or an incomplete analysis is never
+// presented as a current fact.
+func structuralFreshness(analysis structural.Analysis) evidence.Freshness {
+	source := analysis.Snapshot.Source
+	switch {
+	case source.State == ast.FreshnessStale || source.StaleFiles > 0:
+		return evidence.FreshnessStale
+	case source.State != ast.FreshnessCurrent:
+		return evidence.FreshnessUnknown
+	case analysis.Coverage.State == structural.StateUnknown:
+		return evidence.FreshnessUnknown
+	case analysis.Coverage.Complete() &&
+		(analysis.Request.Intent == structural.IntentDrift || source.StructuralComplete):
+		return evidence.FreshnessCurrent
+	default:
+		return evidence.FreshnessUnverified
+	}
+}
+
 // structuralSufficient reports whether the native answer already covers the
 // information need. It is deliberately conservative: a found target with no
 // relationship is not sufficient for an impact or flow question, and an
 // established architecture pattern is.
 func structuralSufficient(intent structural.Intent, analysis structural.Analysis) bool {
+	if analysis.Snapshot.Source.StaleFiles > 0 {
+		switch intent {
+		case structural.IntentArchitecture, structural.IntentImpact,
+			structural.IntentFlow, structural.IntentIsolation:
+			// A missing edge may be in a stale record, so a relational answer
+			// cannot be called sufficient while the snapshot contains stale
+			// declarations.
+			return false
+		}
+	}
 	switch intent {
 	case structural.IntentProject:
 		return analysis.Coverage.Files > 0

@@ -193,6 +193,91 @@ func TestCheckToolPlansNonWatchRunnerFallback(t *testing.T) {
 	}
 }
 
+func TestCheckToolRefusesUnsafePackageScript(t *testing.T) {
+	root := symbolsFixture(t, map[string]string{
+		"package.json": `{"scripts": {"test": "rm -rf / && vitest run"}}`,
+		"src/app.ts":   "export const app = 1;\n",
+	})
+	tool := NewCheckTool(NewStructuralSource(root))
+	result := tool.Execute(testContext(), map[string]any{"mode": "discover", "checks": []any{"test"}})
+	if result.IsError {
+		t.Fatalf("discover: %s", result.Text)
+	}
+	if strings.Contains(result.Text, "npm run test") {
+		t.Fatalf("unsafe test script was planned:\n%s", result.Text)
+	}
+	if !strings.Contains(result.Text, "not planned") || !strings.Contains(result.Text, "recursive delete") {
+		t.Fatalf("refusal reason missing:\n%s", result.Text)
+	}
+}
+
+func TestCheckToolDisclosesSafePackageScript(t *testing.T) {
+	root := symbolsFixture(t, map[string]string{
+		"package.json": `{"scripts": {"test": "vitest run"}}`,
+		"src/app.ts":   "export const app = 1;\n",
+	})
+	tool := NewCheckTool(NewStructuralSource(root))
+	result := tool.Execute(testContext(), map[string]any{"mode": "discover", "checks": []any{"test"}})
+	if result.IsError {
+		t.Fatalf("discover: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "script: vitest run") {
+		t.Fatalf("script body was not disclosed:\n%s", result.Text)
+	}
+	if !strings.Contains(result.Text, "lifecycle scripts") {
+		t.Fatalf("lifecycle boundary was not disclosed:\n%s", result.Text)
+	}
+}
+
+func TestCheckEnvironmentRedactsCredentialVariables(t *testing.T) {
+	env := checkEnvironment([]string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"OPENAI_API_KEY=secret",
+		"AWS_SECRET_ACCESS_KEY=secret",
+		"AWS_REGION=us-east-1",
+		"NPM_CONFIG_//registry:_authToken=secret",
+		"SSH_AUTH_SOCK=/tmp/socket",
+	})
+	joined := strings.Join(env, "\n")
+	for _, keep := range []string{"PATH=/usr/bin", "HOME=/home/user", "AWS_REGION=us-east-1"} {
+		if !strings.Contains(joined, keep) {
+			t.Fatalf("env lost non-secret %q: %v", keep, env)
+		}
+	}
+	for _, secret := range []string{"OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "NPM_CONFIG", "SSH_AUTH_SOCK"} {
+		if strings.Contains(joined, secret) {
+			t.Fatalf("env kept credential %q: %v", secret, env)
+		}
+	}
+}
+
+func TestCheckRunRefusesDirectoryOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	tool := NewCheckTool(NewStructuralSource(root))
+	called := false
+	tool.run = func(context.Context, checkCommand, time.Duration) checkExecution {
+		called = true
+		return checkExecution{}
+	}
+	result := tool.runPlan(testContext(), checkPlan{
+		scopeRoot: root,
+		Commands: []checkCommand{{
+			kind: checkTest, name: "outside", argv: []string{"true"}, dir: outside,
+		}},
+	}, time.Second)
+	if !result.IsError || !strings.Contains(result.Text, "outside the workspace") {
+		t.Fatalf("result = %s (error=%v), want a refusal", result.Text, result.IsError)
+	}
+	if called {
+		t.Fatal("a command outside the workspace was executed")
+	}
+	if result.Executes || result.Finished {
+		t.Fatalf("refused run claimed execution evidence: %+v", result)
+	}
+}
+
 func TestCheckToolDiscoversNodeScripts(t *testing.T) {
 	root := symbolsFixture(t, map[string]string{
 		"package.json": `{

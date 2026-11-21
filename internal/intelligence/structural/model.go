@@ -13,7 +13,7 @@ const SchemaVersion = "structural/v1"
 // AnalyzerVersion identifies the analysis semantics: planner tables, strategy
 // behaviour, and evidence rules. Bumping it invalidates cached analyses even
 // when the repository and schema are unchanged.
-const AnalyzerVersion = "2026-11-21.1"
+const AnalyzerVersion = "2026-11-21.2"
 
 // Level is one resolution of the structural model.
 //

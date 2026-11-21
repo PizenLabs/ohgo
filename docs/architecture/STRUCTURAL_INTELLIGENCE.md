@@ -186,7 +186,9 @@ sample represents it. A module with no degree-ranked sample gets a
 representative production coordinate; a module with no production file stays
 in `Survey.Unexplored` rather than disappearing. A survey never claims the
 module was read: its sample is a coordinate the model can open, and the
-survey's evidence is inventory-level.
+survey's evidence is inventory-level. When the repository has only one source
+module, the survey expands to that module's direct package children, so
+bounded contexts inside the module remain visible.
 
 ## 5. Planner
 
@@ -293,6 +295,10 @@ a directory graph and a module graph from the same edges.
   `not-established`. Fewer than three modules is always `not-established`.
   Incomplete graph evidence caps confidence at 0.5 and demotes the state to
   `PARTIALLY_OBSERVED`.
+- **Focus neighborhood**: the bounded focus report names the target and keeps
+  up to 12 call edges (`direction`, `symbol`, call-site `path`/`line`) plus up
+  to 8 importer directories. Counts alone do not trace a flow; the edges are
+  the evidence a consumer can follow, and a bounded set is marked truncated.
 
 ## 8. Documentation drift
 
@@ -327,6 +333,12 @@ implementation evidence.
 `Coverage` for the intent is the documentation comparison's own evidence, not
 the parse axis: unparsed source does not make a path comparison incomplete, and
 a complete comparison does not claim the source was parsed.
+
+`investigate` projects the structural snapshot onto the shared freshness
+vocabulary. A stale file or stale snapshot makes its facts `STALE`; an
+incomplete inventory makes them `UNVERIFIED`; only a complete analysis with a
+complete inventory reports `CURRENT`. Every record carries the snapshot
+identity, so evidence cannot silently outlive the state it describes.
 
 ## 9. Cache and incremental behaviour
 
@@ -447,6 +459,8 @@ above `MaxFiles` (4,000) the model clamps to directory resolution instead.
 - A module survey proves representation, not understanding. It selects at most
   24 samples; a module with no production source stays explicitly unexplored,
   and a sample still has to be read before any implementation claim is made.
+  A truncated file inventory or a stale record demotes the survey evidence to
+  `PARTIALLY_OBSERVED`; stale or failed files are never selected as samples.
 
 ## 14. Migration notes
 

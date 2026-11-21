@@ -719,22 +719,32 @@ func issueDetails(issues []structural.Issue) []map[string]any {
 }
 
 func focusDetail(focus structural.FocusReport) map[string]any {
+	calls := make([]map[string]any, 0, len(focus.Calls))
+	for _, call := range focus.Calls {
+		calls = append(calls, map[string]any{
+			"direction": call.Direction, "symbol": call.Symbol,
+			"path": call.Path, "line": call.Line, "test": call.Test,
+		})
+	}
 	return map[string]any{
-		"selector":      focus.Selector,
-		"selector_kind": focus.SelectorKind,
-		"found":         focus.Found,
-		"ambiguous":     focus.Ambiguous,
-		"candidates":    append([]string(nil), focus.Candidates...),
-		"targets":       focus.Targets,
-		"references":    focus.References,
-		"callers":       focus.Callers,
-		"importers":     focus.Importers,
-		"tests":         focus.Tests,
-		"nodes":         focus.Nodes,
-		"edges":         focus.Edges,
-		"truncated":     focus.Truncated,
-		"reason":        focus.Reason,
-		"evidence":      evidenceDetail(focus.Evidence),
+		"selector":       focus.Selector,
+		"selector_kind":  focus.SelectorKind,
+		"found":          focus.Found,
+		"ambiguous":      focus.Ambiguous,
+		"candidates":     append([]string(nil), focus.Candidates...),
+		"targets":        focus.Targets,
+		"references":     focus.References,
+		"callers":        focus.Callers,
+		"callees":        focus.Callees,
+		"calls":          calls,
+		"importers":      focus.Importers,
+		"importer_paths": append([]string(nil), focus.ImporterPaths...),
+		"tests":          focus.Tests,
+		"nodes":          focus.Nodes,
+		"edges":          focus.Edges,
+		"truncated":      focus.Truncated,
+		"reason":         focus.Reason,
+		"evidence":       evidenceDetail(focus.Evidence),
 	}
 }
 

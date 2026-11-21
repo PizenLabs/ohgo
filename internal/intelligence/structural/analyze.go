@@ -61,6 +61,16 @@ type ManifestTopology struct {
 	Evidence    Evidence       `json:"evidence"`
 }
 
+// FocusCall is one bounded call edge around the focus. Direction is "caller"
+// or "callee"; Path and Line are the call-site witness.
+type FocusCall struct {
+	Direction string `json:"direction"`
+	Symbol    string `json:"symbol"`
+	Path      string `json:"path"`
+	Line      int    `json:"line,omitempty"`
+	Test      bool   `json:"test,omitempty"`
+}
+
 // FocusReport is the structural neighbourhood of the request's selector.
 type FocusReport struct {
 	Selector     string   `json:"selector"`
@@ -74,15 +84,20 @@ type FocusReport struct {
 	// Callees are the forward call edges from the selector. A flow report
 	// without them can only describe what reaches the target, not what the
 	// target reaches.
-	Callees   int                `json:"callees,omitempty"`
-	Importers int                `json:"importers"`
-	Tests     int                `json:"tests"`
-	Nodes     int                `json:"nodes"`
-	Edges     int                `json:"edges"`
-	Truncated bool               `json:"truncated"`
-	Reason    string             `json:"reason,omitempty"`
-	Unknown   ast.UnknownSummary `json:"unknown"`
-	Evidence  Evidence           `json:"evidence"`
+	Callees   int `json:"callees,omitempty"`
+	Importers int `json:"importers"`
+	Tests     int `json:"tests"`
+	// Calls is a bounded projection of the call edges. It is evidence a
+	// consumer can trace; the counts alone are not a path.
+	Calls []FocusCall `json:"calls,omitempty"`
+	// ImporterPaths are the package directories that import the target.
+	ImporterPaths []string           `json:"importer_paths,omitempty"`
+	Nodes         int                `json:"nodes"`
+	Edges         int                `json:"edges"`
+	Truncated     bool               `json:"truncated"`
+	Reason        string             `json:"reason,omitempty"`
+	Unknown       ast.UnknownSummary `json:"unknown"`
+	Evidence      Evidence           `json:"evidence"`
 }
 
 // SurveyModule is one module (or the finest available container) and whether
