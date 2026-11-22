@@ -432,8 +432,8 @@ turning gry into a role, a second planner, or a separate state owner.
 
 ### 12.6 Investigation closure
 
-An investigation that asks for a verdict is not allowed to substitute another
-repository survey for that verdict. Its shape declares
+An investigation that asks for a defect verdict is not allowed to substitute
+another repository survey for that verdict. Its shape declares
 `investigation_conclusion`; only a **FINAL** call to the `conclude` tool records it:
 
 ```text
@@ -442,6 +442,23 @@ evidence: entrypoint, identifier flow, validation boundary, persistence ordering
 uncertainty: material gaps that remain
 ```
 
+The vocabulary belongs to the objective, not to the tool. A general answer
+about the project ("what is this project?", "explain the architecture") records
+an answer outcome instead:
+
+```text
+ANSWERED | PARTIAL | UNRESOLVED
+evidence: what the run observed
+uncertainty: what remains unverified
+```
+
+`investigation_conclusion` is declared only for a failure investigation or an
+explicit request for a safety verdict. A plain analysis therefore has no
+manufactured verdict requirement; if the model records one anyway, the control
+plane rejects `SAFE`/`BUG` and keeps the invalid record for audit. The
+`ConclusionMode` installed for the turn is the authority, so the model cannot
+choose a category that makes its answer look terminal.
+
 The requirement is a convergence point, not a proof. `conclude` records an
 observation; the completion evaluator still decides whether the answer is
 supportable. Calling the tool is a proposal, not the transition itself:
@@ -449,7 +466,9 @@ supportable. Calling the tool is a proposal, not the transition itself:
 evidence, or an unrecognized status is recorded as a progress observation. It
 creates no conclusion item, satisfies no conclusion requirement, and consumes no
 terminal attempt. This is what prevents "placeholder, not yet sufficient" from
-manufacturing a terminal state.
+manufacturing a terminal state. A verdict outside the active mode is not a
+progress observation either: it is recorded as `conclusion_rejected` and remains
+non-terminal.
 
 A conclusion is **provisional when its uncertainty names a concrete
 code coordinate** (a selector such as `StockReserver.Reserve` or a Go path). The
@@ -465,6 +484,27 @@ Repeated conclusions still need a hard semantic limit. After
 `UNRESOLVED` conclusion is accepted with the unresolved coordinate retained in
 the record. A repeated `UNRESOLVED` without a new observation is not an attempt;
 the projection's no-progress bound closes that shape instead.
+
+### 12.7 Response transaction
+
+Internal iterations are not user-visible turns. One task has one answer
+transaction: `INVESTIGATING → FINALIZING → COMMITTED`, with `ABORTED` when no
+answer was accepted. Drafts may be rejected and replaced; only the committed
+text reaches the host transcript. `Loop.LastResponseAudit` records the drafts,
+rejections, tool calls, reused observations, retries, redundant identical calls,
+and the final claim audit; a second commit for the same run is a no-op.
+`UnsupportedClaims` counts false factual claims that remain in the committed
+text, while `UnresolvedFacets` counts requested deliverables the answer honestly
+reports as unverified. The second is still a completion gap; it is not counted
+as a false claim.
+
+Before commit, `FinalizeAnswer` runs the same deterministic grounding and
+provenance audits completion uses. A rejected sentence is withheld and a bounded
+limitation report is appended; if the draft cannot be repaired claim by claim,
+only the runtime-authored limitation report is published. A non-empty evidence
+frontier is included in that report and remains a completion veto. This is why
+an accepted answer can be useful while the task is still `NEEDS_REVIEW`: the
+answer no longer asserts what the runtime did not establish.
 
 Once the conclusion is the only missing requirement, a bounded ten-turn
 conclusion window still allows concrete closing reads, but further surveying

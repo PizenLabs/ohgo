@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 func TestConcludeRecordsAVerdictAndEvidence(t *testing.T) {
@@ -25,6 +26,62 @@ func TestConcludeRecordsAVerdictAndEvidence(t *testing.T) {
 	details, ok := result.Details.(map[string]any)
 	if !ok || details["verdict"] != "SAFE" || details["evidence"] == "" || details["uncertainty"] == "" {
 		t.Fatalf("details = %+v", result.Details)
+	}
+}
+
+func TestConcludeRejectsADefectVerdictForAGeneralAnswer(t *testing.T) {
+	result := NewConcludeTool().Execute(agent.Context{
+		Ctx:            context.Background(),
+		ConclusionMode: contract.ConclusionAnswer,
+	}, map[string]any{
+		"verdict":  "SAFE",
+		"status":   "FINAL",
+		"evidence": "the project is a Next.js blog",
+	})
+	if !result.IsError {
+		t.Fatal("a general answer was recorded as a safety verdict")
+	}
+	if !strings.Contains(result.Text, "ANSWERED") || !strings.Contains(result.Text, "defect investigation") {
+		t.Fatalf("error = %q, want the required vocabulary and the defect boundary", result.Text)
+	}
+}
+
+func TestConcludeRecordsAnAnswerOutcome(t *testing.T) {
+	result := NewConcludeTool().Execute(agent.Context{
+		Ctx:            context.Background(),
+		ConclusionMode: contract.ConclusionAnswer,
+	}, map[string]any{
+		"verdict":     "ANSWERED",
+		"status":      "FINAL",
+		"evidence":    "app/page.tsx loads Markdown posts through lib/post-loader.ts",
+		"uncertainty": "runtime behavior was not observed",
+	})
+	if result.IsError {
+		t.Fatalf("answer conclusion failed: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "answer: ANSWERED") {
+		t.Fatalf("text = %q, want the answer outcome label", result.Text)
+	}
+	details, ok := result.Details.(map[string]any)
+	if !ok || details["mode"] != string(contract.ConclusionAnswer) {
+		t.Fatalf("details = %+v, want the answer mode", result.Details)
+	}
+}
+
+func TestConcludeRejectsAnAnswerVerdictForADefectInvestigation(t *testing.T) {
+	result := NewConcludeTool().Execute(agent.Context{
+		Ctx:            context.Background(),
+		ConclusionMode: contract.ConclusionDefect,
+	}, map[string]any{
+		"verdict":  "ANSWERED",
+		"status":   "FINAL",
+		"evidence": "the checkout path calls Reserve before Save",
+	})
+	if !result.IsError {
+		t.Fatal("a defect investigation accepted an answer verdict")
+	}
+	if !strings.Contains(result.Text, "SAFE") || !strings.Contains(result.Text, "BUG") {
+		t.Fatalf("error = %q, want the defect vocabulary", result.Text)
 	}
 }
 

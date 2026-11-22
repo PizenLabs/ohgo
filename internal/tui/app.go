@@ -18,6 +18,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/execution/exec"
 	"github.com/PizenLabs/ohgo/internal/prompt"
@@ -6035,13 +6036,30 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// so a later turn never inherits an objective it did not state.
 	p.loop.SetGrounding(intent.Grounding)
 	defer p.loop.SetGrounding(nil)
-	p.loop.SetInformationalReviews(intent, func() agent.EvidenceProvenance {
+	// The conclusion vocabulary is derived from the shape phase, not from the
+	// persisted objective: a mutation run under ASK is answering the
+	// informational phase and must not record a defect verdict.
+	p.loop.SetConclusionMode(contract.ConclusionModeFor(shapeIntent.Kind, shapeIntent.Objective))
+	defer p.loop.SetConclusionMode("")
+	provenanceOf := func() agent.EvidenceProvenance {
 		if p.task.ProjectionProvenance != nil {
 			return p.task.ProjectionProvenance()
 		}
 		return agent.EvidenceProvenance{}
+	}
+	p.loop.SetInformationalReviews(intent, provenanceOf)
+	p.loop.SetEvidenceGap(func() string {
+		if p.task.ProjectionReview != nil {
+			return p.task.ProjectionReview()
+		}
+		return ""
+	})
+	p.loop.SetAnswerFinalizer(func(turns []agent.Turn, answer, gap string) agent.FinalizedAnswer {
+		return agent.FinalizeAnswer(intent, turns, answer, provenanceOf(), gap)
 	})
 	defer p.loop.ClearInformationalReviews()
+	defer p.loop.SetEvidenceGap(nil)
+	defer p.loop.SetAnswerFinalizer(nil)
 
 	request := append(append([]agent.Message(nil), history...), user)
 

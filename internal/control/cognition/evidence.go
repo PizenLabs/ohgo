@@ -446,6 +446,10 @@ type EvidenceState struct {
 	// It lets sufficiency distinguish a documentation-only project from a code
 	// project whose broad account still lacks an implementation observation.
 	Facts RepositoryFacts `json:"facts,omitempty"`
+	// conclusionMode is the terminal-outcome vocabulary of the current shape.
+	// It is derived state, not a durable fact, so it is rebuilt by
+	// ensureRequirements on every resume and is never serialized.
+	conclusionMode contract.ConclusionMode
 }
 
 // NewEvidenceState returns an empty state.
@@ -956,6 +960,7 @@ func (s *EvidenceState) ObserveTurns(shape TaskShape, turns []agent.Turn) (obser
 // ensureRequirements records the shape's needs once.
 func (s *EvidenceState) ensureRequirements(shape TaskShape) {
 	s.Facts = shape.RepositoryFacts
+	s.conclusionMode = contract.ConclusionModeFor(shape.Kind, shape.Objective)
 	for _, need := range shape.RequiredKnowledge {
 		found := false
 		for _, existing := range s.Requirements {
@@ -1370,7 +1375,7 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 // UNRESOLVED. This is what keeps "I could not determine X" from becoming a
 // terminal answer before X was even inspected.
 func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
-	verdict := strings.ToUpper(strings.TrimSpace(detailString(details, "verdict")))
+	verdict := contract.ConclusionVerdict(strings.ToUpper(strings.TrimSpace(detailString(details, "verdict"))))
 	if verdict == "" {
 		return false
 	}
@@ -1380,15 +1385,28 @@ func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[str
 	}
 	evidence := strings.TrimSpace(detailString(details, "evidence"))
 	uncertainty := strings.TrimSpace(detailString(details, "uncertainty"))
+	// The control plane, not the model, owns the vocabulary. A SAFE/BUG
+	// verdict on a general answer is not a closed investigation, and an
+	// ANSWERED verdict on a failure hypothesis does not establish safety.
+	if !s.conclusionMode.Accepts(verdict) {
+		return s.addConclusionRejected(outcome, verdict, evidence, seq)
+	}
 	// Admission is a control decision, not a consequence of calling the tool.
 	// A payload that says it is provisional, lacks supporting evidence, or
 	// carries an unrecognized status remains an observation. It cannot satisfy
 	// investigation_conclusion or open the answer boundary.
 	if status == "IN_PROGRESS" || (status != "FINAL" && status != "") ||
 		evidence == "" || contract.IsProvisionalConclusion(evidence, uncertainty) {
-		return s.addConclusionProgress(outcome, verdict, evidence, details, seq)
+		return s.addConclusionProgress(outcome, string(verdict), evidence, details, seq)
 	}
-	targets := unresolvedConclusionTargets(uncertainty)
+	declared := unresolvedConclusionTargets(uncertainty)
+	targets := declared
+	if verdict == contract.VerdictPartial {
+		// PARTIAL is an explicit decision to stop with named gaps. Treating
+		// those gaps as a pre-conclusion obligation would make the verdict
+		// unusable: the answer could never be partial, only unfinished.
+		targets = nil
+	}
 	previous, hasPrevious := s.latestConclusion()
 	// A provisional conclusion's obligation cannot be erased by simply
 	// omitting it from the next call. If it is not observed, it remains the
@@ -1410,23 +1428,27 @@ func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[str
 	// actually attempted the named gap. A repeated conclusion with no new
 	// observation is not an attempt; the projection's no-progress bound closes
 	// that shape instead of accepting it here.
-	hardLimit := !resolved && verdict == "UNRESOLVED" &&
+	hardLimit := !resolved && verdict == contract.VerdictUnresolved &&
 		attempts >= MaxConclusionAttempts && newEvidence
 	complete := resolved || hardLimit
 	unresolved := append([]string(nil), targets...)
-	if complete && resolved {
+	if verdict == contract.VerdictPartial {
+		// Keep the declared gaps in the record for audit even though they are
+		// not obligations. PendingConclusionTargets ignores a complete record.
+		unresolved = declared
+	} else if complete && resolved {
 		unresolved = nil
 	}
-	value := "verdict: " + verdict + "\nevidence: " + evidence
+	value := "verdict: " + string(verdict) + "\nevidence: " + evidence
 	if uncertainty != "" {
 		value += "\nuncertainty: " + uncertainty
 	}
 	item := EvidenceItem{
-		ID:         "conclusion:" + digest(verdict+"\x00"+evidence),
+		ID:         "conclusion:" + digest(string(verdict)+"\x00"+evidence),
 		Status:     StatusKnown,
 		Retention:  RetentionExact,
 		Provenance: ProvenanceDiagnostic,
-		Summary:    bound("conclusion "+verdict+": "+evidence, MaxEvidenceSummaryBytes),
+		Summary:    bound("conclusion "+string(verdict)+": "+evidence, MaxEvidenceSummaryBytes),
 		Value:      bound(value, MaxEvidenceValueBytes),
 		Digest:     digest(value),
 		Complete:   complete,
@@ -1465,6 +1487,32 @@ func (s *EvidenceState) addConclusionProgress(outcome agent.ToolOutcome, verdict
 		Digest:     digest(value),
 		Complete:   false,
 		View:       "conclusion_progress",
+		Source:     Source{Tool: "conclude", CallID: outcome.CallID},
+		Seq:        seq,
+	})
+	return false
+}
+
+// addConclusionRejected records a verdict from the wrong vocabulary. It is
+// deliberately not a progress observation: progress implies the model is
+// still gathering evidence for the same verdict, while this payload is a
+// category error the projection must correct explicitly. It is never a
+// completed conclusion and never satisfies investigation_conclusion.
+func (s *EvidenceState) addConclusionRejected(outcome agent.ToolOutcome, verdict contract.ConclusionVerdict, evidence string, seq int) bool {
+	value := "rejected verdict: " + string(verdict) +
+		"\nrequired: " + s.conclusionMode.VerdictList() +
+		"\nevidence: " + evidence
+	s.upsert(EvidenceItem{
+		ID:         "conclusion-invalid:" + digest(string(verdict)+"\x00"+evidence),
+		Status:     StatusKnown,
+		Retention:  RetentionDiagnostic,
+		Provenance: ProvenanceDiagnostic,
+		Summary:    bound("invalid conclusion verdict "+string(verdict)+"; required "+s.conclusionMode.VerdictList(), MaxEvidenceSummaryBytes),
+		Value:      bound(value, MaxEvidenceValueBytes),
+		Digest:     digest(value),
+		Complete:   false,
+		Conflict:   "invalid conclusion verdict: " + string(verdict) + " is not valid for this objective",
+		View:       "conclusion_rejected",
 		Source:     Source{Tool: "conclude", CallID: outcome.CallID},
 		Seq:        seq,
 	})
@@ -1526,7 +1574,9 @@ func (s *EvidenceState) investigationTargetObserved(target string, _ ExecutionSt
 // progress record is not evidence of the repository and cannot satisfy either
 // a conclusion or a named target.
 func isConclusionObservation(id string) bool {
-	return strings.HasPrefix(id, "conclusion:") || strings.HasPrefix(id, "conclusion-progress:")
+	return strings.HasPrefix(id, "conclusion:") ||
+		strings.HasPrefix(id, "conclusion-progress:") ||
+		strings.HasPrefix(id, "conclusion-invalid:")
 }
 
 // hasObservationAfter reports whether the state recorded a non-conclusion

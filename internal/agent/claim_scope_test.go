@@ -789,3 +789,34 @@ func TestParentheticalLineCountBindsToItsOwnFile(t *testing.T) {
 		t.Fatalf("a parenthetical count was bound to the wrong file: %+v", issue)
 	}
 }
+
+// A terminal answer conclusion is a control observation, not a proof. When the
+// answer itself makes an unsupported absence claim, the run is a review even if
+// the model already recorded ANSWERED.
+func TestTerminalAnswerConclusionCannotOverrideGroundingVeto(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimListing(".", "README.md\npackage.json\nbackend\nsrc\nsupabase\n"),
+		{
+			CallID:   "conclude-1",
+			ToolName: "conclude",
+			Args: map[string]any{
+				"verdict": "ANSWERED", "status": "FINAL",
+				"evidence": "the repository root was listed",
+			},
+			Result: Result{
+				Text: "answer: ANSWERED\nthe repository root was listed",
+				Details: map[string]any{
+					"verdict": "ANSWERED", "status": "FINAL", "mode": "answer",
+					"evidence": "the repository root was listed",
+				},
+			},
+		},
+	}}}
+	verdict := claimVerdict(turns, "No test files were found in the repository by the probes.")
+	if verdict.Complete() {
+		t.Fatal("a terminal answer conclusion overrode the grounding veto")
+	}
+	if !strings.Contains(verdict.Reason, "intent grounding") {
+		t.Fatalf("reason = %q, want the grounding boundary", verdict.Reason)
+	}
+}

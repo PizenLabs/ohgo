@@ -273,6 +273,16 @@ func (l *Loop) SetInformationalReviews(intent contract.IntentContract, provenanc
 		return provenance()
 	}
 	l.cfg.AnswerReview = func(turns []Turn, answer string) string {
+		// The projection's frontier verdict outranks the prose audit. A model
+		// can write a plausible, internally consistent answer before the
+		// evidence that establishes it exists; that is a premature candidate,
+		// not a result. The correction request reopens the surface and names
+		// the missing requirement.
+		if intent.Kind == contract.ObjectiveInformational {
+			if gap := l.evidenceGap(); gap != "" {
+				return "the runtime still lacks required evidence: " + gap
+			}
+		}
 		return ReviewInformationalAnswerWithProvenance(intent, turns, answer, summary())
 	}
 	l.cfg.AnswerRepairs = func(turns []Turn, answer string) []contract.GroundingIssue {
@@ -287,4 +297,13 @@ func (l *Loop) ClearInformationalReviews() {
 	}
 	l.cfg.AnswerReview = nil
 	l.cfg.AnswerRepairs = nil
+}
+
+// evidenceGap reads the host's current frontier verdict. It is empty when no
+// evidence source is installed or the frontier is satisfied.
+func (l *Loop) evidenceGap() string {
+	if l == nil || l.cfg.EvidenceGap == nil {
+		return ""
+	}
+	return strings.TrimSpace(l.cfg.EvidenceGap())
 }

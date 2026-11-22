@@ -133,6 +133,10 @@ type ProjectionReport struct {
 	Terminal bool `json:"terminal,omitempty"`
 	// StopReason explains a terminal verdict in evidence terms.
 	StopReason string `json:"stop_reason,omitempty"`
+	// Missing names the unresolved requirements the projection withheld an
+	// action for. It is audit data and the correction request's vocabulary:
+	// a premature answer must name the evidence frontier it did not close.
+	Missing []string `json:"missing,omitempty"`
 	// Provenance summarizes what kind of evidence the answer may rely on:
 	// observed implementation, documentation, or external content. Completion
 	// uses it to keep documentation claims distinguishable from observed facts.
@@ -198,6 +202,13 @@ func (r ProjectionReport) EvidenceReview() string {
 	}
 	if r.Stage != "" {
 		review += " at stage " + r.Stage
+	}
+	if len(r.Missing) > 0 {
+		missing := r.Missing
+		if len(missing) > 4 {
+			missing = missing[:4]
+		}
+		review += "; missing: " + strings.Join(missing, "; ")
 	}
 	return review
 }

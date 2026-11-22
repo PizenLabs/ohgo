@@ -192,6 +192,18 @@ type Config struct {
 	// correction; authority, completion, and publication remain the runtime's.
 	// A nil hook accepts every answer.
 	AnswerReview func(turns []Turn, answer string) string
+	// EvidenceGap returns the control plane's current evidence-frontier gap.
+	// It is read when an answer is reviewed and again when it is finalized.
+	// A non-empty value means the model answered before the task's required
+	// evidence existed, so the answer is a premature candidate, not a result.
+	EvidenceGap func() string
+	// FinalizeAnswer is the last gate before a candidate answer is published.
+	// It receives the accepted answer and the current evidence gap, and may
+	// remove or qualify claims the evidence cannot support. The returned text
+	// is the only text the host may commit for this run. It cannot authorize
+	// an action or complete a task; completion still evaluates the finalized
+	// text and the durable evidence.
+	FinalizeAnswer func(turns []Turn, answer, evidenceGap string) FinalizedAnswer
 	// CorrectionToolCalls bounds tool execution during the one correction
 	// window. Zero uses DefaultCorrectionToolCalls. The bound is per correction,
 	// not per run: the initial investigation already has the tree budget, and a
@@ -267,6 +279,11 @@ type Config struct {
 	// security boundary is consulted. It narrows the action space; it never
 	// grants authority.
 	Grounding *contract.IntentGrounding
+	// ConclusionMode is the terminal-outcome vocabulary of the active
+	// informational contract. It is handed to control tools through Context so
+	// a general answer cannot be recorded as a defect verdict. Empty means the
+	// host did not install a contract.
+	ConclusionMode contract.ConclusionMode
 	// Compaction configures context reduction. The zero value disables it.
 	Compaction Compaction
 	// Summarize replaces the compacted prefix during compaction. Required when
@@ -490,6 +507,11 @@ type Loop struct {
 	// spans a session, not a turn.
 	frozen []ai.Message
 	prefix prefixState
+	// responseMu guards the one-response transaction audit. The loop is
+	// reused across user turns; Run resets it so a previous commit cannot make
+	// the next turn look already published.
+	responseMu sync.Mutex
+	response   ResponseAudit
 }
 
 // SetUsageLog installs the ledger that receives per-request cache samples.
@@ -860,12 +882,38 @@ func (l *Loop) SetGrounding(grounding *contract.IntentGrounding) {
 	l.cfg.Grounding = grounding
 }
 
+// SetConclusionMode installs the terminal-outcome vocabulary for this turn.
+// The zero value clears it, which preserves unrestricted legacy behaviour.
+func (l *Loop) SetConclusionMode(mode contract.ConclusionMode) {
+	if l != nil {
+		l.cfg.ConclusionMode = mode
+	}
+}
+
 // SetAnswerReview installs the bounded answer-level completion gate for the
 // next run, or nil to accept every answer. The gate can ask for one corrected
 // answer; it cannot authorize an action, widen the tool set beyond the loop's
 // constructed capabilities, or mark the run complete.
 func (l *Loop) SetAnswerReview(review func(turns []Turn, answer string) string) {
 	l.cfg.AnswerReview = review
+}
+
+// SetEvidenceGap installs the current evidence-frontier gap for the next run.
+//
+// The host projects this from the same evidence state the completion evaluator
+// uses; it is not model output. Passing nil clears it.
+func (l *Loop) SetEvidenceGap(gap func() string) {
+	if l != nil {
+		l.cfg.EvidenceGap = gap
+	}
+}
+
+// SetAnswerFinalizer installs the last gate before a candidate answer is
+// published. Passing nil accepts the sanitized answer unchanged.
+func (l *Loop) SetAnswerFinalizer(finalize func(turns []Turn, answer, evidenceGap string) FinalizedAnswer) {
+	if l != nil {
+		l.cfg.FinalizeAnswer = finalize
+	}
 }
 
 // SetAnswerRepairs installs the claim-level repair planner for the next run,
@@ -961,6 +1009,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	l.mutationMu.Unlock()
 	l.compactionAttempts = 0
 	l.compactionCooldown = 0
+	l.beginResponse()
+	defer func() { l.abortResponse(runErr) }()
 
 	edit := &runEdit{journal: l.cfg.Journal}
 	defer func() {
@@ -1044,6 +1094,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// that never produced text or a call at all.
 	activityObserved := false
 	stopReason := ""
+	// lastEvidenceReview is the projection's frontier verdict for the request
+	// that produced the current candidate. It is the control plane's
+	// statement that the answer may be premature, not a model judgement.
+	lastEvidenceReview := ""
 	turns = nil
 	// nudges are the one-shot runtime directives for the next request only:
 	// the answer request, the execution-intent recovery, and the protocol
@@ -1100,6 +1154,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// it and a later turn can still re-read the source.
 		requestMessages := live
 		requestSystem := l.system()
+		lastEvidenceReview = ""
 		// runtimeBlocks is the volatile tail of this request: caller-supplied
 		// per-turn state first, then the projection's briefing, then any
 		// one-shot directive, so the directive is the last thing read. It is
@@ -1161,6 +1216,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			terminal = report.Terminal
 			stopReason = report.StopReason
 			refusals = projected.Refusals
+			lastEvidenceReview = report.EvidenceReview()
 			if projected.ToolChoice.Type != "" || projected.ToolChoice.ToolName != "" {
 				projectedToolChoice = projected.ToolChoice
 			}
@@ -1342,6 +1398,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// an answer the run later replaces.
 		if len(calls) > 0 && strings.TrimSpace(assistant.Text()) != "" {
 			turn.SuppressText = true
+			l.noteDraft()
 		}
 		if len(calls) > 0 {
 			// A canonical call is the correction both protocol recoveries ask
@@ -1485,6 +1542,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				if reason := l.answerReviewReason(turns); reason != "" {
 					if directive := l.correctionDirective(turns, reason); directive != "" {
 						turns[len(turns)-1].Suppressed = true
+						l.noteRejected()
 						answerCorrectionAttempted = true
 						correctionPending = true
 						l.correctionActive.Store(true)
@@ -1495,6 +1553,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					}
 				}
 			}
+			l.finalizeResponse(turns, &live, lastEvidenceReview)
 			reportTurn()
 			return turns, nil
 		}
@@ -1525,6 +1584,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 						// request would replay a call with no result.
 						live[len(live)-1] = AssistantMessage{Message: turn.Assistant}
 						turns[len(turns)-1].Suppressed = true
+						l.noteRejected()
 						answerCorrectionAttempted = true
 						correctionPending = true
 						l.correctionActive.Store(true)
@@ -1537,6 +1597,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					}
 				}
 			}
+			l.finalizeResponse(turns, &live, lastEvidenceReview)
 			if l.cfg.OnTurn != nil {
 				l.cfg.OnTurn(turns[len(turns)-1])
 			}
@@ -2564,13 +2625,14 @@ func (l *Loop) execute(
 
 	started = time.Now()
 	toolCtx := Context{
-		Ctx:       ctx,
-		CallID:    call.ID,
-		ToolName:  call.Name,
-		SessionID: l.cfg.SessionID,
-		ReadOnly:  decision != nil && decision.ReadOnly,
-		Budget:    l.budget,
-		Deadline:  l.deadline(),
+		Ctx:            ctx,
+		CallID:         call.ID,
+		ToolName:       call.Name,
+		SessionID:      l.cfg.SessionID,
+		ReadOnly:       decision != nil && decision.ReadOnly,
+		ConclusionMode: l.cfg.ConclusionMode,
+		Budget:         l.budget,
+		Deadline:       l.deadline(),
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(err.Error())

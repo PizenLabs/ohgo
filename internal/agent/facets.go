@@ -49,7 +49,8 @@ var facetTermPatterns = map[contract.Facet]*regexp.Regexp{
 // is a gap. Only the second is a completion veto.
 var facetUncertaintyPattern = regexp.MustCompile(
 	`(?i)\b(?:unverified|not\s+verified|cannot\s+verify|can't\s+verify|could\s+not\s+verify|couldn't\s+verify|` +
-		`not\s+established|not\s+confirmed|not\s+determined|undetermined|unknown|unclear|no\s+data|` +
+		`not\s+establish(?:ed|es)?|did\s+not\s+establish|does\s+not\s+establish|` +
+		`not\s+confirmed|not\s+determined|undetermined|unknown|unclear|no\s+data|` +
 		`not\s+inspected|not\s+checked|not\s+probed|not\s+queried|not\s+evaluated|` +
 		`insufficient\s+evidence|unable\s+to\s+(?:verify|determine|establish|inspect)|` +
 		`remain(?:s|ed)?\s+(?:unverified|unknown|unclear|open)|` +
@@ -96,8 +97,11 @@ func AssessRequiredFacets(intent contract.IntentContract, turns []Turn, answer s
 		assessment.Reasons = append(assessment.Reasons, issue.Detail)
 		assessment.Verdict = contract.GroundingReview
 	}
-	add := func(code, detail string) {
+	add := func(code, detail string, claim ...string) {
 		issue := contract.GroundingIssue{Code: code, Detail: detail}
+		if len(claim) > 0 {
+			issue.Claim = claim[0]
+		}
 		switch code {
 		case "required_facet_missing", "required_facet_unverified",
 			"required_facet_incomplete_list", "required_facet_contradicted":
@@ -119,20 +123,20 @@ func AssessRequiredFacets(intent contract.IntentContract, turns []Turn, answer s
 		}
 		if len(mentions) == 0 {
 			add("required_facet_missing",
-				fmt.Sprintf("the request asked for %s, but the answer does not report it", label))
+				fmt.Sprintf("the request asked for %s, but the answer does not report it", label), label)
 			continue
 		}
 		if facetMentionsIncomplete(mentions) {
 			add("required_facet_unverified",
-				fmt.Sprintf("the request asked for %s, but the answer explicitly leaves it unverified or incomplete; establish it or the task is not complete", label))
+				fmt.Sprintf("the request asked for %s, but the answer explicitly leaves it unverified or incomplete; establish it or the task is not complete", label), label)
 			continue
 		}
 		if issue := facetListOmission(facet, answer, turns); issue != "" {
-			add("required_facet_incomplete_list", issue)
+			add("required_facet_incomplete_list", issue, label)
 			continue
 		}
 		if contradiction := facetContradiction(facet, answer, turns); contradiction != "" {
-			add("required_facet_contradicted", contradiction)
+			add("required_facet_contradicted", contradiction, label)
 		}
 	}
 	return assessment

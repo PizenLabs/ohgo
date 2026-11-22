@@ -273,7 +273,9 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 			suff.Kind = BlockProgressStalled
 			suff.Reasons = append(suff.Reasons,
 				fmt.Sprintf("the investigation conclusion was requested for %d turns; another observation cannot satisfy it", p.conclusionTurns))
-			suff.Next = []string{"call conclude with status FINAL, SAFE, BUG, or UNRESOLVED and the evidence already established; no further survey is required"}
+			suff.Next = []string{"call conclude with status FINAL, " +
+				contract.ConclusionDefect.VerdictList() +
+				" and the evidence already established; no further survey is required"}
 		}
 	} else if suff.Missing == nil || len(suff.Missing) != 1 || suff.Missing[0] != "investigation_conclusion" {
 		p.conclusionTurns = 0
@@ -429,6 +431,7 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		report.AnswerEligible = false
 	}
 	report.Terminal = suff.Kind == BlockCapabilityFailure || suff.Kind == BlockProgressStalled
+	report.Missing = append([]string(nil), suff.Missing...)
 	switch {
 	case len(gaps) > 0:
 		// The capability verdict is the actual reason this request cannot

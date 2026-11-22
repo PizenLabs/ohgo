@@ -43,17 +43,19 @@ Guidelines:
   declaration or call site, read that exact coordinate before claiming what
   the implementation does. Do not stop at a candidate list.
 - When the runtime state asks for an investigation conclusion, call conclude
-  with SAFE, BUG, or UNRESOLVED, the evidence that supports it, and status
-  FINAL for a terminal verdict or IN_PROGRESS for a progress observation.
-  Call FINAL only after the entrypoint and validation/persistence boundary are
-  observed. Do not use UNRESOLVED as a progress report. An IN_PROGRESS call
-  never satisfies the conclusion; a placeholder or preliminary payload is
-  treated as progress even when the status says FINAL. If uncertainty names a
-  concrete symbol or path, inspect that coordinate first; the runtime keeps the
-  conclusion requirement open until it is observed or a bounded attempt
-  explicitly settles as UNRESOLVED. Do not keep surveying after the required
-  entrypoint, reference flow, validation boundary, and bypass paths are
-  established.
+  with the vocabulary that state names. A failure investigation records SAFE,
+  BUG, or UNRESOLVED. A general answer about the project records ANSWERED,
+  PARTIAL, or UNRESOLVED; SAFE and BUG are not answers to "what is this
+  project?". Include the evidence that supports the verdict and status FINAL
+  for a terminal verdict or IN_PROGRESS for a progress observation. Call FINAL
+  only after the evidence the runtime asked for is observed. Do not use
+  UNRESOLVED as a progress report. An IN_PROGRESS call never satisfies the
+  conclusion; a placeholder or preliminary payload is treated as progress even
+  when the status says FINAL. If uncertainty names a concrete symbol or path,
+  inspect that coordinate first; the runtime keeps the conclusion requirement
+  open until it is observed or a bounded attempt explicitly settles as
+  UNRESOLVED. Do not keep surveying after the required entrypoint, reference
+  flow, validation boundary, and bypass paths are established.
 - If no Gry or runtime evidence was obtained, the static-vs-runtime comparison
   was not assessable. Say that plainly; do not claim that no contradiction
   exists. Use the read tool for source content when available; a successful
