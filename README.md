@@ -60,7 +60,7 @@ it is done. ohgo is built around the opposite contract.
   layer can be tested against a real request body instead of a mock.
 - **The default build can see non-Go source.** `make build` uses the host C
   toolchain to compile the pinned tree-sitter grammars, so TypeScript, TSX,
-  JavaScript, Java, C#, Rust, Kotlin, Ruby, C, and C++ are structurally
+  JavaScript, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++ are structurally
   observable. A `CGO_ENABLED=0` portable build remains available for
   environments without a toolchain; it reports those sources as unsupported
   rather than silently treating them as absent.
@@ -78,7 +78,7 @@ it is done. ohgo is built around the opposite contract.
 - **Repository intelligence** — `symbols`, `graph`, `refs`, and `structure`
   share one incremental structural snapshot. Go uses the native `go/ast`
   backend; cgo builds add pinned tree-sitter adapters for TypeScript/TSX,
-  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, and C++. A broad project
+  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++. A broad project
   question stays metadata-first, while targeted/impact queries parse only the
   pending supported files they need. Reference and call queries report
   `ambiguous`, `truncated`, `unsupported`, and `unknown` explicitly instead of
@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh | sh
 The script resolves the latest stable release, selects the tarball for your OS
 and architecture, and verifies it against the published `sha256sums.txt`
 before installing. It prefers the multi-language artifact, so a fresh install
-can parse TypeScript, TSX, JavaScript, Java, C#, Rust, Kotlin, Ruby, C, and C++;
+can parse TypeScript, TSX, JavaScript, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++;
 set `OHGO_VARIANT=portable` to install the Go-only static build instead. It
 installs to `$PREFIX/bin` (default `$HOME/.local/bin`, already on a typical
 PATH) and runs `ohgo version` as a smoke test.
@@ -464,14 +464,18 @@ GitHub Copilot's OAuth token exchange, Bedrock SigV4/IAM credentials, and
 streamable-HTTP request/response core (standalone GET streams, resumability,
 and server-to-client requests are not implemented).
 
-Semantic assistance is bounded and optional. When `gopls` is installed,
-`investigate` uses it for Go declarations, references, and call hierarchy at
-the module the request names; the server is started lazily and closed after the
-step. DAP runtime observation exists only for an already-authorized stopped
-debug session and is not exposed as a start/attach tool. No other language has
-a language server in this build: TypeScript, JavaScript, Java, C#, Rust,
-Kotlin, Ruby, C, and C++ have syntax-level Tree-sitter facts only, and the
-portable build has no adapter for them at all.
+Semantic assistance is bounded and optional. `ohgo doctor` reports the language
+servers discovered on `PATH`; `investigate` selects the server matching the
+request's language (or the workspace's dominant supported language) and starts
+only that one, lazily, closing it after the step. Discovered servers include
+`gopls` (Go), `typescript-language-server` (TypeScript/TSX/JavaScript/JSX),
+`pyright`/`pylsp` (Python), `rust-analyzer`, `jdtls`, `clangd`, `ruby-lsp`,
+`csharp-ls`, and `kotlin-language-server`. A missing server is reported as
+semantic `UNAVAILABLE`; AST evidence from the same workspace remains available.
+DAP runtime observation exists only for an already-authorized stopped debug
+session and is not exposed as a start/attach tool. The portable build has no
+tree-sitter adapters for non-Go languages, and reports them as unsupported
+rather than absent.
 
 Credentials resolve in order: explicit request key, `~/.ohgo/credentials.json`
 (0600, written only when you save), environment, then parsed shell startup

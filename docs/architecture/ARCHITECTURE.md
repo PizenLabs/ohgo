@@ -25,7 +25,7 @@ language uses a pinned tree-sitter adapter. There is no second parser, index,
 daemon, graph database, or evidence path.
 
 - `symbols` returns exact declaration coordinates across Go, TypeScript/TSX,
-  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, and C++. A language filter is
+  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++. A language filter is
   a query convenience; the per-file language and native kind stay explicit.
 - `graph` remains the Go package/import graph. It reports the snapshot's
   language coverage and points a non-Go selector at `structure`/`refs` instead
@@ -42,8 +42,9 @@ daemon, graph database, or evidence path.
   explicit relations, and an impact composition of references, callers,
   importers, and tests. Its `overview` and `languages` views are metadata-first;
   targeted/impact views parse the pending supported files on demand. Semantic
-  activation is reserved and fails explicitly because no semantic resolver is
-  configured. Every view's header states four independent dimensions —
+  activation is an optional provider: the discovered language server for the
+  request's language is started lazily, and a missing server is reported as
+  `UNAVAILABLE` rather than as an absent declaration. Every view's header states four independent dimensions —
   `scope` (path inclusion), `inventory` (file observation), `structural`
   (parsed coverage) and `source_access` — because they fail independently: a
   build without an adapter for the project's language reports
