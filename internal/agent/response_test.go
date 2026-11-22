@@ -169,8 +169,8 @@ func TestRepeatedSuccessfulObservationIsAuditedAsRedundant(t *testing.T) {
 	if _, err := loop.Run(context.Background(), []Message{UserMessage{Text: "describe the component"}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if read.n != 1 {
-		t.Fatalf("read executions = %d, want the second call reused", read.n)
+	if read.n.Load() != 1 {
+		t.Fatalf("read executions = %d, want the second call reused", read.n.Load())
 	}
 	audit := loop.LastResponseAudit()
 	if audit.ReusedObservations != 1 {

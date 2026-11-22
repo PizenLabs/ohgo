@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
@@ -14,7 +15,7 @@ import (
 
 type reviewReadTool struct {
 	text string
-	n    int
+	n    atomic.Int64
 }
 
 func (t *reviewReadTool) Name() string        { return "read" }
@@ -25,7 +26,7 @@ func (t *reviewReadTool) Parameters() *jsonschema.Schema {
 func (t *reviewReadTool) Approval() Approval            { return Approval{Tier: TierRead} }
 func (t *reviewReadTool) Exclusive(map[string]any) bool { return false }
 func (t *reviewReadTool) Execute(Context, map[string]any) Result {
-	t.n++
+	t.n.Add(1)
 	return Result{Text: t.text, Details: map[string]any{"path": "components/TerminalBlog.tsx"}}
 }
 
@@ -179,8 +180,8 @@ func TestAnswerReviewCorrectsInventedProp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if read.n != 1 {
-		t.Fatalf("read executions = %d, want 1", read.n)
+	if read.n.Load() != 1 {
+		t.Fatalf("read executions = %d, want 1", read.n.Load())
 	}
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "publishedAt") {
 		t.Fatalf("final answer = %q, want the corrected prop", got)
@@ -248,8 +249,8 @@ func TestCorrectionBudgetBoundsToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if read.n != 2 {
-		t.Fatalf("correction executed %d tool calls, want 2", read.n)
+	if read.n.Load() != 2 {
+		t.Fatalf("correction executed %d tool calls, want 2", read.n.Load())
 	}
 	if len(turns) != 3 {
 		t.Fatalf("turns = %d, want answer, bounded correction, answer", len(turns))
@@ -289,8 +290,8 @@ func TestCorrectionSurfaceSpansMultipleRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if read.n != 2 {
-		t.Fatalf("correction reads = %d, want two across the correction window", read.n)
+	if read.n.Load() != 2 {
+		t.Fatalf("correction reads = %d, want two across the correction window", read.n.Load())
 	}
 	if len(turns) != 4 {
 		t.Fatalf("turns = %d, want answer, read, read, answer", len(turns))
