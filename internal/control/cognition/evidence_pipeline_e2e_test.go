@@ -105,11 +105,13 @@ func TestE2EScenarioAProjectOverview(t *testing.T) {
 		executeTool(t, read, "read-readme", map[string]any{"path": "README.md"}),
 		executeTool(t, read, "read-package", map[string]any{"path": "package.json"}),
 		executeTool(t, read, "read-main", map[string]any{"path": "backend/cmd/product-service/main.go"}),
+		executeTool(t, read, "read-app", map[string]any{"path": "src/App.tsx"}),
 	}
 	answer := strings.Join([]string{
 		"According to the README, the project is a Go backend with a React frontend.",
 		"The current inventory contains backend/ and src/ with a product-service entrypoint.",
 		"The inspected backend/cmd/product-service/main.go implements an HTTP handler that starts a listener.",
+		"The inspected src/App.tsx renders the application root.",
 	}, "\n\n")
 	result := runPipeline(t, root,
 		"check this project and analyze what this project is about?", "ask",

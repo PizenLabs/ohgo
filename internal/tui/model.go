@@ -74,6 +74,19 @@ type Entry struct {
 	UserText string
 	// AssistantText is set when Kind is EntryAssistant.
 	AssistantText string
+	// Provisional marks an assistant block whose text is still being
+	// streamed or is awaiting the runtime's answer decision. A provisional
+	// block is never handed to output-first scrollback: it may be withdrawn
+	// when the turn turns out to be tool narration or a rejected draft, and
+	// scrollback cannot be rewritten. The accept/discard transition clears
+	// it and, for an accepted answer, replaces the text with the exact
+	// committed value.
+	Provisional bool
+	// Discarded marks a provisional assistant block the runtime withdrew.
+	// The entry remains as a zero-text tombstone so entry indexes (and the
+	// output-first painter's progress) stay stable; every renderer already
+	// treats empty assistant text as no rows.
+	Discarded bool
 	// Reasoning is set when Kind is EntryReasoning: the model's own thinking
 	// trace, represented as a block rather than inferred from prose.
 	Reasoning *ReasoningEntry
@@ -1157,6 +1170,27 @@ func (s *State) Apply(event Event) {
 		s.growScroll(strings.Count(e.Text, "\n"))
 		s.noteTelemetryStatus(e.At)
 
+	case AssistantReconcile:
+		// The stream closed. The runtime either accepted the text as a
+		// publishable answer or withdrew it as tool narration / a rejected
+		// draft. The exact text replaces the provisional accumulation, so a
+		// dropped delta or a finalized rewrite cannot leave a partial block
+		// or a duplicated tail.
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
+		if e.Discard {
+			s.discardProvisionalAssistant(e.At)
+			return
+		}
+		s.settleAssistant(e.Text, e.At)
+		s.OutputTokens = s.currentOutputTokens()
+		s.growScroll(strings.Count(e.Text, "\n"))
+		s.noteTelemetryStatus(e.At)
+
 	case AssistantDone:
 		// A turn boundary supersedes any pending proposal. A proposal can
 		// never be open while a turn runs, so this only ever drops state a
@@ -1169,7 +1203,10 @@ func (s *State) Apply(event Event) {
 		// Close the trailing assistant entry: without this the next turn would
 		// append to it and the transcript would read as one continuous answer.
 		s.closeReasoning(e.At)
+		s.settleProvisionalAssistants()
 		if open := s.openAssistant(); open >= 0 {
+			// A turn boundary is final: no reconcile is coming, so the
+			// accumulated text is the settled answer and may enter scrollback.
 			s.closedAssistant = true
 			at := e.At
 			if at.IsZero() {
@@ -1215,7 +1252,10 @@ func (s *State) Apply(event Event) {
 				s.bumpEntry(i)
 			}
 		}
+		s.settleProvisionalAssistants()
 		if open := s.openAssistant(); open >= 0 {
+			// The partial answer is what the user actually saw before the
+			// interruption; it is final for display and may be sealed.
 			s.closedAssistant = true
 		}
 		for i := range s.Entries {
@@ -3357,7 +3397,7 @@ func (s *State) openAssistant() int {
 		return -1
 	}
 	last := len(s.Entries) - 1
-	if s.Entries[last].Kind != EntryAssistant {
+	if s.Entries[last].Kind != EntryAssistant || s.Entries[last].Discarded {
 		return -1
 	}
 	return last
@@ -3435,7 +3475,7 @@ func (s *State) appendAssistant(text string, at time.Time) {
 	if text == "" {
 		return
 	}
-	if index := s.openAssistant(); index >= 0 {
+	if index := s.openAssistant(); index >= 0 && s.Entries[index].Provisional {
 		s.Entries[index].AssistantText += text
 		s.assistantText = true
 		s.bumpEntry(index)
@@ -3444,10 +3484,101 @@ func (s *State) appendAssistant(text string, at time.Time) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	s.Entries = append(s.Entries, Entry{Kind: EntryAssistant, AssistantText: text, AppearedAt: at})
+	// A settled answer is a completed block. New text belongs to the next
+	// turn, never to the previous answer.
+	s.closedAssistant = true
+	s.Entries = append(s.Entries, Entry{
+		Kind:          EntryAssistant,
+		AssistantText: text,
+		AppearedAt:    at,
+		Provisional:   true,
+	})
 	s.assistantText = true
 	s.assignIdentity(len(s.Entries) - 1)
 	s.closedAssistant = false
+}
+
+// settleProvisionalAssistants clears the await-reconcile flag at a turn
+// boundary. No reconcile can arrive after Done or cancellation, so whatever
+// text the user already saw is the block's final display value.
+func (s *State) settleProvisionalAssistants() {
+	for i := range s.Entries {
+		if s.Entries[i].Kind == EntryAssistant && s.Entries[i].Provisional {
+			s.Entries[i].Provisional = false
+			s.bumpEntry(i)
+		}
+	}
+}
+
+// lastProvisionalAssistant finds the trailing streamed block awaiting the
+// runtime's answer decision. It is not the same as openAssistant: a
+// reasoning block may have been appended after the text, and the accept must
+// still replace the text.
+func (s *State) lastProvisionalAssistant() int {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := s.Entries[i]
+		if entry.Kind == EntryAssistant && entry.Provisional && !entry.Discarded {
+			return i
+		}
+	}
+	return -1
+}
+
+// settleAssistant replaces the provisional stream with the exact committed
+// answer. An empty accepted text withdraws an empty provisional block; text
+// with no provisional block (a non-streaming transport) opens one, so every
+// transport has the same transcript representation.
+func (s *State) settleAssistant(text string, at time.Time) {
+	index := s.lastProvisionalAssistant()
+	if strings.TrimSpace(text) == "" {
+		if index >= 0 {
+			s.discardProvisionalAssistant(at)
+		}
+		return
+	}
+	if index < 0 {
+		s.Entries = append(s.Entries, Entry{
+			Kind:          EntryAssistant,
+			AssistantText: text,
+			AppearedAt:    at,
+		})
+		index = len(s.Entries) - 1
+		s.assignIdentity(index)
+		s.assistantText = true
+		s.closedAssistant = false
+		return
+	}
+	entry := &s.Entries[index]
+	entry.AssistantText = text
+	entry.Provisional = false
+	s.assistantText = true
+	s.bumpEntry(index)
+}
+
+// discardProvisionalAssistant withdraws a streamed block the runtime did not
+// accept. The tombstone keeps later entry indexes stable; the text is gone so
+// no renderer, copy command, or persistence pass can treat it as an answer.
+func (s *State) discardProvisionalAssistant(at time.Time) {
+	index := s.lastProvisionalAssistant()
+	if index < 0 {
+		return
+	}
+	entry := &s.Entries[index]
+	entry.AssistantText = ""
+	entry.Provisional = false
+	entry.Discarded = true
+	entry.FinalLineAt = time.Time{}
+	s.assistantText = false
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		if s.Entries[i].Kind == EntryAssistant && strings.TrimSpace(s.Entries[i].AssistantText) != "" {
+			s.assistantText = true
+			break
+		}
+	}
+	s.bumpEntry(index)
+	if !at.IsZero() {
+		s.closeReasoning(at)
+	}
 }
 
 // tool finds a tool entry by call id.
@@ -3619,6 +3750,25 @@ type AssistantDelta struct {
 }
 
 func (AssistantDelta) eventKind() string { return "assistant_delta" }
+
+// AssistantReconcile settles the provisional text of one turn with the exact
+// value the runtime committed.
+//
+// Deltas are a progressive preview, not the authoritative text: a delta can
+// be dropped under backpressure, and the answer finalizer can rewrite the
+// committed answer. Text is the whole final value, so the reducer replaces
+// rather than appends. Discard withdraws a preview the runtime classified as
+// tool narration, a rejected draft, or a plan that was not an answer.
+type AssistantReconcile struct {
+	Text    string
+	Discard bool
+	// At is when the turn settled. Zero means unknown.
+	At time.Time
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
+}
+
+func (AssistantReconcile) eventKind() string { return "assistant_reconcile" }
 
 // AssistantDone marks the end of a turn.
 type AssistantDone struct {

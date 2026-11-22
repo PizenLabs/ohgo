@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/tokens"
 )
@@ -148,6 +149,9 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	// presenting it as current would make resolved uncertainty look live.
 	if t.Status == StatusNeedsReview {
 		b.addBlock("Review reason", t.ReviewReason)
+		if claims := agent.RepairInstructions(t.ReviewIssues); claims != "" {
+			b.addBlock("Rejected claims", claims)
+		}
 	}
 	b.addBlock("Constraints", strings.Join(t.Constraints, "; "))
 	b.addBlock("Todo", renderTodoContext(t))

@@ -683,3 +683,59 @@ func TestFailedRecallDoesNotBlockAfterDirectSourceRead(t *testing.T) {
 		t.Fatalf("a direct source read did not recover the recall miss: %s", got.Reason)
 	}
 }
+
+// A tool failure that reached the capability remains a hard veto until a later
+// success or verification recovers it. The failure is part of the run's
+// evidence, and completion cannot certify an answer that leaves it unresolved.
+func TestInformationalCompletionStillVetoesAFailedProbe(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("read", Result{Text: "package main"})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text: "find: permission denied", IsError: true, FailureClass: ToolFailureRuntime,
+		})}},
+		answerTurn("The inspected entry point is main.go."),
+	}
+	intent := contract.IntentContract{Objective: "analyze this project", Kind: contract.ObjectiveInformational}
+	verdict := EvaluateTaskCompletion(CompletionInput{Turns: turns, Contract: intent})
+	if verdict.Complete() {
+		t.Fatal("an unrecovered tool failure was certified complete")
+	}
+	if !strings.Contains(verdict.Reason, "bash") {
+		t.Fatalf("reason = %q, want the failing capability named", verdict.Reason)
+	}
+}
+
+// Execution and mutation objectives keep the same hard failure rule: a failed
+// command is part of the proof state, not an unrelated observation.
+func TestExecutionCompletionStillVetoesAFailedCommand(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text: "command failed", IsError: true, FailureClass: ToolFailureRuntime,
+		})}},
+		answerTurn("The command completed."),
+	}
+	intent := contract.IntentContract{Objective: "run the command", Kind: contract.ObjectiveExecution}
+	verdict := EvaluateTaskCompletion(CompletionInput{Turns: turns, Contract: intent})
+	if verdict.Complete() {
+		t.Fatal("a failed execution was reported complete")
+	}
+}
+
+// A correction-budget refusal never ran. It is control feedback, not a failed
+// observation, and must not veto an informational answer that already
+// qualified the claim the repair could not complete.
+func TestCorrectionBudgetRefusalIsNotAnUnrecoveredFailure(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("read", Result{Text: "package main"})}},
+		{Results: []ToolOutcome{toolOutcome("read", Result{
+			Text: "correction budget exhausted", IsError: true,
+			FailureClass: ToolFailureCorrectionBudget,
+		})}},
+		answerTurn("The inspected entry point is main.go; the architecture rules were not verified."),
+	}
+	intent := contract.IntentContract{Objective: "analyze this project", Kind: contract.ObjectiveInformational}
+	verdict := EvaluateTaskCompletion(CompletionInput{Turns: turns, Contract: intent})
+	if !verdict.Complete() {
+		t.Fatalf("a correction-budget refusal vetoed the answer: %s", verdict.Reason)
+	}
+}

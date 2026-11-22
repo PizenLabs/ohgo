@@ -63,7 +63,7 @@ func (i claimIssue) groundingIssue() contract.GroundingIssue {
 			issue.Category = "citation"
 			issue.Requirement = "source content for the cited path"
 			issue.Action = "read the cited path or present it as an unverified pointer"
-		case "unsupported_code_entity":
+		case "unsupported_code_entity", "unsupported_code_claim":
 			issue.Category = "entity"
 			issue.Requirement = "the declaration of the named identifier"
 			issue.Action = "read the declaration or remove the identifier"

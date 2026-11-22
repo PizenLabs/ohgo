@@ -202,3 +202,29 @@ func TestMarkdownNilPaletteRenders(t *testing.T) {
 		t.Errorf("nil palette = %q, want the dark default, not a panic", out)
 	}
 }
+
+func TestTildeFenceRendersAsCodeNotProse(t *testing.T) {
+	out := stripForTest(t, RenderMarkdownWrapped("~~~go\nx := 1\n\nmore code\n~~~", DarkPalette(), 40))
+	if strings.Contains(out, "~~~") {
+		t.Fatalf("tilde delimiters leaked into the prose:\n%s", out)
+	}
+	for _, want := range []string{"x := 1", "more code"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("fence body %q is missing:\n%s", want, out)
+		}
+	}
+}
+
+func TestParagraphCutsNeverSplitAFence(t *testing.T) {
+	text := "intro\n\n~~~\na\n\nb\n~~~\n\noutro"
+	cuts := paragraphCutsOutsideFences([]rune(text))
+	if len(cuts) == 0 {
+		t.Fatal("no paragraph boundary was found")
+	}
+	for _, cut := range cuts {
+		prefix := text[:cut]
+		if strings.Count(prefix, "~~~")%2 == 1 {
+			t.Fatalf("cut at %d splits an open fence:\n%s", cut, prefix)
+		}
+	}
+}

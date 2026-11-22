@@ -369,6 +369,16 @@ A step with no target for a locate/flow/debug need stays native. This is the
 "existing or cheap local evidence first" rule: an external call is not
 automatically an optimization.
 
+The `investigate` tool exposes an opt-in `provider` parameter. `auto` (the
+default) is the policy above, unchanged and silent. `external` is an explicit
+request for the external structural provider: it widens the policy to every
+step the provider can serve — including steps that would otherwise stay native
+and even when the native answer is already sufficient — charges the shared
+external budget as usual, and merges the external evidence with the native
+one. Orientation and filesystem-hierarchy steps stay native-only by design.
+The preference is a typed parameter the model passes; it is never guessed from
+question text.
+
 ### 12.2 Outcome and fallback matrix
 
 | Condition | Returning evidence | Ohgo behaviour |
@@ -377,8 +387,8 @@ automatically an optimization.
 | external bounded/stale | facts with omission counts / `STALE` | used; limitation preserved |
 | external ambiguous | candidate facts, `AMBIGUOUS` | candidates preserved; native consulted; no arbitrary choice |
 | external unresolved | `UNRESOLVED` | native consulted; "not established", never "absent" |
-| external not indexed | `NOT_INDEXED` | native answers; the optional provider's absence does not qualify the native result |
-| external unavailable/timeout | `UNAVAILABLE` | native answers; no fact is inferred from the failure and the native result is not downgraded |
+| external not indexed | `NOT_INDEXED` | native answers; the optional provider's absence does not qualify the native result — unless the request explicitly preferred external, in which case the native answer carries the issue `requested external structural provider reported NOT_INDEXED` |
+| external unavailable/timeout | `UNAVAILABLE` | native answers; no fact is inferred from the failure and the native result is not downgraded; an explicit external preference adds the disclosure issue instead |
 | external failed/invalid output | `FAILED` | native answers; the failure is an explicit issue |
 | external absent or disabled | native | native answers; no gry process is started |
 
@@ -387,6 +397,12 @@ an Ohgo task failure. `NOT_INDEXED` and `UNAVAILABLE` are configuration states,
 not evidence limitations: the router uses the native answer without adding a
 qualifying issue. `FAILED`, `AMBIGUOUS`, and `UNRESOLVED` are preserved because
 they are claims about the target or a real operation failure.
+
+An explicit `provider: "external"` request that cannot be met — the provider is
+not configured, unavailable, or the step is native-only — is never silently
+downgraded: the native answer carries an issue naming that the requested
+external structural provider was not used, in the same channel a fallback
+issue uses. An `auto` request produces no such issue.
 
 ### 12.3 Bounds and budget
 
@@ -479,6 +495,18 @@ coordinate from a later conclusion does not erase the obligation. This is the
 evidence-admissibility layer: the conclusion window does not begin merely
 because the investigation has some evidence.
 
+Target matching is conservative in one direction and complete in the other.
+A dotted selector may be observed through its bare method name only on code
+identifier boundaries: `StockReserver.Run` is satisfied by `func (s
+StockReserver) Run(...)` without also being satisfied by `runtime` or
+`CheckoutRunner`, and short method names stay satisfiable without a length gate.
+Matching happens against the whole tool text at observe time, not the retained
+excerpt, so a target whose only mention lies past the evidence value bound is
+still observed. A named source path whose complete contents the run already read is
+not a reopened obligation — the read is the targeted observation — except when a
+recorded mutation of that file followed the read, because the conclusion may be
+naming the post-change state.
+
 Repeated conclusions still need a hard semantic limit. After
 `MaxConclusionAttempts` and at least one new observation, an explicitly
 `UNRESOLVED` conclusion is accepted with the unresolved coordinate retained in
@@ -493,18 +521,21 @@ answer was accepted. Drafts may be rejected and replaced; only the committed
 text reaches the host transcript. `Loop.LastResponseAudit` records the drafts,
 rejections, tool calls, reused observations, retries, redundant identical calls,
 and the final claim audit; a second commit for the same run is a no-op.
-`UnsupportedClaims` counts false factual claims that remain in the committed
-text, while `UnresolvedFacets` counts requested deliverables the answer honestly
-reports as unverified. The second is still a completion gap; it is not counted
-as a false claim.
+`UnsupportedClaims` counts material claims the deterministic audit could not
+certify, while `UnresolvedFacets` counts requested deliverables the answer
+honestly reports as unverified. The second is still a completion gap; it is not
+counted as an uncertified factual claim.
 
 Before commit, `FinalizeAnswer` runs the same deterministic grounding and
-provenance audits completion uses. A rejected sentence is withheld and a bounded
-limitation report is appended; if the draft cannot be repaired claim by claim,
-only the runtime-authored limitation report is published. A non-empty evidence
-frontier is included in that report and remains a completion veto. This is why
-an accepted answer can be useful while the task is still `NEEDS_REVIEW`: the
-answer no longer asserts what the runtime did not establish.
+provenance audits completion uses. It sanitizes copied runtime state but does
+not delete substantive sentences and does not append a runtime-authored
+limitation report. The model's one answer is published; uncertified claims are
+carried as review issues, and completion returns `NEEDS_REVIEW` for them. A
+sentence-level editor could mangle tables, lists, and fenced examples, and the
+appended report was a second, competing conclusion. This is why an accepted
+answer can be useful while the task is still `NEEDS_REVIEW`: the user sees the
+model's answer and the explicit claim boundary instead of a silently shortened
+replacement.
 
 Once the conclusion is the only missing requirement, a bounded ten-turn
 conclusion window still allows concrete closing reads, but further surveying

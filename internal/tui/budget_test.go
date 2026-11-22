@@ -36,7 +36,7 @@ func TestTurnTaskOutcomeCompletesAfterVerifiedWorkWhenBudgetEnds(t *testing.T) {
 		}}},
 		stopTurn(),
 	}
-	action, reason := turnTaskOutcome(budgetExhausted(budget.DimensionModelCalls), turns,
+	action, reason, _ := turnTaskOutcome(budgetExhausted(budget.DimensionModelCalls), turns,
 		workspace.BuildIntentContract("Fix the failing tests."), nil, nil)
 	if action != taskActionComplete {
 		t.Fatalf("action = %v, want complete (reason %q)", action, reason)
@@ -46,7 +46,7 @@ func TestTurnTaskOutcomeCompletesAfterVerifiedWorkWhenBudgetEnds(t *testing.T) {
 // Budget exhaustion before evidence is a resumable resource stop, never a
 // completion. This is Case A.
 func TestTurnTaskOutcomePausesOnExhaustionWithoutEvidence(t *testing.T) {
-	action, reason := turnTaskOutcome(budgetExhausted(budget.DimensionToolCalls), []agent.Turn{stopTurn()},
+	action, reason, _ := turnTaskOutcome(budgetExhausted(budget.DimensionToolCalls), []agent.Turn{stopTurn()},
 		workspace.BuildIntentContract("Update note.txt."), nil, nil)
 	if action != taskActionPause {
 		t.Fatalf("action = %v, want pause (reason %q)", action, reason)
@@ -62,7 +62,7 @@ func TestTurnTaskOutcomeDoesNotTrustModelSuccessAfterExhaustion(t *testing.T) {
 	turns := []agent.Turn{{
 		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "done, all fixed"}}},
 	}}
-	action, reason := turnTaskOutcome(budgetExhausted(budget.DimensionToolCalls), turns,
+	action, reason, _ := turnTaskOutcome(budgetExhausted(budget.DimensionToolCalls), turns,
 		workspace.BuildIntentContract("Update note.txt."), nil, nil)
 	if action == taskActionComplete {
 		t.Fatal("the model's claim completed the task after budget exhaustion")
@@ -86,7 +86,7 @@ func TestTurnTaskOutcomeRejectsChildBudgetFailureAsSuccess(t *testing.T) {
 		}}},
 		stopTurn(),
 	}
-	action, reason := turnTaskOutcome(nil, turns, workspace.BuildIntentContract("Explain this."), nil, nil)
+	action, reason, _ := turnTaskOutcome(nil, turns, workspace.BuildIntentContract("Explain this."), nil, nil)
 	if action != taskActionReview {
 		t.Fatalf("action = %v, want review (reason %q)", action, reason)
 	}

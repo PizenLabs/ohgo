@@ -1238,3 +1238,94 @@ func TestOneTestGapProducesOneRepair(t *testing.T) {
 		t.Fatalf("claims = %+v, want one test claim", claims)
 	}
 }
+
+// Coverage disclosure is presentation, not a claim. A project-wide answer is
+// judged by the claims it makes and the evidence they require. Requiring a
+// generic disclaimer made the runtime reward prose qualification instead of
+// the missing observation, so the audit no longer has a coverage veto.
+func TestAssessGroundingDoesNotRequireACoverageDisclaimer(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective:  "investigate this project and analyze what this project is about",
+		Action:     contract.GroundingRead,
+		Scope:      contract.GroundingScope{Kind: contract.ScopeRepository},
+		Confidence: contract.GroundingConfidenceHigh,
+	})
+	partial := []Turn{{Results: []ToolOutcome{
+		{
+			ToolName: "read",
+			Args:     map[string]any{"path": "app/page.tsx"},
+			Result:   Result{Text: "export default function Page() { return null }"},
+		},
+		{
+			ToolName: "structure",
+			Args:     map[string]any{"view": "overview"},
+			Result: Result{
+				Text: "structural: UNPARSED\nparsed_files: 0 pending_files: 77",
+				Details: map[string]any{
+					"view": "overview", "parsed_files": 0, "pending_files": 77,
+					"structural_complete": false, "inventory_complete": true, "truncated": true,
+				},
+			},
+		},
+	}}}
+	for _, answer := range []string{
+		"This project is a Next.js blog with a terminal UI.",
+		"This is andev0x - Terminal Blog, a Next.js 16 personal developer blog with a terminal-style UI.",
+		"According to package.json and app/layout.tsx, this project is a Next.js blog.",
+		"This project is a Next.js blog. No tests exist in the inspected scope.",
+	} {
+		if assessment := AssessGrounding(intent, partial, answer); !assessment.Pass() {
+			t.Fatalf("a supported project description required a disclaimer: %s\nissues: %+v", assessment.Reason(), assessment.Issues)
+		}
+	}
+
+	// The removed disclosure check must not weaken a specific claim. A
+	// repository-wide absence is still a review boundary without coverage.
+	assessment := AssessGrounding(intent, partial, "This project contains no database.")
+	if assessment.Pass() {
+		t.Fatal("an unsupported repository-wide absence passed grounding")
+	}
+	found := false
+	for _, issue := range assessment.Issues {
+		if issue.Code == "unsupported_negative_conclusion" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("issues = %+v, want unsupported_negative_conclusion", assessment.Issues)
+	}
+}
+
+// An honest limitation about what the run executed is not a repository
+// absence. The real project-analysis answer ended with "no build, test, or
+// runtime session was executed" and was reviewed as if it claimed the
+// repository had no tests.
+func TestRunActivityListIsNotAnAbsenceClaim(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective:  "analyze what this project is about",
+		Action:     contract.GroundingRead,
+		Scope:      contract.GroundingScope{Kind: contract.ScopeRepository},
+		Confidence: contract.GroundingConfidenceHigh,
+	})
+	answer := "The inspected implementation is the CLI entry point. No build, test, or runtime session was executed."
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("run activity was parsed as absence claims: %+v", claims)
+	}
+	turns := []Turn{{Results: []ToolOutcome{{
+		ToolName: "structure",
+		Args:     map[string]any{"view": "tests"},
+		Result: Result{
+			Text:    "test_files: 592",
+			Details: map[string]any{"view": "tests", "test_files": 592},
+		},
+	}}}}
+	if assessment := AssessGrounding(intent, turns, answer); !assessment.Pass() {
+		t.Fatalf("an honest run limitation was reviewed: %s", assessment.Reason())
+	}
+
+	// The control: a genuine repository absence is still reviewed.
+	falseClaim := "No tests exist in this repository."
+	if assessment := AssessGrounding(intent, turns, falseClaim); assessment.Pass() {
+		t.Fatal("a repository-wide absence was accepted")
+	}
+}

@@ -94,7 +94,7 @@ func (r *blockRenderer) render(text string) string {
 		case trimmed == "":
 			out = append(out, "")
 			i++
-		case strings.HasPrefix(trimmed, "```"):
+		case isFenceDelimiter(trimmed):
 			block, next := r.renderFence(lines, i)
 			out = append(out, block...)
 			i = next
@@ -134,7 +134,7 @@ func (r *blockRenderer) render(text string) string {
 			var para []string
 			for i < len(lines) {
 				t := strings.TrimSpace(lines[i])
-				if t == "" || strings.HasPrefix(t, "```") || isTableHeader(lines[i], lines, i) ||
+				if t == "" || isFenceDelimiter(t) || isTableHeader(lines[i], lines, i) ||
 					isHR(t) || isHeading(t) || isQuote(lines[i]) || isListItem(lines[i]) {
 					break
 				}
@@ -195,10 +195,12 @@ func (r *blockRenderer) renderHeading(trimmed string) string {
 	}
 	text := strings.TrimSpace(trimmed[level:])
 	chunks := r.inline(text)
-	// Every heading is a structural lead: the violet structure accent,
-	// bold, so a section boundary is instantly scannable. Depth comes from
-	// the document's own spacing, not from a second heading palette.
-	outer := r.pal.Heading
+	// Heading depth is structural, not decoration. The terminal cannot vary
+	// type size, so the hierarchy uses the document accent's weight and
+	// decoration: h1 is underlined, h2 is the plain accent, h3 drops bold,
+	// and h4-h6 recede into muted emphasis. A flat heading style made every
+	// section read as the same level.
+	outer := headingStyle(r.pal, level)
 	styled := applyChunks(chunks, "", outer)
 	// Headings are short by construction; wrap only on overflow.
 	if w := r.wrapWidth(); w > 0 && CellWidth(styled) > w {
@@ -211,7 +213,54 @@ func (r *blockRenderer) renderHeading(trimmed string) string {
 	return styled
 }
 
+// headingStyle resolves the typographic level for one heading.
+func headingStyle(pal *Palette, level int) lipgloss.Style {
+	switch {
+	case level <= 1:
+		return pal.Heading.Underline(true)
+	case level == 2:
+		return pal.Heading
+	case level == 3:
+		return pal.Heading.Bold(false)
+	case level == 4:
+		return pal.Heading.Bold(false).Italic(true)
+	case level == 5:
+		return pal.Muted.Bold(true)
+	default:
+		return pal.Muted.Italic(true)
+	}
+}
+
 // ---- fences ----
+
+// fenceStyle reports the marker character and info string of a fence line.
+// CommonMark accepts backticks and tildes; supporting both keeps a valid
+// document from rendering its delimiters and body as prose.
+func fenceStyle(trimmed string) (marker byte, count int, lang string, ok bool) {
+	if trimmed == "" || (trimmed[0] != '`' && trimmed[0] != '~') {
+		return 0, 0, "", false
+	}
+	marker = trimmed[0]
+	for count < len(trimmed) && trimmed[count] == marker {
+		count++
+	}
+	if count < 3 {
+		return 0, 0, "", false
+	}
+	return marker, count, strings.TrimSpace(trimmed[count:]), true
+}
+
+// isFenceDelimiter reports a fence delimiter, opening or closing.
+func isFenceDelimiter(trimmed string) bool {
+	_, _, _, ok := fenceStyle(trimmed)
+	return ok
+}
+
+// isClosingFence reports a delimiter that closes a fence opened with marker.
+func isClosingFence(trimmed string, marker byte) bool {
+	got, _, lang, ok := fenceStyle(trimmed)
+	return ok && got == marker && lang == ""
+}
 
 // renderFence consumes one fenced block and returns only its body lines.
 //
@@ -222,12 +271,11 @@ func (r *blockRenderer) renderHeading(trimmed string) string {
 // while streaming, exact when the model never closed it — because dropping
 // them would silently lose model output.
 func (r *blockRenderer) renderFence(lines []string, start int) ([]string, int) {
-	trimmed := strings.TrimSpace(lines[start])
-	lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+	marker, _, lang, _ := fenceStyle(strings.TrimSpace(lines[start]))
 	var out []string
 	i := start + 1
 	for ; i < len(lines); i++ {
-		if strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+		if isClosingFence(strings.TrimSpace(lines[i]), marker) {
 			i++
 			break
 		}
@@ -566,7 +614,7 @@ func isListContinuation(line string) bool {
 // it puts a code example under a list item.
 func listEndsAt(line string, lines []string, i int) bool {
 	trimmed := strings.TrimSpace(line)
-	return strings.HasPrefix(trimmed, "```") ||
+	return isFenceDelimiter(trimmed) ||
 		isHeading(trimmed) || isHR(trimmed) ||
 		isQuote(line) || isTableHeader(line, lines, i)
 }

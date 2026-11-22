@@ -226,9 +226,10 @@ func TestLiveStreamingConvergesOnTheFinishedRender(t *testing.T) {
 	}
 }
 
-// No delta may be lost and none may be duplicated at any point mid-stream, not
-// only at the end. What the terminal holds is the scrollback plus the live
-// block; together they must cover the text exactly once.
+// A provisional stream is a live viewport, not scrollback: the runtime may
+// still withdraw it, and output-first scrollback cannot be rewritten. The
+// visible tail must be exactly the newest text (no duplicates, no reordering),
+// the region stays bounded, and settlement commits the whole answer once.
 func TestLiveStreamingKeepsEveryDeltaOnceWhileItRuns(t *testing.T) {
 	v := newLivePainter()
 	s := New()
@@ -247,10 +248,22 @@ func TestLiveStreamingKeepsEveryDeltaOnceWhileItRuns(t *testing.T) {
 		i += n
 
 		scrollback = append(scrollback, v.render(s)...)
-		onScreen := joinAll(scrollback) + joinAll(v.block)
-		if got := squeeze(onScreen); got != squeeze(seen.String()) {
-			t.Fatalf("after %d bytes the terminal holds:\n%q\nwant:\n%q", seen.Len(), got, squeeze(seen.String()))
+		if len(v.live) > liveRows(s) {
+			t.Fatalf("live region grew to %d rows, past the %d-row budget", len(v.live), liveRows(s))
 		}
+		if got := squeeze(joinAll(v.block)); got != "" && !strings.HasSuffix(squeeze(seen.String()), got) {
+			t.Fatalf("after %d bytes the live viewport is not a suffix of the text:\n%q", seen.Len(), got)
+		}
+	}
+
+	// Settlement is the authoritative transfer: the exact value replaces the
+	// preview, and the whole answer leaves for scrollback once.
+	s.Apply(AssistantReconcile{Text: seen.String()})
+	scrollback = append(scrollback, v.render(s)...)
+	s.Apply(AssistantDone{})
+	scrollback = append(scrollback, v.render(s)...)
+	if got := squeeze(joinAll(scrollback) + joinAll(v.block)); got != squeeze(seen.String()) {
+		t.Fatalf("settled transcript holds %q, want the complete answer", got)
 	}
 }
 
@@ -292,8 +305,9 @@ func TestLiveCommitCutSealsWholeWhenThereIsNoBoundary(t *testing.T) {
 	}
 }
 
-// A long answer streams within the row budget the whole way and never loses or
-// repeats text, however often it has to commit.
+// A long provisional answer stays bounded and, at settlement, commits every
+// word exactly once. While it streams the live region is a viewport onto the
+// newest text; the complete document appears when the runtime settles it.
 func TestLiveLongAnswerStaysBoundedAndKeepsEveryWord(t *testing.T) {
 	v := newLivePainter()
 	s := New()
@@ -302,7 +316,7 @@ func TestLiveLongAnswerStaysBoundedAndKeepsEveryWord(t *testing.T) {
 	paragraph := strings.Repeat("A sentence of answer text that will wrap. ", 6) + "\n\n"
 	var seen strings.Builder
 	var painted []string
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		seen.WriteString(paragraph)
 		s.Apply(AssistantDelta{Text: paragraph})
 		painted = append(painted, v.render(s)...)
@@ -310,9 +324,17 @@ func TestLiveLongAnswerStaysBoundedAndKeepsEveryWord(t *testing.T) {
 			t.Fatalf("the live region grew to %d rows, past the %d-row cap", len(v.live), liveBlockCap)
 		}
 		onScreen := joinAll(painted) + joinAll(v.block)
-		if got := squeeze(onScreen); got != squeeze(seen.String()) {
-			t.Fatalf("after paragraph %d the painted text is %q, want %q", i, got, squeeze(seen.String()))
+		if got := squeeze(onScreen); got != "" && !strings.Contains(squeeze(seen.String()), got) {
+			t.Fatalf("after paragraph %d the live text is not part of the answer: %q", i, got)
 		}
+	}
+
+	s.Apply(AssistantReconcile{Text: seen.String()})
+	painted = append(painted, v.render(s)...)
+	s.Apply(AssistantDone{})
+	painted = append(painted, v.render(s)...)
+	if got := squeeze(joinAll(painted) + joinAll(v.block)); got != squeeze(seen.String()) {
+		t.Fatalf("settled transcript holds %d runes, want %d", len(got), len(squeeze(seen.String())))
 	}
 }
 
@@ -326,7 +348,7 @@ func TestLiveCommitKeepsUTF8Intact(t *testing.T) {
 	paragraph := strings.Repeat("日本語のテキストがここにあります。絵文字もあります。", 8) + "\n\n"
 	var seen strings.Builder
 	var painted []string
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		seen.WriteString(paragraph)
 		s.Apply(AssistantDelta{Text: paragraph})
 		history := v.render(s)
@@ -335,9 +357,16 @@ func TestLiveCommitKeepsUTF8Intact(t *testing.T) {
 		if !utf8Valid(all) {
 			t.Fatalf("painted output is not valid UTF-8: %q", all)
 		}
-		if got := squeeze(all); got != squeeze(seen.String()) {
-			t.Fatalf("painted %q, want %q", got, squeeze(seen.String()))
+		if got := squeeze(joinAll(v.block)); got != "" && !strings.HasSuffix(squeeze(seen.String()), got) {
+			t.Fatalf("live text is not a suffix of the answer: %q", got)
 		}
+	}
+	s.Apply(AssistantReconcile{Text: seen.String()})
+	painted = append(painted, v.render(s)...)
+	s.Apply(AssistantDone{})
+	painted = append(painted, v.render(s)...)
+	if got := squeeze(joinAll(painted) + joinAll(v.block)); got != squeeze(seen.String()) {
+		t.Fatalf("settled transcript lost text: got %d runes, want %d", len(got), len(squeeze(seen.String())))
 	}
 }
 

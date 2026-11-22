@@ -34,7 +34,7 @@ immutable.
   absence, and facet audits populate them. `ReviewInformationalRepairs` is a
   projection of the same audit, `ClaimRepairRequest` names at most five claims,
   and the loop renders only those instead of a full-answer correction reason.
-- A per-correction tool budget (`CorrectionToolCalls`, default 3). The loop
+- A per-correction tool budget (`CorrectionToolCalls`, default 4). The loop
   enforces it before tool execution across concurrent batches, reports the
   remaining allowance in the correction runtime block, and fails closed with
   `ToolFailureCorrectionBudget`; reused observations do not consume it.
@@ -48,20 +48,47 @@ immutable.
   not consume the correction tool allowance, so a model that repairs its
   claims and then concludes is not forced into another answer by a budget
   error.
-- The TUI publishes model text only when its turn completes and the turn is
-  publishable. It no longer streams text while the request is open, because
-  that text can be a rejected candidate or an answer the model abandons for a
-  tool call. The final answer is the only answer shown.
-- Assistant prose that is followed by a tool call is not published as an
-  answer. The call and its result remain; the prose was investigation the
-  model replaced. Together with candidate suppression, a run that emits a
-  rejected answer, an abandoned answer, and a final answer publishes only the
-  final one.
+- The TUI streams real provider deltas again. Assistant text is published as
+  it arrives into a provisional transcript block, and a new
+  `AssistantReconcile` event settles that block with the exact committed text.
+  A dropped delta, a finalized rewrite, or a non-streaming transport therefore
+  converges on one authoritative answer instead of a partial or duplicated
+  block. Output-first mode keeps provisional text in the live viewport (a
+  markdown-safe suffix when it is long) and never seals it to scrollback, so a
+  withdrawn draft cannot persist as a competing answer.
+- Assistant prose that is followed by a tool call is withdrawn at stream end,
+  before the tool card opens. The call and its result remain; the prose was
+  investigation the model replaced.
 - A rejected answer candidate is suppressed, not published. The loop keeps it
   in the provider context so the correction request can see the claim, marks
   it `Suppressed`, and the transcript, plain output, persistence, and next
-  request project it away. Informational answer text is not streamed while an
-  answer review is active; the accepted final answer is published once.
+  request project it away. A plan-only message ("let me inspect…") is withheld
+  from the transcript and spends the one correction window on the answer.
+- Answer finalization no longer deletes sentences or appends a runtime-authored
+  "Evidence limitations" section. The model's one answer is preserved exactly;
+  uncertified claims are carried as review issues, and completion still refuses
+  to certify them. A sentence-level editor could mangle tables, lists, and
+  fenced examples, and the appended limitation report was a second conclusion.
+- Claim repair is evidence-first. The correction prompt tells the model to
+  obtain the missing observation with the reopened tool surface before
+  qualifying a claim, and rejects a generic coverage disclaimer as a repair.
+- Coverage disclosure is presentation, not a completion veto. The turn footer
+  may report measured structural coverage; a project-wide answer is no longer
+  rejected merely for omitting a disclaimer.
+- A broad account of a measured multi-file source project needs the entry point
+  plus one implementation file it leads to; a structural inventory is not a
+  substitute for the second read. A single-file project is exempt, and an
+  unknown source total never invents a numeric floor.
+- A control refusal that never ran (authorization, invalid selector,
+  correction budget, capability unavailable, outside-workspace) is a
+  rejection, not a pending capability failure. It no longer vetoes completion
+  as an unrecovered tool error; the capability remains available and the
+  evidence frontier still owns certification.
+- Markdown headings have a visible hierarchy again (h1 underlined, h2 accent,
+  h3 lightweight, h4-h6 receding), `~~~` fences render as code, and the
+  output-first commit cut never splits a fenced block.
+- `TranscriptTurn` no longer mutates the loop's assistant content when it
+  strips tool-round prose; the completion authority reads the original turn.
 - Assistant turns persist their measured provider usage in the session
   transcript. A benchmark can separate the initial investigation from the
   answer correction instead of reading only an aggregate session total; usage

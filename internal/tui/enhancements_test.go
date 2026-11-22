@@ -267,22 +267,81 @@ func TestLongTurnReachesTranscriptInOrder(t *testing.T) {
 	want := strings.Repeat("streaming chunk reveal keeps long answers readable. ", 100)
 	p := NewProgram(scriptedLoop(t, want), "test", 0)
 	p.runTurn("go")
-	var got strings.Builder
+	got := ""
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
 		case event := <-p.events:
 			switch e := event.(type) {
 			case AssistantDelta:
-				got.WriteString(e.Text)
+				got += e.Text
+			case AssistantReconcile:
+				if e.Discard {
+					got = ""
+					continue
+				}
+				// The committed value replaces the provisional preview; it is
+				// authoritative even when a delta was dropped.
+				got = e.Text
+				if got != want {
+					t.Fatalf("transcript holds %d runes, want the %d-rune turn in order", len([]rune(got)), len([]rune(want)))
+				}
 			case AssistantDone:
-				if got.String() != want {
-					t.Fatalf("transcript holds %d runes, want the %d-rune turn in order", len([]rune(got.String())), len([]rune(want)))
+				if got != want {
+					t.Fatalf("transcript holds %d runes, want the %d-rune turn in order", len([]rune(got)), len([]rune(want)))
 				}
 				return
 			}
 		case <-timeout:
 			t.Fatal("the chunked turn never completed")
+		}
+	}
+}
+
+// A real token stream must reach the transcript as multiple deltas before the
+// turn settles. This is the regression that the disabled text hook hid: the
+// completed turn is not the first visible text.
+func TestRunTurnStreamsRealProviderDeltas(t *testing.T) {
+	deltas := []string{"# Project\n\n", "The project is a ", "Go agent runtime.\n"}
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			return ai.NewTextStream(deltas...), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	p.runTurn("what is this project")
+	var streamed strings.Builder
+	reconciled := ""
+	deltaCount := 0
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-p.events:
+			switch e := event.(type) {
+			case AssistantDelta:
+				deltaCount++
+				streamed.WriteString(e.Text)
+			case AssistantReconcile:
+				if !e.Discard {
+					reconciled = e.Text
+				}
+			case AssistantDone:
+				if deltaCount < 2 {
+					t.Fatalf("deltas = %d, want the real token stream, not one completed block", deltaCount)
+				}
+				want := strings.TrimSpace(strings.Join(deltas, ""))
+				if strings.TrimSpace(streamed.String()) != want || reconciled != want {
+					t.Fatalf("streamed=%q reconciled=%q want=%q", streamed.String(), reconciled, want)
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("turn never completed")
 		}
 	}
 }
@@ -423,8 +482,19 @@ func TestAbandonedAnswerBeforeToolIsNotPublished(t *testing.T) {
 	for {
 		select {
 		case event := <-p.events:
+			// Deltas are a provisional preview. A discard is the runtime
+			// withdrawing tool narration; an accept replaces the preview with
+			// the exact committed answer.
 			if delta, ok := event.(AssistantDelta); ok {
 				got.WriteString(delta.Text)
+			}
+			if reconcile, ok := event.(AssistantReconcile); ok {
+				if reconcile.Discard {
+					got.Reset()
+				} else {
+					got.Reset()
+					got.WriteString(reconcile.Text)
+				}
 			}
 			if _, ok := event.(AssistantDone); ok {
 				if got.String() != "final answer" {

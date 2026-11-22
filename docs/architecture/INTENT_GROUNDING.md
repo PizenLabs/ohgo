@@ -603,14 +603,31 @@ category, the evidence class it needs, a reference, and the permitted action.
 The correction names at most `MaxRepairInstructions` claims and tells the model
 to keep every other sentence, reuse the observations already in the
 conversation, and stay within a small per-correction tool allowance
-(`CorrectionToolCalls`, default 3). Calls beyond the allowance fail closed
+(`CorrectionToolCalls`, default 4). Calls beyond the allowance fail closed
 before execution; a reused observation does not consume it. The allowance is
 per correction, not per run, so the initial investigation's budget is unchanged.
 The pre-answer review also runs the documentation-only provenance audit when the
 host supplies the last projection's provenance, so a documented claim is
-repaired before completion instead of surfacing as a terminal review. When the
-evidence still cannot be obtained, the answer must qualify or remove the claim;
-the runtime never accepts it to finish the task.
+repaired before completion instead of surfacing as a terminal review. The
+correction is evidence-first: the reopened tool surface exists to obtain the
+missing observation, and a generic coverage disclaimer does not satisfy a
+specific claim. When the evidence still cannot be obtained, the model qualifies
+or removes only that sentence; the runtime never accepts the claim to finish
+the task.
+
+When the bounded correction is exhausted, the answer is not rewritten by the
+runtime. The published answer is the model's one answer, and the uncertified
+claims are carried as `ReviewIssues` into `NEEDS_REVIEW`. Deleting sentences and
+appending a runtime-authored "Evidence limitations" section produced a second,
+competing conclusion; it also removed supported detail the user asked for. The
+completion authority still refuses to certify an answer with uncertified
+claims, so the boundary remains real without mangling the answer.
+
+Coverage is presentation, not a claim. The turn footer reports measured
+structural coverage, but an answer is never rejected merely because it does not
+repeat a coverage disclaimer. A project-wide sentence is judged by the claim it
+makes and the evidence that claim requires; requiring a disclaimer taught the
+model to qualify prose instead of acquiring the missing observation.
 
 A paged read keeps the document's opening window. Different windows are not a
 conflict, and a later window no longer overwrites the definition that names the

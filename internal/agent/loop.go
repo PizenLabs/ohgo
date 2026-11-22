@@ -51,10 +51,11 @@ var ErrCapabilityUnavailable = errors.New("agent: capability unavailable")
 const DefaultMaxTurns = 100
 
 // DefaultCorrectionToolCalls bounds the evidence a single answer correction may
-// gather. Three calls is enough to read a cited file, inspect a declaration, or
-// run one check; a larger number turns the bounded repair back into the
-// investigation that already failed to support the claim.
-const DefaultCorrectionToolCalls = 3
+// gather. Four calls is enough to read a cited file, inspect a declaration, or
+// run one check after the model has spent a previous request correcting the
+// claim. A larger number turns the bounded repair back into the investigation
+// that already failed to support the claim.
+const DefaultCorrectionToolCalls = 4
 
 // Turn is one request/response cycle.
 type Turn struct {
@@ -255,6 +256,12 @@ type Config struct {
 	// generated instead of landing as one block when the turn completes.
 	// Nil disables it; transports that never token-stream never fire it.
 	OnTextDelta func(delta string)
+	// OnAssistantMessage receives each completed assistant message before
+	// any tool call is dispatched. It is the truthful boundary at which a
+	// host that streamed the deltas learns whether the text is prose around
+	// a tool call (not an answer) or a candidate answer. A nil hook changes
+	// nothing; the message is the same value the turn carries.
+	OnAssistantMessage func(message ai.AssistantMessage)
 	// OnThinkingDelta receives reasoning deltas while a stream is still open,
 	// in order. It is separate from OnTextDelta because reasoning is a
 	// presentation block of its own, never assistant prose.
@@ -794,6 +801,17 @@ func (l *Loop) SetToolProgressHook(hook func(progress ToolProgress)) {
 // It must be called before Run, never during one.
 func (l *Loop) SetTextDeltaHook(hook func(delta string)) {
 	l.cfg.OnTextDelta = hook
+}
+
+// SetAssistantMessageHook installs the completed-stream reporter after
+// construction.
+//
+// It must be called before Run, never during one. The hook runs on the
+// request goroutine after the stream has been drained and before the turn is
+// classified, so a host can discard live text that belonged to a tool round
+// without waiting for the tool's result.
+func (l *Loop) SetAssistantMessageHook(hook func(message ai.AssistantMessage)) {
+	l.cfg.OnAssistantMessage = hook
 }
 
 // SetThinkingDeltaHook installs the live-reasoning reporter after
@@ -1384,6 +1402,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		l.observeRequest(len(turns), shape, assistant.Usage)
 		// The directives belonged to the request that was just sent.
 		nudges = nil
+		// The stream is closed, so a host that published live deltas can now
+		// decide whether they were prose around a tool call or a candidate
+		// answer. This runs before dispatch: a tool's start must not be the
+		// event that first reveals the turn was not an answer.
+		if l.cfg.OnAssistantMessage != nil {
+			l.cfg.OnAssistantMessage(assistant)
+		}
 
 		turn := Turn{Assistant: assistant}
 		live = append(live, AssistantMessage{Message: assistant})
@@ -1409,6 +1434,14 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 		if len(calls) == 0 {
 			turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
+			// A message made only of "let me check…" clauses is a plan, not a
+			// result. It stays in the turn so completion can veto it, but it is
+			// never published or persisted as the answer: exposing internal
+			// exploration narration as final prose is the failure this
+			// suppression closes.
+			if answerIsDeferredPlan(turn.Assistant.Text()) {
+				turn.SuppressText = true
+			}
 			turns = append(turns, turn)
 			// The hook publishes the completed turn. It is deliberately called
 			// after the answer review: a rejected candidate is marked suppressed

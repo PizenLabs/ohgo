@@ -783,8 +783,17 @@ the model said. Two properties keep the loop honest and small:
   project", "the codebase", "the system", including a modified form such as
   "this Go e-commerce project") combined with an
   understanding/overview/architecture concept declares a `repository_survey`
-  need: at least two content observations or one content observation plus
-  structure. A named coordinate, a specific artifact ("this project's license",
+  need. A project with source code needs the entry point plus at least one
+  implementation file it leads to: two implementation observations are the
+  minimum relationship pair, and one read plus a structural inventory is a file
+  count rather than a model of the code. A repository whose structural snapshot
+  reports exactly one source file is fully observed by reading it. A project
+  with no source code instead needs two content observations, because the
+  answer describes documentation rather than implementation. The rule is not a
+  depth target: after the entry pair, the model decides which relationships are
+  material, and a structural query is evidence for those relationships rather
+  than a substitute for the source read. A named
+  coordinate, a specific artifact ("this project's license",
   the test suite, one file), or a named repository concept ("the checkout
   flow") stays targeted even when the sentence contains a broad verb. A
   documentation path introduced by a provenance phrase ("facts documented by
@@ -794,9 +803,7 @@ the model said. Two properties keep the loop honest and small:
   classification is deterministic and derived from the objective and the
   contract's targets and concept entities, so unusual wording does not fall
   back to the single-observation policy and narrow questions are not forced
-  into a repository-wide survey. A repository that has source code also needs
-  at least one implementation observation; two documentation artifacts describe
-  what the project says about itself, not what its implementation does.
+  into a repository-wide survey.
 - **A path-scoped mutation already has its coordinate.** When a mutation names
   a concrete path, the path is the edit boundary; completion re-resolves every
   named symbol after the change, so the run does not also demand a separate
@@ -897,10 +904,11 @@ the model said. Two properties keep the loop honest and small:
   The loop's `AnswerRepairs` planner is a projection of the same audit, never a
   second check, and `ClaimRepairRequest` renders at most
   `MaxRepairInstructions` claims with a tool-call allowance. The correction
-  keeps the initial conversation and evidence; the directive explicitly forbids
-  re-reading what is already present. A reused observation is answered from the
-  loop's replay cache and does not consume the correction allowance.
-  `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 3) is enforced
+  keeps the initial conversation and evidence; the directive asks first for the
+  missing observation and forbids only a repeat whose result already contains
+  the required evidence. A reused observation is answered from the loop's
+  replay cache and does not consume the correction allowance.
+  `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 4) is enforced
   before tool execution and survives concurrent batches; calls beyond it fail
   closed with `ToolFailureCorrectionBudget` and the model must answer with the
   evidence it has. The pre-answer review includes the documentation-only

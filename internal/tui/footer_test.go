@@ -46,6 +46,37 @@ func TestCleanAskFooterNamesReadOnlyProvenance(t *testing.T) {
 	}
 }
 
+// "Verified" is about the turn's checks, not the repository. A partial
+// structural snapshot is named in the same line, so a shallow survey cannot
+// read as full coverage; a complete one carries no note.
+func TestVerifiedFooterNamesPartialStructuralCoverage(t *testing.T) {
+	partial := []agent.Turn{{Results: []agent.ToolOutcome{
+		{ToolName: "read", Args: map[string]any{"path": "app/page.tsx"}},
+		{ToolName: "structure", Args: map[string]any{"view": "overview"}, Result: agent.Result{
+			Text: "structural: UNPARSED",
+			Details: map[string]any{
+				"view": "overview", "parsed_files": 0, "pending_files": 77,
+				"structural_complete": false, "inventory_complete": true, "truncated": true,
+			},
+		}},
+	}}}
+	footer := footerText(verifiedFooter(partial, "build"))
+	if !strings.Contains(footer, "structural coverage 0/77 parsed") {
+		t.Fatalf("footer = %q, want the coverage note", footer)
+	}
+
+	complete := []agent.Turn{{Results: []agent.ToolOutcome{{
+		ToolName: "structure", Args: map[string]any{"view": "overview"},
+		Result: agent.Result{Text: "structural: COMPLETE", Details: map[string]any{
+			"view": "overview", "parsed_files": 77, "pending_files": 0,
+			"structural_complete": true, "inventory_complete": true,
+		}},
+	}}}}
+	if got := footerText(verifiedFooter(complete, "build")); strings.Contains(got, "structural coverage") {
+		t.Fatalf("complete snapshot carried a coverage note: %q", got)
+	}
+}
+
 // The renderer places the clean footer below the answer and directly above
 // the composer, separated from the answer by one blank row.
 func TestCleanTurnFooterRendersAtTheTurnTail(t *testing.T) {

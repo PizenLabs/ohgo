@@ -146,6 +146,15 @@ func verifiedFooter(turns []agent.Turn, authority string) *TurnFooter {
 		parts = append(parts, "read-only analysis")
 	}
 
+	// "Verified" means the turn's claims passed the runtime's checks; it does
+	// not mean the run understood the whole repository. When the structural
+	// snapshot was partial, the footer says so, from the same summary the answer
+	// review uses. The note is omitted when no structural observation exists:
+	// an unobserved repository is unknown, not partial.
+	if coverage := agent.ObserveStructuralCoverage(turns); coverage.Seen && !coverage.Complete() {
+		parts = append(parts, structuralCoverageLabel(coverage))
+	}
+
 	switch {
 	case authority == workspace.Ask.String():
 		parts = append(parts, "provenance clean")
@@ -156,6 +165,16 @@ func verifiedFooter(turns []agent.Turn, authority string) *TurnFooter {
 	}
 
 	return &TurnFooter{Kind: FooterVerified, Detail: strings.Join(parts, " · ")}
+}
+
+// structuralCoverageLabel renders the footer's bounded coverage note. The
+// counts are the producer's source-file accounting; a snapshot that reported
+// neither a count nor a truncation is labeled partial rather than completed.
+func structuralCoverageLabel(coverage agent.StructuralCoverage) string {
+	if total := coverage.Parsed + coverage.Pending + coverage.Failed; total > 0 {
+		return fmt.Sprintf("structural coverage %d/%d parsed", coverage.Parsed, total)
+	}
+	return "structural coverage partial"
 }
 
 // isCheckCommand recognizes a command whose success is verification evidence.

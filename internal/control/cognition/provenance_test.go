@@ -102,7 +102,7 @@ func TestConfigurationObservedButNotImplementation(t *testing.T) {
 	if !containsString(suff.Missing, "repository_survey") {
 		t.Fatalf("missing = %v, want repository_survey", suff.Missing)
 	}
-	if !strings.Contains(strings.Join(suff.Next, " "), "read a source file") {
+	if !strings.Contains(strings.Join(suff.Next, " "), "read the entry point") {
 		t.Fatalf("next evidence = %v, want a source-read instruction", suff.Next)
 	}
 }
@@ -122,6 +122,49 @@ func TestSourceReadSatisfiesImplementationClaim(t *testing.T) {
 	}
 	if !state.Satisfied("repository_survey", ExecutionState{}) {
 		t.Fatal("a documentation plus source survey did not satisfy repository_survey")
+	}
+}
+
+// A broad analysis cannot reach its answer boundary from one content read and
+// a directory listing: names without roles are not a survey of the project.
+// The survey's structural leg is a structural query that returned coordinates
+// or edges; before that rule, "analyze what this project is about" was
+// satisfied by reading one file and listing the root.
+func TestSurveyIsNotSatisfiedByNamesAndOneRead(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "main.go", "package main\n\nfunc main() {}\n"),
+	)
+	state.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "."},
+		Result: agent.Result{
+			Text:    "main.go\nREADME.md",
+			Details: map[string]any{"path": ".", "entries": 2},
+		},
+	}}}})
+	if state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("one content read and a directory listing satisfied a broad survey")
+	}
+	suff := EvaluateSufficiency(shape, state, ExecutionState{}, false)
+	if !containsString(suff.Missing, "repository_survey") {
+		t.Fatalf("missing = %v, want repository_survey", suff.Missing)
+	}
+
+	// A structural query that returned the repository's own facts is the
+	// structural leg of the survey.
+	state.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "structure-1", ToolName: "structure",
+		Args: map[string]any{"path": "."},
+		Result: agent.Result{
+			Text: "internal/agent: 12 packages, 153 symbols",
+			Details: map[string]any{
+				"path": ".", "view": "packages", "packages": 12, "symbols": 153,
+			},
+		},
+	}}}})
+	if !state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("a structural query with repository facts did not complete the survey")
 	}
 }
 
@@ -751,5 +794,65 @@ func TestPagedDocumentKeepsItsOpeningIdentity(t *testing.T) {
 		if term == "gocommerce" {
 			t.Fatal("the paged read lost the document's opening identity")
 		}
+	}
+}
+
+// A structural inventory is names and counts, not a model of the code. A
+// broad source project needs the entry point plus one implementation file the
+// entry leads to; the parsed structure does not substitute for the second read.
+func TestSurveyRequiresASecondImplementationObservation(t *testing.T) {
+	shape := broadShape(RepositoryFacts{TypeScript: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "app/page.tsx",
+			"import { loadPosts } from \"@/lib/posts\"\nexport default function Page() { return loadPosts() }\n"),
+	)
+	state.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "structure-1", ToolName: "structure",
+		Args: map[string]any{"path": ".", "view": "packages"},
+		Result: agent.Result{
+			Text: "app: 2 packages, 12 symbols",
+			Details: map[string]any{
+				"path": ".", "view": "packages", "packages": 2, "symbols": 12,
+				"source_files": 77,
+			},
+		},
+	}}}})
+	if state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("one implementation read plus parsed structure satisfied a broad survey")
+	}
+	suff := EvaluateSufficiency(shape, state, ExecutionState{}, false)
+	if !containsString(suff.Missing, "repository_survey") {
+		t.Fatalf("missing = %v, want repository_survey", suff.Missing)
+	}
+
+	// Following the import named by the entry is the second observation.
+	observeReads(state, shape,
+		readEvidenceForTest("read-2", "lib/posts.ts",
+			"export async function loadPosts() { return [] }\n"),
+	)
+	if !state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("the entry point plus a followed dependency did not complete the survey")
+	}
+}
+
+// A project with exactly one source file is fully observed by reading it; the
+// second-observation rule must not invent a file that does not exist.
+func TestSurveyExemptsASingleSourceFileProject(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "main.go", "package main\nfunc main() {}\n"),
+	)
+	state.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "structure-1", ToolName: "structure",
+		Args: map[string]any{"path": ".", "view": "files"},
+		Result: agent.Result{
+			Text:    "files: 1 (source: 1)",
+			Details: map[string]any{"path": ".", "view": "files", "source_files": 1},
+		},
+	}}}})
+	if !state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("a single-source-file project was required to read a second file")
 	}
 }

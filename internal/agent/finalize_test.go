@@ -7,12 +7,11 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
-// The exact historical failure: a plausible survey ends with a repository-wide
-// absence claim that a source grep cannot prove. Finalization must keep the
-// supported project description, withhold the absolute claim, and leave an
-// auditable limitation. The committed text must pass the same audit that
-// completion runs.
-func TestFinalizeAnswerQualifiesUnsupportedGlobalAbsence(t *testing.T) {
+// The gate must not silently delete a detailed answer. An unsupported global
+// absence claim is reported as an uncertified claim and completion refuses to
+// mark the task PROVEN; the user still receives the model's one answer, not a
+// runtime-authored replacement.
+func TestFinalizeAnswerPreservesDraftAndReportsUnsupportedClaim(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{
 		claimListing(".", "README.md\npackage.json\nlib\ncomponents\n"),
 		claimRead("README.md", "# andev0x\nA terminal-style personal blog.\n", 20),
@@ -22,58 +21,55 @@ func TestFinalizeAnswerQualifiesUnsupportedGlobalAbsence(t *testing.T) {
 	answer := "This is a Next.js terminal-style blog. There is no database and no headless CMS."
 
 	finalized := FinalizeAnswer(claimContract(), turns, answer, EvidenceProvenance{}, "")
-	if finalized.Audit.DraftUnsupportedClaims == 0 {
+	if finalized.Audit.UnsupportedClaims == 0 {
 		t.Fatal("the unsupported absence claims were not audited")
 	}
-	if finalized.Audit.UnsupportedClaims != 0 {
-		t.Fatalf("the committed answer still has %d unsupported claims: %s",
-			finalized.Audit.UnsupportedClaims, finalized.Text)
+	if finalized.Text != answer {
+		t.Fatalf("finalization rewrote the answer instead of auditing it:\n%s", finalized.Text)
 	}
-	if !strings.Contains(finalized.Text, "Next.js terminal-style blog") {
-		t.Fatalf("finalized answer dropped the supported description:\n%s", finalized.Text)
-	}
-	if strings.Contains(finalized.Text, "There is no database") {
-		t.Fatalf("the absolute absence claim survived finalization:\n%s", finalized.Text)
-	}
-	if !strings.Contains(finalized.Text, "Evidence limitations") || !strings.Contains(finalized.Text, "database") {
-		t.Fatalf("the limitation report is missing the rejected subject:\n%s", finalized.Text)
-	}
-	if assessment := AssessGrounding(claimContract(), turns, finalized.Text); !assessment.Pass() {
-		t.Fatalf("the committed answer still fails the grounding audit: %s", assessment.Reason())
+	if assessment := AssessGrounding(claimContract(), turns, finalized.Text); assessment.Pass() {
+		t.Fatal("the unsupported absence claim passed grounding")
 	}
 	verdict := EvaluateTaskCompletion(CompletionInput{
 		Turns:    append(turns, answerTurnNoTools(finalized.Text)),
 		Contract: claimContract(),
 	})
-	if !verdict.Complete() {
-		t.Fatalf("the qualified answer was not completable: %s", verdict.Reason)
+	if verdict.Complete() {
+		t.Fatal("an answer with an unsupported absence claim was certified complete")
+	}
+	if len(verdict.Issues) == 0 {
+		t.Fatal("the review carried no repairable claim")
 	}
 }
 
-// An evidence-frontier gap must appear in the committed text even when the
-// model's sentence passes the prose audit. This is the answer-then-realize
-// shape: the claim is plausible, but the runtime knows the required evidence
-// was never acquired.
+// The evidence-frontier gap is recorded on the audit and carried by the review
+// verdict. It must not be appended to the model's prose as a competing
+// conclusion.
 func TestFinalizeAnswerRecordsAnEvidenceGap(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{
 		claimRead("README.md", "# ohgo\nA coding agent.\n", 10),
 	}}}
-	finalized := FinalizeAnswer(claimContract(), turns,
-		"It is a Go coding agent.", EvidenceProvenance{},
-		"component runtime -> SOURCE_CONTENT missing; next: read internal/agent/loop.go")
-	if !finalized.Audit.Qualified {
-		t.Fatal("an answer with an open frontier was not qualified")
+	answer := "It is a Go coding agent."
+	gap := "component runtime -> SOURCE_CONTENT missing; next: read internal/agent/loop.go"
+	finalized := FinalizeAnswer(claimContract(), turns, answer, EvidenceProvenance{}, gap)
+	if finalized.Audit.EvidenceGap != gap {
+		t.Fatalf("evidence gap = %q, want %q", finalized.Audit.EvidenceGap, gap)
 	}
-	if !strings.Contains(finalized.Text, "SOURCE_CONTENT missing") {
-		t.Fatalf("the frontier gap was not published:\n%s", finalized.Text)
+	if finalized.Text != answer {
+		t.Fatalf("the frontier gap was appended to the answer:\n%s", finalized.Text)
 	}
-	if strings.Contains(finalized.Text, "Evidence limitations") == false {
-		t.Fatalf("the limitation heading is missing:\n%s", finalized.Text)
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns:          append(turns, answerTurnNoTools(finalized.Text)),
+		Contract:       claimContract(),
+		EvidenceReview: gap,
+	})
+	if verdict.Complete() || !strings.Contains(verdict.Reason, "SOURCE_CONTENT missing") {
+		t.Fatalf("review = %q, want the frontier gap", verdict.Reason)
 	}
 }
 
 // Finalization is idempotent: the host may audit the same answer at more than
-// one boundary, and a second pass must not append another limitation block.
+// one boundary.
 func TestFinalizeAnswerIsIdempotent(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{
 		claimRead("README.md", "# ohgo\nA coding agent.\n", 10),
@@ -81,56 +77,56 @@ func TestFinalizeAnswerIsIdempotent(t *testing.T) {
 	first := FinalizeAnswer(claimContract(), turns, "There is no database.", EvidenceProvenance{}, "")
 	second := FinalizeAnswer(claimContract(), turns, first.Text, EvidenceProvenance{}, "")
 	if second.Text != first.Text {
-		t.Fatalf("second finalization changed the committed answer:\nfirst:\n%s\nsecond:\n%s", first.Text, second.Text)
+		t.Fatalf("second finalization changed the answer:\nfirst:\n%s\nsecond:\n%s", first.Text, second.Text)
 	}
-	if strings.Count(second.Text, "Evidence limitations") != 1 {
-		t.Fatalf("limitation block duplicated:\n%s", second.Text)
+	if first.Audit.UnsupportedClaims != second.Audit.UnsupportedClaims {
+		t.Fatalf("audit changed between passes: %d then %d",
+			first.Audit.UnsupportedClaims, second.Audit.UnsupportedClaims)
 	}
 }
 
-// A rejected claim inside a code fence is not deleted: the limitation is
-// published, but the user's reproduction material remains intact.
-func TestFinalizeAnswerDoesNotDeleteCodeFenceContent(t *testing.T) {
+// A rejected claim inside a code fence is never edited away: the fence is the
+// user's reproduction material and the audit reports the prose claim instead.
+func TestFinalizeAnswerDoesNotEditCodeFenceContent(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{
 		claimRead("README.md", "# ohgo\nA coding agent.\n", 10),
 	}}}
 	answer := "The project is a Go agent.\n\n```\n// no database here\n```"
 	finalized := FinalizeAnswer(claimContract(), turns, answer, EvidenceProvenance{}, "")
-	if !strings.Contains(finalized.Text, "// no database here") {
-		t.Fatalf("the code fence was deleted:\n%s", finalized.Text)
+	if finalized.Text != answer {
+		t.Fatalf("the code fence block was edited:\n%s", finalized.Text)
 	}
 }
 
 // A subdirectory observation cannot support a repository-wide absence. The
-// absolute claim is withheld and the committed answer keeps the inspected
-// scope.
-func TestFinalizeAnswerRejectsGlobalScopeBeyondInspectedSubdirectory(t *testing.T) {
+// audit reports the claim; the answer is preserved for the review.
+func TestFinalizeAnswerReportsGlobalScopeBeyondInspectedSubdirectory(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{
 		claimRead("content/posts/README.md", "# posts\nFive posts.\n", 5),
 	}}}
-	finalized := FinalizeAnswer(claimContract(), turns,
-		"There is no database anywhere in the repository.", EvidenceProvenance{}, "")
-	if strings.Contains(finalized.Text, "There is no database anywhere in the repository") {
-		t.Fatalf("a global absence claim survived a subdirectory observation:\n%s", finalized.Text)
+	answer := "There is no database anywhere in the repository."
+	finalized := FinalizeAnswer(claimContract(), turns, answer, EvidenceProvenance{}, "")
+	if finalized.Audit.UnsupportedClaims == 0 {
+		t.Fatal("a repository-wide absence from a subdirectory observation was not audited")
 	}
-	if !strings.Contains(finalized.Text, "Evidence limitations") {
-		t.Fatalf("the scope limitation is missing:\n%s", finalized.Text)
+	if finalized.Text != answer {
+		t.Fatalf("the answer was rewritten:\n%s", finalized.Text)
 	}
 }
 
-// Conflicting evidence is a completion veto. Finalization may publish the
-// model's answer with the conflict named, but the task cannot become PROVEN
-// until the conflict is resolved.
-func TestConflictingEvidenceVetoesCompletionAndIsPublished(t *testing.T) {
+// Conflicting evidence is a completion veto. The model's answer is published
+// as the one answer; the task cannot become PROVEN until the conflict is
+// resolved or the answer is corrected.
+func TestConflictingEvidenceVetoesCompletionAndIsPreserved(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{
 		claimRead("README.md", "# posts\nPosts are loaded from README files.\n", 10),
 		claimRead("lib/post-loader.ts", "export const POSTS = [{slug: \"static\"}];\n", 20),
 	}}}
 	gap := "runtime evidence was not sufficient for the objective (CONFLICTING) at stage answer; missing: resolve the post source contradiction"
-	finalized := FinalizeAnswer(claimContract(), turns,
-		"Posts are loaded from README files.", EvidenceProvenance{}, gap)
-	if !strings.Contains(finalized.Text, "CONFLICTING") {
-		t.Fatalf("the conflict was not surfaced in the committed answer:\n%s", finalized.Text)
+	answer := "Posts are loaded from README files."
+	finalized := FinalizeAnswer(claimContract(), turns, answer, EvidenceProvenance{}, gap)
+	if finalized.Text != answer {
+		t.Fatalf("the conflicting-evidence answer was rewritten:\n%s", finalized.Text)
 	}
 	verdict := EvaluateTaskCompletion(CompletionInput{
 		Turns:          append(turns, answerTurnNoTools(finalized.Text)),
@@ -142,39 +138,25 @@ func TestConflictingEvidenceVetoesCompletionAndIsPublished(t *testing.T) {
 	}
 }
 
-// When a requested facet is missing, the limitation must name the deliverable
-// the user asked for. "required_facet_missing" is audit vocabulary, not an
-// answer.
-func TestFinalizeAnswerNamesTheRequestedFacet(t *testing.T) {
+// A missing requested facet is a completion gap, not a false factual claim.
+// The gate counts it separately and leaves the model's explanation intact.
+func TestFinalizeAnswerCountsTheRequestedFacetWithoutRewriting(t *testing.T) {
 	intent := claimContract()
 	intent.RequiredFacets = []contract.RequiredFacet{{Facet: contract.FacetTests}}
 	turns := []Turn{{Results: []ToolOutcome{
 		claimRead("README.md", "# ohgo\nA Go coding agent.\n", 10),
 	}}}
-	finalized := FinalizeAnswer(intent, turns, "This project is a Go coding agent.", EvidenceProvenance{}, "")
-	if !strings.Contains(finalized.Text, "tests:") {
-		t.Fatalf("the limitation did not name the requested facet:\n%s", finalized.Text)
-	}
-	if strings.Contains(finalized.Text, "required_facet_missing") {
-		t.Fatalf("internal audit vocabulary leaked into the answer:\n%s", finalized.Text)
+	answer := "This project is a Go coding agent."
+	finalized := FinalizeAnswer(intent, turns, answer, EvidenceProvenance{}, "")
+	if finalized.Text != answer {
+		t.Fatalf("the facet gap rewrote the answer:\n%s", finalized.Text)
 	}
 	if finalized.Audit.UnresolvedFacets == 0 {
 		t.Fatal("the unresolved requested facet was not counted")
 	}
 	if finalized.Audit.UnsupportedClaims != 0 {
-		t.Fatalf("an acknowledged facet gap was counted as a false factual claim: %+v", finalized.Audit)
+		t.Fatalf("an unresolved facet was counted as a false factual claim: %+v", finalized.Audit)
 	}
-}
-
-// A limitation that names a requested facet is still an unresolved required
-// claim. It may be published, but it cannot make the task PROVEN.
-func TestFinalizationLimitationForRequiredFacetRemainsReview(t *testing.T) {
-	intent := claimContract()
-	intent.RequiredFacets = []contract.RequiredFacet{{Facet: contract.FacetTests}}
-	turns := []Turn{{Results: []ToolOutcome{
-		claimRead("README.md", "# ohgo\nA Go coding agent.\n", 10),
-	}}}
-	finalized := FinalizeAnswer(intent, turns, "This project is a Go coding agent.", EvidenceProvenance{}, "")
 	verdict := EvaluateTaskCompletion(CompletionInput{
 		Turns:    append(turns, answerTurnNoTools(finalized.Text)),
 		Contract: intent,
@@ -184,21 +166,21 @@ func TestFinalizationLimitationForRequiredFacetRemainsReview(t *testing.T) {
 	}
 }
 
-// A limitation must not repeat the absence grammar of the claim it is
-// qualifying. "and no eslint config" in the limitation would itself be a new
-// unsupported absence claim.
-func TestFinalizeAnswerNeutralizesAbsenceGrammarInLimitations(t *testing.T) {
+// An unsupported absence claim remains the model's sentence. The audit names
+// it; the gate does not invent a second "Evidence limitations" conclusion.
+func TestFinalizeAnswerDoesNotAppendALimitationSection(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{
 		claimRead("package.json", `{"scripts":{"lint":"next lint"}}`, 20),
 	}}}
-	finalized := FinalizeAnswer(claimContract(), turns,
-		`The lint script exists, but there is no ESLint devDependency and no ESLint config in the inspected tree.`,
-		EvidenceProvenance{}, "")
-	if strings.Contains(strings.ToLower(finalized.Text), "no eslint") {
-		t.Fatalf("the limitation repeated the absence claim:\n%s", finalized.Text)
+	answer := `The lint script exists, but there is no ESLint devDependency and no ESLint config in the inspected tree.`
+	finalized := FinalizeAnswer(claimContract(), turns, answer, EvidenceProvenance{}, "")
+	if finalized.Text != answer {
+		t.Fatalf("the gate appended runtime prose:\n%s", finalized.Text)
 	}
-	if finalized.Audit.UnsupportedClaims != 0 {
-		t.Fatalf("the committed limitation still has %d unsupported claims:\n%s",
-			finalized.Audit.UnsupportedClaims, finalized.Text)
+	if strings.Contains(finalized.Text, "Evidence limitations") {
+		t.Fatalf("the gate appended a competing conclusion:\n%s", finalized.Text)
+	}
+	if finalized.Audit.UnsupportedClaims == 0 {
+		t.Fatal("the unsupported absence claim was not audited")
 	}
 }

@@ -39,12 +39,18 @@ type ProjectorOptions struct {
 // DefaultProjectorOptions returns the built-in bounds.
 func DefaultProjectorOptions() ProjectorOptions {
 	return ProjectorOptions{
-		StateBlockBytes:     DefaultStateBlockBytes,
-		StateBlockItems:     DefaultStateBlockItems,
-		ExactKeepBytes:      4096,
+		StateBlockBytes: DefaultStateBlockBytes,
+		StateBlockItems: DefaultStateBlockItems,
+		// A source read is the evidence synthesis explains architecture from.
+		// The evidence ledger already retains 16 KiB per exact observation, so
+		// excerpting the same result to 4 KiB in the request was discarding the
+		// implementation the answer had just read. The bound is still per
+		// result, so the cache-stable wire form does not depend on history
+		// length; compaction remains the aggregate bound.
+		ExactKeepBytes:      16 * 1024,
 		DiagnosticKeepBytes: 8192,
 		ExternalKeepBytes:   4096,
-		StructuralKeepBytes: 4096,
+		StructuralKeepBytes: 8192,
 	}
 }
 

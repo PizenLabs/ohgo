@@ -213,6 +213,12 @@ type Task struct {
 	// ReviewReason explains why the task entered NEEDS_REVIEW. It is durable
 	// so a resume or a restart does not lose the evidence boundary.
 	ReviewReason string `json:"reviewReason,omitempty"`
+	// ReviewIssues are the machine-readable claims behind ReviewReason, when
+	// the review came from the deterministic answer audits. They are the
+	// durable repair list: a resumed turn repairs the named claims instead of
+	// re-auditing the answer from scratch. They are empty for lifecycle
+	// reviews, which carry no claim list.
+	ReviewIssues []contract.GroundingIssue `json:"reviewIssues,omitempty"`
 	// UpdatedAt is when the task last changed. It is the checkpoint ordering
 	// key: a write carrying an older stamp must never overwrite a newer one.
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -530,6 +536,7 @@ func (t *Task) Complete(at time.Time) error {
 		return err
 	}
 	t.ReviewReason = ""
+	t.ReviewIssues = nil
 	return nil
 }
 

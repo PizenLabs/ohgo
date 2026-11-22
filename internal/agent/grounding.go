@@ -52,6 +52,15 @@ var (
 		`(?i)^\s*(?:content\s+)?(?:(?:was|were|is|are|has\s+been|have\s+been|had\s+been|got)\s+)?` +
 			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited` +
 			`|read|inspected|examined|reviewed|opened|loaded|queried|searched|sampled|observed)\b`)
+	// runReportPattern names a coordinated report about what this run did:
+	// "no build, test, or runtime session was executed". The subject list ends
+	// at the passive run verb, so the ordinary changeReportPattern (anchored at
+	// the end of the negative match) cannot see it. It is a limitation of the
+	// run, not a claim that the repository contains no tests or builds.
+	runReportPattern = regexp.MustCompile(
+		`(?i)\b(?:build|builds|test|tests|runtime|command|commands|check|checks|execution|session|probe|probes)\b` +
+			`[^.;\n]{0,60}\b(?:was|were|is|are|has\s+been|have\s+been|had\s+been)\s+` +
+			`(?:executed|run|performed|started|launched|invoked|observed|queried)\b`)
 	globalScopePattern = regexp.MustCompile(
 		`(?i)\b(?:repository|repo|project|codebase|workspace)\b`)
 	// rootScopePattern names a location bounded to the top level of the tree.
@@ -352,6 +361,13 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 			addIssue(issue.groundingIssue())
 		}
 	}
+	// Coverage is not itself a claim. A project-wide answer is judged by the
+	// claims it makes and the evidence those claims require, not by whether it
+	// repeats a disclaimer about the repository. Requiring a disclosure here
+	// made "this project is X" fail unless the answer said "this is partial",
+	// which taught the model to add a generic limitation instead of obtaining
+	// the missing observation. The TUI footer still reports measured structural
+	// coverage, where it is presentation, not a completion veto.
 	// The explicit deliverable contract is separate from claim scope: an answer
 	// can avoid every unsupported claim and still omit the field the user asked
 	// for. The facet check owns that obligation.
@@ -474,7 +490,8 @@ func negativeClaims(answer string) []negativeClaim {
 			// claim. "No files were modified" is a no-op report: a file scan
 			// can never cover it, and review here would punish an honest
 			// account of an untouched workspace.
-			if changeReportPattern.MatchString(answer[match[1]:]) {
+			if changeReportPattern.MatchString(answer[match[1]:]) ||
+				runReportFollowsNegative(answer, match[1]) {
 				continue
 			}
 			if claimIsEvidenceGap(answer, match[3]) {
@@ -497,6 +514,26 @@ func negativeClaims(answer string) []negativeClaim {
 	addMatches(negativeMissingPattern, false)
 	addMatches(negativeAbsenceOfPattern, false)
 	return out
+}
+
+// runReportFollowsNegative reports a coordinated run report whose passive verb
+// follows the negative noun span: "no build, test, or runtime session was
+// executed". The span is bounded to the sentence and to the text after the
+// negative match, so an unrelated run report in another clause is not used to
+// excuse a repository absence.
+func runReportFollowsNegative(answer string, end int) bool {
+	if end < 0 || end >= len(answer) {
+		return false
+	}
+	limit := end + 140
+	if limit > len(answer) {
+		limit = len(answer)
+	}
+	tail := answer[end:limit]
+	if cut := strings.IndexAny(tail, ".;\n"); cut >= 0 {
+		tail = tail[:cut]
+	}
+	return runReportPattern.MatchString(tail)
 }
 
 // conditionalAbsenceForm reports an absence phrase inside a behavior

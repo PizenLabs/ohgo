@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
@@ -134,5 +135,25 @@ func TestTranscriptTurnDropsProseBeforeToolCall(t *testing.T) {
 	}
 	if len(got.Results) != 1 || got.Results[0].CallID != "read" {
 		t.Fatalf("results = %+v, want the read evidence", got.Results)
+	}
+}
+
+// The projection is a value, but its Content slice shares the loop's live
+// conversation. Stripping display text must not overwrite the turn the
+// completion authority still reads.
+func TestTranscriptTurnDoesNotMutateTheLoopTurn(t *testing.T) {
+	turn := Turn{
+		SuppressText: true,
+		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{
+			ai.TextContent{Text: "I will inspect the parser."},
+			ai.ToolCall{ID: "c1", Name: "read", Arguments: map[string]any{"path": "x.go"}},
+		}},
+	}
+	projected := TranscriptTurn(turn)
+	if text := projected.Assistant.Text(); strings.TrimSpace(text) != "" {
+		t.Fatalf("projected text = %q, want the narration removed", text)
+	}
+	if text := turn.Assistant.Text(); text != "I will inspect the parser." {
+		t.Fatalf("the loop turn was mutated: %q", text)
 	}
 }

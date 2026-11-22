@@ -87,6 +87,12 @@ type Completion struct {
 	State CompletionState
 	// Reason explains a NEEDS_REVIEW verdict, in terms of observed evidence.
 	Reason string
+	// Issues are the machine-readable grounding claims behind the reason.
+	// They are empty unless the verdict came from the deterministic answer
+	// audits, so a host can show exactly which claim to repair, what
+	// evidence class it needs, and which action is permitted — data the flat
+	// reason string already collapsed.
+	Issues []contract.GroundingIssue
 }
 
 // Complete reports whether the verdict is COMPLETED.
@@ -360,6 +366,13 @@ func needsReview(format string, args ...any) Completion {
 	return Completion{State: CompletionNeedsReview, Reason: fmt.Sprintf(format, args...)}
 }
 
+// needsReviewIssues is needsReview with the machine-readable claims behind
+// the verdict. The issues come from the assessment that produced the reason,
+// never a second audit.
+func needsReviewIssues(issues []contract.GroundingIssue, format string, args ...any) Completion {
+	return Completion{State: CompletionNeedsReview, Reason: fmt.Sprintf(format, args...), Issues: issues}
+}
+
 // pendingFailureVetoes reports whether an unrecovered tool failure still
 // invalidates the answer.
 //
@@ -369,7 +382,9 @@ func needsReview(format string, args ...any) Completion {
 // satisfied: an unavailable alternative provider is a real failure worth
 // reporting, but it did not prevent the proof, so it cannot veto the answer.
 // Verification and runtime failures stay hard vetoes because they contradict
-// the final state the proof depends on, not merely one acquisition path.
+// the final state the proof depends on, not merely one acquisition path. A
+// control refusal (authorization, invalid arguments, correction budget) never
+// ran and is excluded earlier as a rejection, not a pending failure.
 func pendingFailureVetoes(evidence completionEvidence, evidenceReview string) bool {
 	if strings.TrimSpace(evidenceReview) != "" {
 		return true
@@ -683,11 +698,11 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	// negative conclusion is not a completed objective.
 	grounding := AssessGrounding(effective, input.Turns, last.Assistant.Text())
 	if !grounding.Pass() {
-		return needsReview("intent grounding: %s", grounding.Reason())
+		return needsReviewIssues(grounding.Issues, "intent grounding: %s", grounding.Reason())
 	}
 	provenance := AssessAnswerProvenance(effective, last.Assistant.Text(), input.Provenance)
 	if !provenance.Pass() {
-		return needsReview("answer provenance: %s", provenance.Reason())
+		return needsReviewIssues(provenance.Issues, "answer provenance: %s", provenance.Reason())
 	}
 	if input.Provenance.ExternalRequired && !input.Provenance.ExternalObserved {
 		// A request that explicitly needs external knowledge is not complete

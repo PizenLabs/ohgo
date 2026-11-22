@@ -23,6 +23,12 @@ func ReviewInformationalAnswer(intent contract.IntentContract, turns []Turn, ans
 	if strings.TrimSpace(answer) == "" {
 		return "the answer contains no project finding"
 	}
+	if answerIsDeferredPlan(answer) {
+		// A promise to keep investigating is not a finding. The loop already
+		// withholds it from the transcript; this review spends the one
+		// correction window on the answer the user actually asked for.
+		return "the previous message only announces a further action; state the answer from the evidence already observed"
+	}
 	assessment := AssessGrounding(intent, turns, answer)
 	if assessment.Pass() {
 		return ""
@@ -177,7 +183,7 @@ func completionRepairDirective(template, fallback, reason string, repairs []cont
 	return strings.NewReplacer(
 		"{{count}}", strconv.Itoa(len(repairs)),
 		"{{budget}}", strconv.Itoa(budget),
-		"{{repairs}}", repairInstructions(repairs),
+		"{{repairs}}", RepairInstructions(repairs),
 		"{{reason}}", reason,
 	).Replace(template)
 }
@@ -197,8 +203,12 @@ func usableRepairs(repairs []contract.GroundingIssue) []contract.GroundingIssue 
 	return out
 }
 
-// repairInstructions renders one bounded line per claim.
-func repairInstructions(repairs []contract.GroundingIssue) string {
+// RepairInstructions renders one bounded line per claim. It is the single
+// formatter for machine-readable repair instructions: the run's correction
+// directive, a resumed task's orientation, and the human review surface all
+// render the same line for the same issue, so no consumer re-derives a
+// second format for the same data.
+func RepairInstructions(repairs []contract.GroundingIssue) string {
 	lines := make([]string, 0, len(repairs))
 	for index, repair := range repairs {
 		var line strings.Builder

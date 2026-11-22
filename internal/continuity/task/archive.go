@@ -297,6 +297,8 @@ func sanitizeArchived(file *archivedFile) archiveRepairs {
 		// reason in the timeline, not as a current archived-task warning.
 		file.Task.ReviewReason = ""
 		file.Progress.ReviewReason = ""
+		file.Task.ReviewIssues = nil
+		file.Progress.ReviewIssues = nil
 	}
 	context, changes := file.Task.Context.Sanitize(file.Task.ID)
 	file.Task.Context = context

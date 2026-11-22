@@ -48,6 +48,10 @@ type TaskProjection struct {
 	// the durable reviewer-facing reason, not a model claim. Empty means the
 	// mode has no review boundary or the projection does not carry one.
 	ReviewReason string
+	// ReviewIssues are the bounded machine-readable claims behind the reason,
+	// rendered with the same repair-line format the model's correction
+	// directive uses. Empty for lifecycle reviews.
+	ReviewIssues []contract.GroundingIssue
 	// Items are the todos, in order.
 	Items []TaskItem
 	// Err reports a projection or checkpoint failure, empty on success.
@@ -195,8 +199,11 @@ type TaskHooks struct {
 	// Pause records an interruption and returns the paused projection.
 	Pause func(reason string) TaskProjection
 	// NeedsReview records that the turn ended without enough runtime evidence
-	// to claim completion, and returns the reviewable projection.
-	NeedsReview func(reason string) TaskProjection
+	// to claim completion, and returns the reviewable projection. The issues
+	// are the machine-readable claims behind the reason, when the review came
+	// from the deterministic answer audits; they are empty for lifecycle
+	// reviews, which have no claim list.
+	NeedsReview func(reason string, issues []contract.GroundingIssue) TaskProjection
 	// Complete records a successful end and returns the projection.
 	Complete func() TaskProjection
 	// CompleteWithEvidence records a successful end only when the durable
@@ -1050,6 +1057,20 @@ func taskFollowUp(current TaskResume, text string) bool {
 	return workspace.IsTaskFollowUp(text)
 }
 
+// depthFollowUp recognizes a bare depth request ("more info", "go deeper")
+// against an open informational task. The task owns the subject, so the
+// request deepens it instead of starting a new objective whose fresh evidence
+// state would repeat the investigation the user asked to extend. Only an
+// informational contract may claim one: a mutation or execution task has no
+// depth reading of "more info", and a terminal task is excluded by openTask
+// rather than resurrected by wording.
+func depthFollowUp(current TaskResume, text string) bool {
+	if !current.HasContract || current.Contract.Kind != contract.ObjectiveInformational {
+		return false
+	}
+	return workspace.IsDepthFollowUp(text)
+}
+
 // implementationRefinement reports whether an open mutation task owns a delta
 // turn that states no capability of its own.
 //
@@ -1135,6 +1156,8 @@ func taskTurnDecision(current TaskResume, text, active string, next contract.Int
 		return "VERIFICATION_CONTINUATION", true
 	case taskFollowUp(current, text):
 		return "TASK_FOLLOW_UP", true
+	case depthFollowUp(current, text):
+		return "DEPTH_FOLLOW_UP", true
 	case roleContinuation(current, next, active):
 		return "ROLE_CONTINUATION", true
 	case objectiveContinuation(current, next):
@@ -1267,7 +1290,7 @@ func (p *Program) continuesOpenTask(text string) bool {
 		return false
 	}
 	switch decision {
-	case "EXPLICIT_RESUME", "HANDOFF_CONTINUATION", "VERIFICATION_CONTINUATION", "IMPLEMENTATION_REFINEMENT":
+	case "EXPLICIT_RESUME", "HANDOFF_CONTINUATION", "VERIFICATION_CONTINUATION", "IMPLEMENTATION_REFINEMENT", "DEPTH_FOLLOW_UP":
 		return true
 	default:
 		return false
@@ -1393,6 +1416,25 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 				line = "    " + line
 			}
 			lines = append(lines, headerStyle.Render(fit(line)))
+		}
+		// The durable claim list is what the resumed turn will repair. One
+		// row per claim names the category, the required evidence class, and
+		// the permitted action — the same repair-line format the model's own
+		// correction directive uses — instead of one wrapped prose blob that
+		// hides which sentence to fix. A long line wraps; truncating it would
+		// drop the action the reader needs.
+		for _, row := range strings.Split(agent.RepairInstructions(projection.ReviewIssues), "\n") {
+			if strings.TrimSpace(row) == "" {
+				continue
+			}
+			for i, line := range WrapToWidth(sanitizeInline(row), avail) {
+				if i == 0 {
+					line = prefix + line
+				} else {
+					line = "    " + line
+				}
+				lines = append(lines, headerStyle.Render(fit(line)))
+			}
 		}
 	} else if len(projection.Items) == 0 {
 		lines = append(lines, pal.Status.Render(fit("  ◻ no todos")))

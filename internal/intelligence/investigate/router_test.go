@@ -55,6 +55,8 @@ func TestPrefersExternalIsDrivenByInformationNeed(t *testing.T) {
 		{"debug without target stays native", Request{Intent: planner.IntentDebug}, planner.Step{Strategy: "focused-region"}, false},
 		{"debug with target narrows structurally", Request{Intent: planner.IntentDebug, Focus: "auth.Serve"}, planner.Step{Strategy: "focused-region"}, true},
 		{"hierarchy step never escalates", Request{Intent: planner.IntentArchitecture}, planner.Step{Strategy: "filesystem-hierarchy"}, false},
+		{"explicit preference widens a native intent", Request{PreferExternal: true}, planner.Step{Strategy: "module-discovery"}, true},
+		{"explicit preference keeps orientation native-only", Request{PreferExternal: true}, planner.Step{Strategy: "filesystem-hierarchy"}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -383,5 +385,164 @@ func TestRouterDoesNotQualifyNativeWhenExternalIsNotIndexed(t *testing.T) {
 	}
 	if len(result.Issues) != 0 {
 		t.Fatalf("optional absence produced an issue: %+v", result.Issues)
+	}
+}
+
+// An explicit request for the external structural provider widens the routing
+// policy to a step that would otherwise stay native. The external request is
+// charged against the budget exactly like an automatic escalation.
+func TestRouterHonorsExplicitExternalPreferenceForNativeIntent(t *testing.T) {
+	native := &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObservation()}
+	external := &fakeStructuralProvider{
+		name: planner.ProviderStructural, available: true,
+		observation: Observation{
+			Outcome: OutcomeSuccess, Source: "gry", State: evidence.Observed,
+			Confidence: 0.7, Coverage: 0.5, Summary: "external",
+			Facts: []Fact{{Provider: "structural", Subject: "module", Detail: "owned by gry"}},
+		},
+	}
+	router := &StructuralRouter{Native: native, External: external}
+	meter := NewMeter(Budget{})
+
+	result, err := router.Observe(context.Background(),
+		Request{Intent: planner.IntentProject, PreferExternal: true},
+		planner.Step{Strategy: "module-discovery"}, meter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if external.calls != 1 {
+		t.Fatalf("external calls = %d, want the explicit preference honored", external.calls)
+	}
+	if result.Source != "native+gry" || meter.External() != 1 {
+		t.Fatalf("result = %+v external budget = %d", result, meter.External())
+	}
+}
+
+// A sufficient native answer must not silently downgrade an explicit external
+// request: the external attempt happens and its evidence is merged.
+func TestRouterExplicitExternalPreferenceOverridesSufficientNative(t *testing.T) {
+	nativeObs := nativeObservation()
+	nativeObs.Sufficient = true
+	native := &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObs}
+	external := &fakeStructuralProvider{
+		name: planner.ProviderStructural, available: true,
+		observation: Observation{
+			Outcome: OutcomeSuccess, Source: "gry", State: evidence.Observed,
+			Facts: []Fact{{Provider: "structural", Subject: "caller", Detail: "CALLS target"}},
+		},
+	}
+	router := &StructuralRouter{Native: native, External: external}
+	meter := NewMeter(Budget{})
+
+	result, err := router.Observe(context.Background(),
+		Request{Intent: planner.IntentProject, PreferExternal: true},
+		planner.Step{Strategy: "module-discovery"}, meter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if external.calls != 1 || meter.External() != 1 {
+		t.Fatalf("external calls = %d budget = %d, want the explicit request honored", external.calls, meter.External())
+	}
+	if result.Source != "native+gry" {
+		t.Fatalf("result source = %q, want merged evidence", result.Source)
+	}
+}
+
+// An explicit external request that cannot be met is disclosed on the native
+// answer through the same issue channel a fallback uses; it is never silently
+// ignored. An auto request stays exactly as quiet as before.
+func TestRouterDisclosesUnmetExplicitExternalPreference(t *testing.T) {
+	tests := []struct {
+		name         string
+		request      Request
+		step         planner.Step
+		router       func(external *fakeStructuralProvider) *StructuralRouter
+		externalRuns int
+		wantIssue    string
+	}{
+		{
+			name:    "provider unavailable",
+			request: Request{Intent: planner.IntentProject, PreferExternal: true},
+			step:    planner.Step{Strategy: "module-discovery"},
+			router: func(external *fakeStructuralProvider) *StructuralRouter {
+				external.available = false
+				return &StructuralRouter{Native: &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObservation()}, External: external}
+			},
+			wantIssue: "requested external structural provider is unavailable",
+		},
+		{
+			name:    "provider not configured",
+			request: Request{Intent: planner.IntentProject, PreferExternal: true},
+			step:    planner.Step{Strategy: "module-discovery"},
+			router: func(*fakeStructuralProvider) *StructuralRouter {
+				return &StructuralRouter{Native: &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObservation()}}
+			},
+			wantIssue: "requested external structural provider is not configured",
+		},
+		{
+			name:    "native-only orientation step",
+			request: Request{Intent: planner.IntentProject, PreferExternal: true},
+			step:    planner.Step{Strategy: "filesystem-hierarchy"},
+			router: func(external *fakeStructuralProvider) *StructuralRouter {
+				return &StructuralRouter{Native: &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObservation()}, External: external}
+			},
+			wantIssue: "native-only by design",
+		},
+		{
+			name:    "native-only orientation step with a sufficient native answer",
+			request: Request{Intent: planner.IntentProject, PreferExternal: true},
+			step:    planner.Step{Strategy: "filesystem-hierarchy"},
+			router: func(external *fakeStructuralProvider) *StructuralRouter {
+				nativeObs := nativeObservation()
+				nativeObs.Sufficient = true
+				return &StructuralRouter{Native: &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObs}, External: external}
+			},
+			wantIssue: "native-only by design",
+		},
+		{
+			name:    "external reports not indexed",
+			request: Request{Intent: planner.IntentProject, PreferExternal: true},
+			step:    planner.Step{Strategy: "module-discovery"},
+			router: func(external *fakeStructuralProvider) *StructuralRouter {
+				external.observation = Observation{Outcome: OutcomeNotIndexed, Source: "gry"}
+				return &StructuralRouter{Native: &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObservation()}, External: external}
+			},
+			externalRuns: 1,
+			wantIssue:    "requested external structural provider reported NOT_INDEXED",
+		},
+		{
+			name:    "auto stays silent when the provider is unavailable",
+			request: Request{Intent: planner.IntentProject},
+			step:    planner.Step{Strategy: "module-discovery"},
+			router: func(external *fakeStructuralProvider) *StructuralRouter {
+				external.available = false
+				return &StructuralRouter{Native: &fakeStructuralProvider{name: planner.ProviderStructural, available: true, observation: nativeObservation()}, External: external}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			external := &fakeStructuralProvider{name: planner.ProviderStructural, available: true}
+			router := test.router(external)
+			result, err := router.Observe(context.Background(), test.request, test.step, NewMeter(Budget{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Source != "native" {
+				t.Fatalf("result source = %q, want native", result.Source)
+			}
+			if external.calls != test.externalRuns {
+				t.Fatalf("external calls = %d, want %d", external.calls, test.externalRuns)
+			}
+			if test.wantIssue == "" {
+				if len(result.Issues) != 0 {
+					t.Fatalf("auto request must stay silent: %+v", result.Issues)
+				}
+				return
+			}
+			if len(result.Issues) != 1 || !strings.Contains(result.Issues[0], test.wantIssue) {
+				t.Fatalf("disclosure issue = %+v, want it to name %q", result.Issues, test.wantIssue)
+			}
+		})
 	}
 }

@@ -153,7 +153,7 @@ func TestResumedReviewCompletesWithPersistedContractEvidence(t *testing.T) {
 			mu.Unlock()
 			return TaskProjection{ID: "t1", Status: "COMPLETED"}
 		},
-		NeedsReview: func(string) TaskProjection {
+		NeedsReview: func(string, []contract.GroundingIssue) TaskProjection {
 			mu.Lock()
 			reviewed = true
 			mu.Unlock()
@@ -286,7 +286,7 @@ func TestCancelDuringReviewTransitionPauses(t *testing.T) {
 			mu.Unlock()
 			return TaskProjection{ID: "t1", Status: "PAUSED"}
 		},
-		NeedsReview: func(string) TaskProjection {
+		NeedsReview: func(string, []contract.GroundingIssue) TaskProjection {
 			mu.Lock()
 			review = true
 			mu.Unlock()

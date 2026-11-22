@@ -107,9 +107,9 @@ func (l *Loop) finalizeResponse(turns []Turn, live *[]Message, evidenceGap strin
 	finalized := FinalizedAnswer{Text: answer}
 	if l.cfg.FinalizeAnswer != nil {
 		finalized = l.cfg.FinalizeAnswer(turns, answer, evidenceGap)
-	}
-	if finalized.Text == "" {
-		finalized.Text = answer
+		// An empty result is deliberate: the gate removed text that must not
+		// be published (for example a copied runtime-state block). Restoring
+		// the raw draft here would leak exactly what the gate withheld.
 	}
 	if finalized.Text != answer {
 		turns[len(turns)-1].Assistant = replaceAssistantText(turns[len(turns)-1].Assistant, finalized.Text)

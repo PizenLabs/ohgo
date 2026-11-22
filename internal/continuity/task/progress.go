@@ -96,6 +96,9 @@ type Progress struct {
 	// ReviewReason is the evidence-boundary explanation persisted when the
 	// task entered NEEDS_REVIEW.
 	ReviewReason string `json:"reviewReason,omitempty"`
+	// ReviewIssues are the bounded machine-readable claims behind the
+	// reason. Additive and optional: an older checkpoint loads with none.
+	ReviewIssues []contract.GroundingIssue `json:"reviewIssues,omitempty"`
 	// EvidenceState is the bounded durable knowledge the runtime acquired. It
 	// lets a resumed turn avoid rediscovering facts and lets a projection
 	// explain what it retained or elided. It is evidence, never authority.
@@ -205,7 +208,30 @@ func ProgressFrom(t Task) Progress {
 		p.Snapshot = &cloned
 	}
 	p.ReviewReason = t.ReviewReason
+	p.ReviewIssues = boundReviewIssues(t.ReviewIssues)
 	return p
+}
+
+// MaxReviewIssues bounds the persisted repair list. A review verdict can
+// carry more claims than a checkpoint should replay; the repair directive
+// and the projection stay bounded to the most actionable prefix.
+const MaxReviewIssues = 8
+
+// boundReviewIssues copies at most MaxReviewIssues issues. The copy is
+// deliberate: a checkpoint must not alias the caller's slice, which a later
+// transition could mutate in place.
+func boundReviewIssues(issues []contract.GroundingIssue) []contract.GroundingIssue {
+	if len(issues) == 0 {
+		return nil
+	}
+	bounded := make([]contract.GroundingIssue, 0, min(len(issues), MaxReviewIssues))
+	for _, issue := range issues {
+		if len(bounded) >= MaxReviewIssues {
+			break
+		}
+		bounded = append(bounded, issue)
+	}
+	return bounded
 }
 
 // Checkpoint errors, matched with errors.Is.
@@ -436,12 +462,15 @@ func (s *Store) Load() (Snapshot, error) {
 			t.Snapshot = &cloned
 		}
 		t.ReviewReason = progress.ReviewReason
+		t.ReviewIssues = boundReviewIssues(progress.ReviewIssues)
 		if t.Status == StatusCompleted {
 			// A review reason is current state only while the review is open.
 			// Older checkpoints may carry one after a completion; do not
 			// resurrect resolved uncertainty in the human or model projection.
 			t.ReviewReason = ""
 			progress.ReviewReason = ""
+			t.ReviewIssues = nil
+			progress.ReviewIssues = nil
 		}
 		if progress.CheckpointAt.After(t.UpdatedAt) {
 			t.UpdatedAt = progress.CheckpointAt

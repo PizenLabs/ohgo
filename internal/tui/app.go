@@ -6075,15 +6075,32 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	//
 	// Visible model text is forwarded the same way: each delta publishes as
 	// it arrives, so the answer reveals sequentially while the stream is
-	// open instead of dumping as one block when the turn completes. Only
-	// deltas that reach the event channel count as revealed — a dropped
-	// delta stays the completed turn's job below, never silently lost.
-	var live, liveThinking strings.Builder
-	// Model text is published only when its turn is complete and publishable.
-	// Streaming it while the request is open would show a full answer the
-	// model then abandons for a tool call, or one the answer review rejects.
-	// The completed turn carries the same text and its suppression flags.
-	p.loop.SetTextDeltaHook(nil)
+	// open instead of dumping as one block when the turn completes. The exact
+	// committed value is settled after Run, so a dropped delta is repaired
+	// rather than silently lost.
+	var liveThinking strings.Builder
+	// Visible model text streams as it arrives. Deltas are a provisional
+	// preview: the stream-end hook withdraws prose that belonged to a tool
+	// round, and the turn hook withdraws a rejected draft. The exact committed
+	// answer is settled once after Run, so a dropped delta or a finalized
+	// rewrite can never leave a partial or duplicated transcript block.
+	p.loop.SetTextDeltaHook(func(delta string) {
+		if delta == "" {
+			return
+		}
+		for _, chunk := range splitAssistantChunks(delta) {
+			p.publish(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
+		}
+	})
+	// A stream with tool calls is investigation narration, not an answer. The
+	// provisional preview is withdrawn before the tool card opens so the two
+	// never read as competing output.
+	p.loop.SetAssistantMessageHook(func(message ai.AssistantMessage) {
+		if len(message.ToolCalls()) > 0 {
+			p.publishCritical(AssistantReconcile{Discard: true, At: time.Now(), Seq: seq})
+		}
+	})
+	defer p.loop.SetAssistantMessageHook(nil)
 	// Reasoning is its own channel, so the transcript can represent it as a
 	// collapsed block. It is published live for the same reason text is: a
 	// long trace must be observable while it is happening, not reconstructed
@@ -6261,17 +6278,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// double-counted.
 	var seenIn, seenOut int
 	p.loop.SetTurnHook(func(turn agent.Turn) {
-		// The turn is complete. Publish its text only when it is a
-		// publishable answer: a rejected candidate and prose that continued
-		// into a tool call are investigation, not conclusions.
-		if !turn.Suppressed && !turn.SuppressText {
-			if text := turn.Assistant.Text(); text != "" {
-				for _, chunk := range splitAssistantChunks(text) {
-					if p.publishOK(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq}) {
-						live.WriteString(chunk)
-					}
-				}
-			}
+		// A rejected candidate and prose that continued into a tool call are
+		// investigation, not conclusions. Their provisional preview is
+		// withdrawn immediately; the exact committed answer is settled after
+		// Run, when the publication transaction is final.
+		if turn.Suppressed || turn.SuppressText {
+			p.publishCritical(AssistantReconcile{Discard: true, At: time.Now(), Seq: seq})
 		}
 		seenIn += turn.Assistant.Usage.Input
 		seenOut += turn.Assistant.Usage.Output
@@ -6370,7 +6382,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	mutations := p.loop.LastMutation()
 	mutations.TaskID = taskID
 	mutations.ObjectiveID = taskID
-	action, reason := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, mutations, activeAuthority)
+	action, reason, reviewIssues := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, mutations, activeAuthority)
 	// The turn boundary is also the evidence boundary. The loop projects
 	// before each request, but a run that stopped on a deadline, a turn limit,
 	// or its final answer may have an unobserved last turn. Folding it here
@@ -6418,6 +6430,148 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			action, reason = taskActionPause, "interrupted"
 		}
 	}
+
+	// The turn has made its terminal transition. Keeping the handle installed
+	// until now is what lets a cancel during post-run evidence reach ctx.Err.
+	// A session switch during the turn leaves the new session's history alone:
+	// this turn belongs to the session it started in, and its transcript was
+	// already persisted to that session above.
+	p.mu.Lock()
+	p.cancelTurn = nil
+	var liveSessID int64
+	if p.session != nil {
+		liveSessID = p.session.ID
+	}
+	if liveSessID == turnSessID {
+		// Rebase from the request actually sent: appending to the old history
+		// would reintroduce anything a compaction just removed.
+		p.history = rebase(request, turns)
+	}
+	p.mu.Unlock()
+
+	// The budget display is fed from the provider's own accounting, not an
+	// estimate: a wrong percentage here misleads more than it helps.
+	for _, turn := range turns {
+		if used := turn.Assistant.Usage.Total; used > 0 {
+			p.publish(ContextUpdated{Used: used, Window: p.window})
+		}
+	}
+
+	// Assistant text must reach the transcript exactly once. The live deltas
+	// are a provisional preview; the committed value is settled below, after
+	// every turn's tool cards have been published in order. This is the
+	// authoritative transfer: a delta dropped under backpressure, a rewrite
+	// by the answer finalizer, or a non-streaming transport all converge on
+	// the same single assistant block.
+	//
+	// Reasoning omitted by a non-streaming transport is revealed before the
+	// answer, which is the order providers produce it.
+	//
+	// Text and outcomes publish per completed turn, never all text first and
+	// all outcomes last. The live progress hook normally publishes every
+	// visible outcome; this pass is the fallback for one that did not, and it
+	// must land inside its own turn rather than after a later answer.
+	streamedThinking := liveThinking.String()
+	consumedThinking := 0
+	committedAnswer := ""
+	for _, rawTurn := range turns {
+		if rawTurn.Suppressed {
+			continue
+		}
+		turn := agent.TranscriptTurn(rawTurn)
+		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+			// The turn contained only answer-required control refusals. It
+			// produced no action and no visible text, so it has no transcript
+			// record.
+			continue
+		}
+		if thinking := turn.Assistant.ThinkingText(); thinking != "" {
+			rest := thinking
+			if consumedThinking < len(streamedThinking) {
+				skip := commonPrefixLen(thinking, streamedThinking[consumedThinking:])
+				rest = thinking[skip:]
+				consumedThinking += skip
+			}
+			for _, chunk := range splitAssistantChunks(rest) {
+				p.publish(ReasoningDelta{Text: chunk, At: time.Now(), Seq: seq})
+			}
+		}
+		if text := turn.Assistant.Text(); text != "" {
+			committedAnswer = text
+		}
+		// A call that never reached execution (denied authority, grounding
+		// refusal, invalid arguments, budget stop) still produced a real
+		// outcome. Publish its block now so the live view shows what failed
+		// and the persisted result has a matching transcript card.
+		for _, outcome := range turn.Results {
+			publishedMu.Lock()
+			state := published[outcome.CallID]
+			publishedMu.Unlock()
+			if state.started && state.finished {
+				continue
+			}
+			if !state.started {
+				p.publish(ToolStarted{
+					ID:         outcome.CallID,
+					Name:       outcome.ToolName,
+					Summary:    ToolSummaryForCall(outcome.ToolName, outcome.Args),
+					Invocation: ToolInvocationForCall(outcome.ToolName, outcome.Args),
+					At:         time.Now(),
+					Seq:        seq,
+				})
+			}
+			if !state.finished || !state.started {
+				text, truncated := TruncateForDisplay(outcome.Result.Text, toolOutputLimit)
+				path, operation, diff := MutationMetadata(outcome.Result.Details)
+				p.publish(ToolFinished{
+					ID:        outcome.CallID,
+					Text:      text,
+					Summary:   CompactResultSummary(outcome.Result.Text, outcome.Result.IsError),
+					Diff:      diff,
+					Path:      path,
+					Operation: operation,
+					IsError:   outcome.Result.IsError,
+					Truncated: truncated,
+					Chart:     chartInput(outcome.Result.Details),
+					At:        time.Now(),
+					Seq:       seq,
+				})
+			}
+		}
+		// Every conversational turn persists its assistant plus all of its
+		// results, in the same order as the plain path: dropping non-final
+		// results would lose the evidence the transcript replays, and
+		// persisting is the program's job here (the loop's turn hook only
+		// publishes live metrics in UI mode — transcript text is settled by
+		// the reconcile event below). A turn that produced only reasoning
+		// has no replayable form, so it is displayed but never stored as
+		// conversation. They land in the turn's own session, never in a
+		// session created mid-turn.
+		if !turn.Conversational() {
+			continue
+		}
+		persistTo(agent.AssistantMessage{Message: turn.Assistant})
+		for _, outcome := range turn.Results {
+			persistTo(agent.ToolResultMessage{
+				ToolCallID: outcome.CallID,
+				ToolName:   outcome.ToolName,
+				Content:    ai.TextBlocks(outcome.Result.Text),
+				IsError:    outcome.Result.IsError,
+			})
+		}
+	}
+	// The publication transaction committed exactly one answer, if any. This
+	// is the only assistant-text value the live transcript may keep; the
+	// provisional stream is replaced here rather than appended to.
+	if committedAnswer != "" {
+		p.publishCritical(AssistantReconcile{Text: committedAnswer, At: time.Now(), Seq: seq})
+	}
+	// The durable task transition lands after the turn's answer text, so the
+	// user reads the model's own words before the verdict that judges them.
+	// Publishing it earlier let the task status flip to needs_review while the
+	// answer was still streaming visibly, or land a review verdict with no
+	// answer on screen yet — two views of one turn disagreeing at the same
+	// moment. The terminal footer below remains the last content either way.
 	observedOutcome := experienceOutcome(action)
 	switch action {
 	case taskActionComplete:
@@ -6448,7 +6602,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				// The evaluator said complete but the durable task could not
 				// prove or commit it. Review is the truthful non-terminal
 				// transition.
-				p.PublishTask(p.task.NeedsReview("completion evidence: " + projection.Err))
+				p.PublishTask(p.task.NeedsReview("completion evidence: "+projection.Err, nil))
 			}
 			projection = TaskProjection{}
 		}
@@ -6464,7 +6618,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		p.SyncTask()
 	case taskActionReview:
 		if p.task.NeedsReview != nil {
-			p.PublishTask(p.task.NeedsReview(reason))
+			p.PublishTask(p.task.NeedsReview(reason, reviewIssues))
 		} else if p.task.Pause != nil {
 			p.PublishTask(p.task.Pause(reason))
 		}
@@ -6513,150 +6667,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			Scope:             "project",
 		})
 	}
-
-	// The turn has made its terminal transition. Keeping the handle installed
-	// until now is what lets a cancel during post-run evidence reach ctx.Err.
-	// A session switch during the turn leaves the new session's history alone:
-	// this turn belongs to the session it started in, and its transcript was
-	// already persisted to that session above.
-	p.mu.Lock()
-	p.cancelTurn = nil
-	var liveSessID int64
-	if p.session != nil {
-		liveSessID = p.session.ID
-	}
-	if liveSessID == turnSessID {
-		// Rebase from the request actually sent: appending to the old history
-		// would reintroduce anything a compaction just removed.
-		p.history = rebase(request, turns)
-	}
-	p.mu.Unlock()
-
-	// The budget display is fed from the provider's own accounting, not an
-	// estimate: a wrong percentage here misleads more than it helps.
-	for _, turn := range turns {
-		if used := turn.Assistant.Usage.Total; used > 0 {
-			p.publish(ContextUpdated{Used: used, Window: p.window})
-		}
-	}
-
-	// Assistant text must reach the transcript: tool progress travels through
-	// the hook above, but the model's own words only exist on the completed
-	// turns. Without this the transcript shows the user's prompts with empty
-	// space where the answers belong, which reads as "nothing appears".
-	// Text already revealed live while the stream was open is skipped by
-	// common prefix, so the tail publishes without duplicating: without live
-	// deltas (replayed or non-streaming transports) nothing was revealed and
-	// the whole turn publishes in bounded chunks as before.
-	// Reasoning omitted by a non-streaming transport is revealed before the
-	// answer, which is the order providers produce it. Text already revealed
-	// live is skipped by common prefix, exactly as before.
-	//
-	// Text and outcomes publish per completed turn, never all text first and
-	// all outcomes last. The live progress hook normally publishes every
-	// visible outcome; this pass is the fallback for one that did not, and it
-	// must land inside its own turn rather than after a later answer.
-	streamedThinking := liveThinking.String()
-	consumedThinking := 0
-	streamed := live.String()
-	consumed := 0
-	for _, rawTurn := range turns {
-		if rawTurn.Suppressed {
-			continue
-		}
-		turn := agent.TranscriptTurn(rawTurn)
-		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
-			// The turn contained only answer-required control refusals. It
-			// produced no action and no visible text, so it has no transcript
-			// record.
-			continue
-		}
-		if thinking := turn.Assistant.ThinkingText(); thinking != "" {
-			rest := thinking
-			if consumedThinking < len(streamedThinking) {
-				skip := commonPrefixLen(thinking, streamedThinking[consumedThinking:])
-				rest = thinking[skip:]
-				consumedThinking += skip
-			}
-			for _, chunk := range splitAssistantChunks(rest) {
-				p.publish(ReasoningDelta{Text: chunk, At: time.Now(), Seq: seq})
-			}
-		}
-		if text := turn.Assistant.Text(); text != "" {
-			rest := text
-			if consumed < len(streamed) {
-				skip := commonPrefixLen(text, streamed[consumed:])
-				rest = text[skip:]
-				consumed += skip
-			}
-			for _, chunk := range splitAssistantChunks(rest) {
-				p.publish(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
-			}
-		}
-		// A call that never reached execution (denied authority, grounding
-		// refusal, invalid arguments, budget stop) still produced a real
-		// outcome. Publish its block now so the live view shows what failed
-		// and the persisted result has a matching transcript card.
-		for _, outcome := range turn.Results {
-			publishedMu.Lock()
-			state := published[outcome.CallID]
-			publishedMu.Unlock()
-			if state.started && state.finished {
-				continue
-			}
-			if !state.started {
-				p.publish(ToolStarted{
-					ID:         outcome.CallID,
-					Name:       outcome.ToolName,
-					Summary:    ToolSummaryForCall(outcome.ToolName, outcome.Args),
-					Invocation: ToolInvocationForCall(outcome.ToolName, outcome.Args),
-					At:         time.Now(),
-					Seq:        seq,
-				})
-			}
-			if !state.finished || !state.started {
-				text, truncated := TruncateForDisplay(outcome.Result.Text, toolOutputLimit)
-				path, operation, diff := MutationMetadata(outcome.Result.Details)
-				p.publish(ToolFinished{
-					ID:        outcome.CallID,
-					Text:      text,
-					Summary:   CompactResultSummary(outcome.Result.Text, outcome.Result.IsError),
-					Diff:      diff,
-					Path:      path,
-					Operation: operation,
-					IsError:   outcome.Result.IsError,
-					Truncated: truncated,
-					Chart:     chartInput(outcome.Result.Details),
-					At:        time.Now(),
-					Seq:       seq,
-				})
-			}
-		}
-		// Every conversational turn persists its assistant plus all of its
-		// results, in the same order as the plain path: dropping non-final
-		// results would lose the evidence the transcript replays, and
-		// persisting is the program's job here (the loop's turn hook only
-		// publishes live metrics in UI mode — transcript text still travels
-		// through AssistantDelta events). A turn that produced only reasoning
-		// has no replayable form, so it is displayed but never stored as
-		// conversation. They land in the turn's own session, never in a
-		// session created mid-turn.
-		if !turn.Conversational() {
-			continue
-		}
-		persistTo(agent.AssistantMessage{Message: turn.Assistant})
-		for _, outcome := range turn.Results {
-			persistTo(agent.ToolResultMessage{
-				ToolCallID: outcome.CallID,
-				ToolName:   outcome.ToolName,
-				Content:    ai.TextBlocks(outcome.Result.Text),
-				IsError:    outcome.Result.IsError,
-			})
-		}
-	}
-	// The terminal verdict is the last content of the turn. Every outcome the
-	// run produced has already been published and persisted, so nothing can
-	// appear to happen after the runtime closed the task.
 	if loopErr != nil {
 		// A cancelled turn is an interruption, not a failure: reporting
 		// it as an error would read as though something broke. The single
@@ -7011,6 +7021,17 @@ func (p *Program) publishOK(event Event) bool {
 		// A full buffer must never block a tool: losing a preview line is
 		// acceptable, a stalled shell command is not.
 		return false
+	}
+}
+
+// publishCritical delivers an event that must not be dropped: the exact
+// answer text and its withdrawal are state corrections, not previews. It
+// waits for the update goroutine instead of discarding under backpressure, and
+// still returns when the UI has shut down.
+func (p *Program) publishCritical(event Event) {
+	select {
+	case p.events <- event:
+	case <-p.done:
 	}
 }
 

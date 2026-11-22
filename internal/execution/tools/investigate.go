@@ -74,6 +74,11 @@ func NewInvestigateTool(root string, engine *investigate.Engine, budget investig
 						"For flow, callers/callees, and impact, prefer the exact symbol name " +
 						"returned by symbols; a file path is better for package or file-level context.",
 				},
+				"provider": map[string]any{
+					"type":        "string",
+					"enum":        []string{"auto", "external"},
+					"description": "Optional structural evidence preference. auto (default) chooses the cheapest sufficient path. external answers structural steps with the external structural provider (GRY) when it is available, and reports an issue when it cannot be used.",
+				},
 				"max_steps": map[string]any{
 					"type":        "integer",
 					"minimum":     1,
@@ -119,6 +124,14 @@ func (t *InvestigateTool) Execute(ctx agent.Context, args map[string]any) agent.
 	if intentName != "" && intentName != "auto" {
 		intent = planner.Intent(intentName)
 	}
+	providerName, err := strArg(args, "provider", "auto")
+	if err != nil {
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+	}
+	if providerName != "auto" && providerName != "external" {
+		return requestError(agent.ToolFailureInvalidArgument,
+			"argument \"provider\" must be \"auto\" or \"external\"; nothing executed.")
+	}
 	steps, err := intArg(args, "max_steps", InvestigateDefaultSteps)
 	if err != nil || steps < 1 || steps > InvestigateMaxSteps {
 		return requestError(agent.ToolFailureInvalidArgument,
@@ -131,7 +144,8 @@ func (t *InvestigateTool) Execute(ctx agent.Context, args map[string]any) agent.
 	budget.MaxSteps = steps
 	started := time.Now()
 	result, err := t.Engine.Run(ctx.Ctx, investigate.Request{
-		Question: question, Intent: intent, Focus: focus, Budget: budget,
+		Question: question, Intent: intent, Focus: focus,
+		PreferExternal: providerName == "external", Budget: budget,
 	})
 	if err != nil {
 		if err == investigate.ErrEmptyQuestion {

@@ -1480,7 +1480,7 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		if shape.RepositoryScope && (!shape.VCSInspection || structuralAnalysisRequested(shape.Objective)) {
 			add("repository_overview", "the answer is about the repository")
 			if shape.BroadRepositoryAnalysis {
-				add("repository_survey", "a broad overview needs a second content observation or the repository's structure")
+				add("repository_survey", "a broad overview needs source content and either a followed dependency or the repository's parsed structure")
 			}
 		}
 		if shape.VCSInspection {

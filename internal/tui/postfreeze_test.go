@@ -84,7 +84,7 @@ func wirePostfreezeController(t *testing.T, p *Program, root string) *task.Contr
 			recorded, err := controller.Pause(reason)
 			return postfreezeTaskProjection(recorded, err)
 		},
-		NeedsReview: func(reason string) TaskProjection {
+		NeedsReview: func(reason string, _ []contract.GroundingIssue) TaskProjection {
 			recorded, err := controller.NeedsReview(reason)
 			return postfreezeTaskProjection(recorded, err)
 		},

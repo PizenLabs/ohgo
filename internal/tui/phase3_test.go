@@ -180,7 +180,7 @@ func TestRefusedCompletionNeverClaimsSuccess(t *testing.T) {
 				return TaskProjection{ID: "t1", Status: "COMPLETED", Objective: "explain the parser",
 					Err: "task: write checkpoint: disk full"}
 			},
-			NeedsReview: func(string) TaskProjection {
+			NeedsReview: func(string, []contract.GroundingIssue) TaskProjection {
 				return TaskProjection{ID: "t1", Status: "NEEDS_REVIEW", Objective: "explain the parser"}
 			},
 		})
@@ -207,7 +207,7 @@ func completionRefusalProgram(t *testing.T, items []TaskItem, onReview func(stri
 			return TaskProjection{ID: "t1", Status: "RUNNING", Objective: "fix the parser", Items: items,
 				Err: "task: no current verification followed the change"}
 		},
-		NeedsReview: func(reason string) TaskProjection {
+		NeedsReview: func(reason string, _ []contract.GroundingIssue) TaskProjection {
 			onReview(reason)
 			return TaskProjection{ID: "t1", Status: "NEEDS_REVIEW", Objective: "fix the parser", Items: items}
 		},

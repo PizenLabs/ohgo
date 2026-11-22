@@ -334,3 +334,20 @@ func TestOnlyTheFinalAnswerIsPublished(t *testing.T) {
 		t.Fatalf("published %q, want only the final answer", published[0])
 	}
 }
+
+// A plan-only answer is rejected before it can consume the completion
+// verdict. The loop withholds the text from the transcript and spends its one
+// correction window asking for the answer the user requested.
+func TestReviewInformationalAnswerRejectsAPlanOnlyMessage(t *testing.T) {
+	intent := contract.IntentContract{Objective: "analyze this project", Kind: contract.ObjectiveInformational}
+	reason := ReviewInformationalAnswer(intent, nil, "Let me read the main module and then explain the project.")
+	if strings.TrimSpace(reason) == "" {
+		t.Fatal("a plan-only message was accepted as an answer")
+	}
+	if !strings.Contains(strings.ToLower(reason), "answer") {
+		t.Fatalf("reason = %q, want a request for the actual answer", reason)
+	}
+	if got := ReviewInformationalAnswer(intent, nil, "This project is a Go coding agent."); got != "" {
+		t.Fatalf("a substantive answer was rejected: %q", got)
+	}
+}

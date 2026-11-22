@@ -105,13 +105,20 @@ func TestMarkdownBlockStylesStayDistinct(t *testing.T) {
 	// (lipgloss degrades everything to plain text by design). Verify the
 	// wiring with a forced-profile palette that cannot hide a collapse.
 	fp := forcedPalette()
-	if f1, f2, f3 := RenderMarkdownWrapped("# Title", fp, 40),
+	f1, f2, f3 := RenderMarkdownWrapped("# Title", fp, 40),
 		RenderMarkdownWrapped("## Title", fp, 40),
-		RenderMarkdownWrapped("### Title", fp, 40); f1 != f2 || f2 != f3 {
-		t.Error("heading levels must share the structure accent")
+		RenderMarkdownWrapped("### Title", fp, 40)
+	if f1 == f2 || f2 == f3 || f1 == f3 {
+		t.Error("heading levels must form a visible hierarchy")
 	}
-	if head := RenderMarkdownWrapped("# Title", fp, 40); !strings.Contains(head, fp.Heading.Render("Title")) {
-		t.Error("heading did not resolve through the structure accent")
+	if head := RenderMarkdownWrapped("# Title", fp, 40); !strings.Contains(head, headingStyle(fp, 1).Render("Title")) {
+		t.Error("h1 did not resolve through the underlined structure accent")
+	}
+	if head := RenderMarkdownWrapped("## Title", fp, 40); !strings.Contains(head, fp.Heading.Render("Title")) {
+		t.Error("h2 did not resolve through the structure accent")
+	}
+	if head := RenderMarkdownWrapped("### Title", fp, 40); !strings.Contains(head, headingStyle(fp, 3).Render("Title")) {
+		t.Error("h3 did not resolve through its quieter structure accent")
 	}
 	blocks := map[string]string{
 		"quote": RenderMarkdownWrapped("> quoted", fp, 40),

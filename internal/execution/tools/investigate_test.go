@@ -114,3 +114,63 @@ func TestInvestigateToolRendersFactProviderAttribution(t *testing.T) {
 		t.Fatalf("fact details lost the source: %+v", facts)
 	}
 }
+
+// requestCapturingProvider records the request the engine actually received,
+// so a tool-level test can observe argument wiring without re-implementing
+// the router.
+type requestCapturingProvider struct {
+	name     string
+	requests []investigate.Request
+}
+
+func (p *requestCapturingProvider) Name() planner.Provider { return planner.Provider(p.name) }
+
+func (p *requestCapturingProvider) Available(context.Context) bool { return true }
+
+func (p *requestCapturingProvider) Observe(_ context.Context, req investigate.Request, _ planner.Step, _ *investigate.Meter) (investigate.Observation, error) {
+	p.requests = append(p.requests, req)
+	return investigate.Observation{
+		State: evidence.Observed, Confidence: 0.8, Coverage: 0.7, Summary: "observed",
+		Facts: []investigate.Fact{{Provider: p.name, Subject: "auth.go", Detail: "score 1.0"}},
+	}, nil
+}
+
+// The provider preference is a typed opt-in: the model passes the parameter,
+// the tool never guesses it from the question text, and an unknown value is
+// rejected before anything executes.
+func TestInvestigateToolPassesProviderPreferenceToRequest(t *testing.T) {
+	provider := &requestCapturingProvider{name: "retrieval"}
+	engine := investigate.New(provider)
+	tool := NewInvestigateTool(t.TempDir(), engine, investigate.Budget{})
+	toolCtx := agent.Context{Ctx: context.Background()}
+
+	result := tool.Execute(toolCtx, map[string]any{
+		"question": "what is the structure of this repository?",
+		"provider": "external",
+	})
+	if result.IsError {
+		t.Fatalf("execute failed: %s", result.Text)
+	}
+	if len(provider.requests) == 0 || !provider.requests[0].PreferExternal {
+		t.Fatalf("external preference was not forwarded: %+v", provider.requests)
+	}
+
+	provider.requests = nil
+	result = tool.Execute(toolCtx, map[string]any{
+		"question": "what is the structure of this repository?",
+	})
+	if result.IsError {
+		t.Fatalf("execute failed: %s", result.Text)
+	}
+	if len(provider.requests) == 0 || provider.requests[0].PreferExternal {
+		t.Fatalf("default provider must stay automatic: %+v", provider.requests)
+	}
+
+	result = tool.Execute(toolCtx, map[string]any{
+		"question": "what is the structure of this repository?",
+		"provider": "gry",
+	})
+	if !result.IsError {
+		t.Fatal("unknown provider value was accepted")
+	}
+}

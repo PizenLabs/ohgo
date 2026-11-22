@@ -204,6 +204,59 @@ func TestPreviousObjectiveIsNotTheCurrentObjective(t *testing.T) {
 	}
 }
 
+// A bare depth request ("more info") deepens the open informational task
+// instead of detaching it and starting an empty one that repeats the
+// investigation. A named subject is a new objective, a mutation task has no
+// depth reading, and a request the vocabulary does not recognize never
+// attaches.
+func TestDepthRequestContinuesOpenInformationalTask(t *testing.T) {
+	current := TaskResume{
+		ID:          "task-depth",
+		Objective:   "analyze what this project is about",
+		Status:      "NEEDS_REVIEW",
+		Role:        "ask",
+		HasContract: true,
+		Contract:    buildIntent("analyze what this project is about"),
+	}
+	for _, text := range []string{"more info", "tell me more", "go deeper"} {
+		decision, continuing := taskTurnDecision(current, text, "ask", buildIntent(text))
+		if !continuing || decision != "DEPTH_FOLLOW_UP" {
+			t.Fatalf("taskTurnDecision(%q) = %q/%v, want DEPTH_FOLLOW_UP", text, decision, continuing)
+		}
+	}
+
+	// A request that names its own subject is a new objective, depth
+	// vocabulary or not.
+	if _, continuing := taskTurnDecision(current, "more info about the parser", "ask",
+		buildIntent("more info about the parser")); continuing {
+		t.Fatal("a named subject continued the informational task")
+	}
+
+	// A mutation task under BUILD keeps its own pre-existing rule: depth
+	// wording there is a refinement of the change in flight, not a subject to
+	// deepen, so implementationRefinement owns it rather than the depth rule.
+	mutation := TaskResume{
+		ID:          "task-mutation",
+		Objective:   "fix the checkout bug",
+		Status:      "RUNNING",
+		Role:        "build",
+		HasContract: true,
+		Contract:    buildIntent("fix the checkout bug"),
+	}
+	decision, continuing := taskTurnDecision(mutation, "more info", "build", buildIntent("more info"))
+	if !continuing || decision != "IMPLEMENTATION_REFINEMENT" {
+		t.Fatalf("taskTurnDecision(mutation, %q) = %q/%v, want IMPLEMENTATION_REFINEMENT",
+			"more info", decision, continuing)
+	}
+
+	// An open informational task with no contract never claims a turn.
+	noContract := current
+	noContract.HasContract = false
+	if _, continuing := taskTurnDecision(noContract, "more info", "ask", buildIntent("more info")); continuing {
+		t.Fatal("a contractless task claimed a depth request")
+	}
+}
+
 // buildIntent is the deterministic contract the router derives from a prompt.
 func buildIntent(text string) contract.IntentContract {
 	return workspace.BuildIntentContract(text)

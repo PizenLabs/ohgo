@@ -97,8 +97,11 @@ const (
 	MaxEvidenceItems = 256
 	// MaxEvidenceBytes bounds the retained payload total, so a checkpoint
 	// cannot grow into a second transcript. Values are bounded per item and
-	// the lowest-value items are evicted until the total fits.
-	MaxEvidenceBytes = 64 * 1024
+	// the lowest-value items are evicted until the total fits. It is sized for
+	// eight maximum-size exact observations: a smaller total evicted the item
+	// describing an already-sent result, and projection then had to replay the
+	// raw oversized message instead of its bounded excerpt.
+	MaxEvidenceBytes = 8 * MaxEvidenceValueBytes
 	// EvidenceVersion is the persisted schema version. Version 2 added
 	// optional snapshot provenance to Source; version 3 adds language,
 	// adapter, resolution, completeness, and truncation; version 4 adds
@@ -760,11 +763,15 @@ func (s *EvidenceState) hasImplementationObservation() bool {
 // of the project rather than one targeted answer.
 //
 // A specific question ("does this workflow run automatically?") is answered by
-// one content observation. "Analyze what this project is about" is not: purpose,
-// structure, and stack need at least a second content observation or a
-// structural listing. A project that has source code additionally needs at least
-// one implementation observation: two documentation artifacts describe what the
-// project says about itself, not what its implementation does.
+// one content observation. "Analyze what this project is about" is not. A
+// project with source code needs the entry point and at least one module it
+// leads to: one read plus a structural inventory is a file count, not a model
+// of the code, and it was enough for a real project analysis to stop at the
+// CLI root. Two implementation observations are the minimum relationship pair,
+// not a depth target; a repository whose structural snapshot reports exactly
+// one source file is fully observed by reading it. A project with no source
+// code instead needs two content observations, because the answer describes
+// documentation rather than implementation.
 func (s *EvidenceState) hasRepositorySurvey(facts RepositoryFacts) bool {
 	content, implementation, structure := 0, 0, 0
 	for _, item := range s.Items {
@@ -787,17 +794,71 @@ func (s *EvidenceState) hasRepositorySurvey(facts RepositoryFacts) bool {
 					implementation++
 				}
 			}
-		case strings.HasPrefix(item.ID, "dir:"):
-			structure++
+		case strings.HasPrefix(item.ID, "structure:"), strings.HasPrefix(item.ID, "graph:"),
+			strings.HasPrefix(item.ID, "refs:"):
+			if structuralObservationIsFactual(item) {
+				structure++
+			}
 		}
 	}
 	if content == 0 {
 		return false
 	}
-	if facts.HasSourceCode() && implementation == 0 {
+	if !facts.HasSourceCode() {
+		return content >= 2
+	}
+	if implementation == 0 {
 		return false
 	}
-	return content >= 2 || structure > 0
+	switch sources := s.reportedSourceFiles(); {
+	case sources == 1:
+		// A single-file project is fully observed by reading it.
+		return true
+	case sources > 1:
+		// The producer measured a multi-file project. The entry point plus one
+		// implementation file is the minimum relationship pair; a structural
+		// inventory does not stand in for reading a second source file.
+		return implementation >= 2
+	default:
+		// No snapshot reported a source total. The runtime cannot invent a
+		// numeric floor, so the structural/survey leg remains the best
+		// available model. A missing adapter must not block investigation.
+		return content >= 2 || structure > 0
+	}
+}
+
+// structuralObservationIsFactual reports whether a structural observation
+// carries a coordinate, an edge, or a parsed declaration rather than only an
+// inventory. It is used only when no producer measured the source total.
+func structuralObservationIsFactual(item EvidenceItem) bool {
+	if itemHasFacet(item, FacetRelationship) || itemHasFacet(item, FacetTarget) {
+		return true
+	}
+	for _, key := range []string{
+		"symbols", "references", "calls", "total_edges", "total_references", "packages",
+	} {
+		if item.Counts[key] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// reportedSourceFiles returns the largest source-file total a structural
+// observation reported, or zero when no producer measured it. It is used only
+// to exempt a genuinely single-file project from the second-observation rule;
+// an unknown total never invents a number.
+func (s *EvidenceState) reportedSourceFiles() int {
+	if s == nil {
+		return 0
+	}
+	sources := 0
+	for _, item := range s.Items {
+		if item.Counts["source_files"] > sources {
+			sources = item.Counts["source_files"]
+		}
+	}
+	return sources
 }
 
 // containsEvidence reports whether an item kind contains value.
@@ -1081,31 +1142,38 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 			s.addGeneric(outcome, seq)
 			return false, false
 		}
-		return true, s.addRead(outcome, path, details, seq)
+		fact, changed = true, s.addRead(outcome, path, details, seq)
 	case "ls":
-		return true, s.addListing(outcome, path, details, seq)
+		fact, changed = true, s.addListing(outcome, path, details, seq)
 	case "glob":
-		return true, s.addSearch(outcome, details, seq)
+		fact, changed = true, s.addSearch(outcome, details, seq)
 	case "grep":
-		return true, s.addSearch(outcome, details, seq)
+		fact, changed = true, s.addSearch(outcome, details, seq)
 	case "symbols":
-		return true, s.addSymbols(outcome, details, seq)
+		fact, changed = true, s.addSymbols(outcome, details, seq)
 	case "graph", "refs", "structure":
-		return true, s.addStructural(outcome, details, seq)
+		fact, changed = true, s.addStructural(outcome, details, seq)
 	case "investigate":
-		return true, s.addInvestigation(outcome, details, seq)
+		fact, changed = true, s.addInvestigation(outcome, details, seq)
 	case "conclude":
-		return true, s.addConclusion(outcome, details, seq)
+		fact, changed = true, s.addConclusion(outcome, details, seq)
 	case "write", "edit", "delete":
-		return true, s.addMutation(outcome, path, details, seq)
+		fact, changed = true, s.addMutation(outcome, path, details, seq)
 	case "bash", "verify":
-		return true, s.addBash(outcome, details, seq)
+		fact, changed = true, s.addBash(outcome, details, seq)
 	case "web_fetch", "search", "browser", "mcp_list", "mcp_read", "mcp_call":
-		return true, s.addExternal(outcome, details, seq)
+		fact, changed = true, s.addExternal(outcome, details, seq)
 	default:
 		s.addGeneric(outcome, seq)
-		return false, false
+		fact, changed = false, false
 	}
+	// A conclusion's own payload never settles the gaps it declares; every
+	// other successful observation is matched against the pending targets
+	// while its full, untruncated text is still available.
+	if tool != "conclude" {
+		s.settlePendingTargets(outcome, path, seq)
+	}
+	return fact, changed
 }
 
 // addError records an exact diagnostic. A missing-file error also establishes
@@ -1433,6 +1501,10 @@ func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[str
 	if hasPrevious && !previous.Complete && len(previous.Unresolved) > 0 {
 		targets = mergeConclusionTargets(previous.Unresolved, targets)
 	}
+	// A path obligation whose complete contents the run already observed was
+	// not made real by the declaration; the model is naming a file it read.
+	// The drop is path-only: symbol obligations keep the post-conclusion rule.
+	targets = s.dropPreReadPathTargets(targets)
 	attempts := 1
 	newEvidence := false
 	if hasPrevious && !previous.Complete {
@@ -1643,6 +1715,68 @@ func (s *EvidenceState) targetsObservedAfter(seq int, targets []string) bool {
 	return true
 }
 
+// settlePendingTargets records, at observe time, the pending conclusion
+// targets one successful observation actually mentions. The stored item's
+// retained excerpt is bounded (MaxEvidenceValueBytes) and can later be
+// evicted, so a target whose only mention lies outside the retained window
+// would otherwise read as unobserved forever and force a reread that
+// observes nothing new. The record is a tiny control fact whose ID carries
+// the target, so the existing targetsObservedAfter match admits it without a
+// second matching path.
+func (s *EvidenceState) settlePendingTargets(outcome agent.ToolOutcome, path string, seq int) {
+	latest, ok := s.latestConclusion()
+	if !ok || latest.Complete || len(latest.Unresolved) == 0 {
+		return
+	}
+	haystack := cleanPath(path) + "\n" + outcome.Result.Text
+	for _, target := range latest.Unresolved {
+		if !conclusionTargetMatches(haystack, target) {
+			continue
+		}
+		s.upsert(EvidenceItem{
+			ID:         "target_observed:" + target,
+			Status:     StatusKnown,
+			Retention:  RetentionExact,
+			Provenance: ProvenanceDiagnostic,
+			Summary:    bound(target+" observed by "+outcome.ToolName, MaxEvidenceSummaryBytes),
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID},
+			Seq:        seq,
+		})
+	}
+}
+
+// dropPreReadPathTargets removes path obligations whose complete contents
+// the run already observed. A conclusion that names an already-read file as
+// unresolved contradicts the evidence in hand; keeping the obligation would
+// force a reread of a window the runtime holds and turn a stale declaration
+// into a repeat-investigation loop. Symbol obligations are never dropped: an
+// earlier observation that merely mentions a name is not the targeted
+// inspection the conclusion declared missing, and a read that predates a
+// mutation of the same file no longer describes the current state.
+func (s *EvidenceState) dropPreReadPathTargets(targets []string) []string {
+	if len(targets) == 0 {
+		return targets
+	}
+	out := make([]string, 0, len(targets))
+	for _, target := range targets {
+		path := cleanPath(target)
+		if path == "" {
+			out = append(out, target)
+			continue
+		}
+		item, ok := s.Find("file:" + path)
+		if !ok || !item.Complete || item.Status == StatusConflicting {
+			out = append(out, target)
+			continue
+		}
+		if mutationSeq, mutated := s.LastMutationSeq[path]; mutated && mutationSeq > item.Seq {
+			out = append(out, target)
+			continue
+		}
+	}
+	return out
+}
+
 // addInvestigation records one bounded investigation as structural evidence.
 //
 // The tool result is a provider-backed observation, not model narration: its
@@ -1758,18 +1892,35 @@ func structuralCounts(details map[string]any) map[string]int {
 	keys := []string{
 		"test_files", "total", "returned", "files", "packages", "symbols",
 		"references", "calls", "entrypoints", "configs", "directories",
-		"total_edges", "total_references",
+		"total_edges", "total_references", "source_files",
 	}
 	var counts map[string]int
-	for _, key := range keys {
-		value, ok := details[key].(int)
-		if !ok {
-			continue
-		}
+	add := func(key string, value int) {
 		if counts == nil {
 			counts = map[string]int{}
 		}
 		counts[key] = value
+	}
+	for _, key := range keys {
+		if value, ok := details[key].(int); ok {
+			add(key, value)
+		}
+	}
+	// The snapshot header is the producer's coverage accounting: it carries
+	// the source-file total a view's own map does not repeat. The top level
+	// wins when both exist, because a view-scoped count can be a subset.
+	if snapshot, ok := details["snapshot"].(map[string]any); ok {
+		for _, key := range []string{
+			"source_files", "parsed_files", "pending_files", "failed_files",
+			"files", "directories", "symbols", "references", "calls", "test_files",
+		} {
+			if _, exists := details[key]; exists {
+				continue
+			}
+			if value, ok := snapshot[key].(int); ok {
+				add(key, value)
+			}
+		}
 	}
 	return counts
 }

@@ -55,12 +55,16 @@ func TestRunTurnPublishesAssistantText(t *testing.T) {
 	for !found {
 		select {
 		case event := <-p.events:
-			if delta, ok := event.(AssistantDelta); ok && delta.Text == "hello golang" {
+			// A completed (non-token) transport publishes its exact text as a
+			// reconcile, the same event a token stream uses to replace its
+			// provisional preview.
+			if reconcile, ok := event.(AssistantReconcile); ok &&
+				!reconcile.Discard && reconcile.Text == "hello golang" {
 				found = true
 			}
 			p.state.Apply(event)
 		case <-timeout:
-			t.Fatal("no AssistantDelta published: the UI would look idle after a success")
+			t.Fatal("no answer published: the UI would look idle after a success")
 		}
 	}
 	if got := p.state.AssistantText(); got != "hello golang" {
@@ -197,13 +201,20 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 		p.runTurn("analyze this project and report what it is")
 	}()
 
-	var published strings.Builder
+	published := ""
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
 		case event := <-p.events:
 			if delta, ok := event.(AssistantDelta); ok {
-				published.WriteString(delta.Text)
+				published += delta.Text
+			}
+			if reconcile, ok := event.(AssistantReconcile); ok {
+				if reconcile.Discard {
+					published = ""
+				} else {
+					published = reconcile.Text
+				}
 			}
 			p.state.Apply(event)
 		case <-done:
@@ -211,7 +222,14 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 				select {
 				case event := <-p.events:
 					if delta, ok := event.(AssistantDelta); ok {
-						published.WriteString(delta.Text)
+						published += delta.Text
+					}
+					if reconcile, ok := event.(AssistantReconcile); ok {
+						if reconcile.Discard {
+							published = ""
+						} else {
+							published = reconcile.Text
+						}
 					}
 					p.state.Apply(event)
 					continue
@@ -219,7 +237,7 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 				}
 				break
 			}
-			got := published.String()
+			got := published
 			if strings.Contains(got, "no database") {
 				t.Fatalf("a rejected draft reached the transcript: %q", got)
 			}

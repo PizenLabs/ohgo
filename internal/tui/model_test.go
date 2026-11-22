@@ -432,3 +432,46 @@ func TestClearedKeepsTheStatusLine(t *testing.T) {
 		t.Error("the model was dropped by /clear")
 	}
 }
+
+func TestAssistantReconcileReplacesTheProvisionalStream(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "partial draft"})
+	state.Apply(AssistantReconcile{Text: "the exact committed answer"})
+	if got := state.AssistantText(); got != "the exact committed answer" {
+		t.Fatalf("AssistantText = %q, want the exact committed value", got)
+	}
+	if open := state.openAssistant(); open < 0 || state.Entries[open].Provisional {
+		t.Fatal("the reconciled answer is still provisional")
+	}
+}
+
+func TestAssistantReconcileDiscardsToolNarration(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "Let me inspect the backend."})
+	state.Apply(AssistantReconcile{Discard: true})
+	if got := state.AssistantText(); got != "" {
+		t.Fatalf("AssistantText = %q, want the withdrawn narration gone", got)
+	}
+	state.Apply(ToolStarted{ID: "c1", Name: "read", At: time.Now()})
+	state.Apply(AssistantDelta{Text: "final answer"})
+	state.Apply(AssistantReconcile{Text: "final answer"})
+	state.Apply(AssistantDone{})
+	if got := state.AssistantText(); got != "final answer" {
+		t.Fatalf("AssistantText = %q, want only the accepted answer", got)
+	}
+}
+
+// A dropped delta leaves a hole in the live preview. The reconcile value is
+// the whole committed answer, so it must replace the preview, never append to
+// it; appending would duplicate the visible prefix and reorder the text.
+func TestAssistantReconcileRepairsADroppedDeltaWithoutDuplication(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "the first half"})
+	state.Apply(AssistantReconcile{Text: "the first half and the repaired second half"})
+	if got := state.AssistantText(); got != "the first half and the repaired second half" {
+		t.Fatalf("AssistantText = %q", got)
+	}
+	if strings.Count(state.AssistantText(), "the first half") != 1 {
+		t.Fatalf("the preview prefix was duplicated: %q", state.AssistantText())
+	}
+}

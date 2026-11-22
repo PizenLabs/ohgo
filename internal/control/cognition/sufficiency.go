@@ -801,7 +801,7 @@ func nextEvidence(key string) string {
 	case key == "repository_overview":
 		return "list the repository root and read the entry point or module file"
 	case key == "repository_survey":
-		return "read a source file (entry point or module) for the components the answer will describe; documentation, manifests, configuration, and inventory are not implementation evidence"
+		return "read the entry point, then follow an import or call it names into that module and read it; a broad account needs the entry point plus at least one implementation file it leads to, not a file inventory"
 	case key == "implementation_observation":
 		return "read the implementation file that contains the requested change; documentation and manifests are not enough to choose an edit"
 	case key == "investigation_conclusion":
