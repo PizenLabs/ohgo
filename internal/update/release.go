@@ -40,6 +40,11 @@ var ErrMalformedRelease = errors.New("update: malformed release metadata")
 type Target struct {
 	GOOS   string
 	GOARCH string
+	// MultiLanguage selects the artifact built with the tree-sitter adapters.
+	// A multi-language binary must not silently replace itself with the
+	// portable artifact: that would remove every non-Go adapter while
+	// reporting a successful update.
+	MultiLanguage bool
 }
 
 // Supported reports whether ohgo publishes a self-update artifact for the
@@ -285,6 +290,9 @@ func (r Release) ArtifactFor(target Target) (ArtifactPair, error) {
 		return ArtifactPair{}, fmt.Errorf("%w: release %s is a prerelease", ErrMalformedRelease, r.Tag)
 	}
 	expected := fmt.Sprintf("ohgo-%s-%s-%s.tar.gz", r.Tag, target.GOOS, target.GOARCH)
+	if target.MultiLanguage {
+		expected = fmt.Sprintf("ohgo-%s-%s-%s-multilang.tar.gz", r.Tag, target.GOOS, target.GOARCH)
+	}
 	var archive Asset
 	var checksum Asset
 	for _, asset := range r.Assets {

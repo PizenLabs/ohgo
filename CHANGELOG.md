@@ -128,6 +128,21 @@ immutable.
   credit-metered and NVIDIA publishes no per-token price, so these rows report
   pricing as unknown instead of verified-free.
 
+### Changed
+
+- `make build` now uses the host toolchain. With a C compiler it compiles the
+  pinned tree-sitter grammars, so TypeScript, TSX, JavaScript, Java, C#, Rust,
+  Kotlin, Ruby, C, and C++ are structurally observable. `make build-portable`
+  is the explicit `CGO_ENABLED=0` variant; `make build-multilang` is the
+  explicit cgo variant.
+- The `structure` header's `adapters:` line now lists adapter identities
+  (`tree-sitter-javascript`) instead of language aliases (`javascript`, `jsx`),
+  matching `ohgo doctor`.
+- The release publishes a multi-language artifact beside the portable one;
+  `install.sh` prefers it, and `ohgo update` selects the artifact matching the
+  running binary. A missing matching artifact fails the update instead of
+  silently downgrading to the portable build.
+
 ### Fixed
 
 - A non-Go reference is resolved through the referring file's imports before
@@ -269,6 +284,12 @@ immutable.
   edit. The checkpoint diff compares the before and after captures under their
   own ignore rules, so a path that only became invisible is not reported as a
   file change, and a path-scoped `.gitignore` task is not a scope violation.
+- Non-Go structural intelligence on a TypeScript/TSX project. A default
+  `make build` produced the Go-only adapter set, so `structure` reported
+  `adapters: go`, `parsed_files: 0/77`, and `structural: UNSUPPORTED` even
+  though the tree-sitter adapters existed. The capability was never missing;
+  the default build did not compile it. The portable build still reports those
+  sources as `UNSUPPORTED`, and `ohgo doctor` now names the rebuild command.
 
 ## [v0.1.3] - 2026-11-19
 

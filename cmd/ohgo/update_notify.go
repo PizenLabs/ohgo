@@ -80,7 +80,7 @@ func startUpdateObserver(settings config.Settings, current string, publish func(
 // Cancelling ctx stops an in-flight metadata request, which is how a session
 // ensures the check does not outlive the surface that asked for it.
 func startUpdateObserverContext(ctx context.Context, settings config.Settings, current string, publish func(string)) func(io.Writer) {
-	return startUpdateObserverWith(ctx, settings, current, update.NewService(update.Config{CurrentVersion: current}), publish)
+	return startUpdateObserverWith(ctx, settings, current, update.NewService(update.Config{CurrentVersion: current, MultiLanguage: multiLanguageBuild()}), publish)
 }
 
 // startUpdateObserverWith lets the host share the one update.Service it
@@ -188,6 +188,7 @@ func installUpdateLifecycle(program *tui.Program, settings config.Settings, curr
 	program.SetURLOpener(openExternalURL)
 	svc := update.NewService(update.Config{
 		CurrentVersion: current,
+		MultiLanguage:  multiLanguageBuild(),
 		Progress: func(stage update.Stage) {
 			program.PublishUpdateProgress(string(stage))
 		},

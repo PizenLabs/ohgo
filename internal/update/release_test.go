@@ -117,6 +117,45 @@ func TestArtifactForUsesLocalTargetNotRemoteName(t *testing.T) {
 	}
 }
 
+// A multi-language binary must update to the artifact that keeps its adapters.
+// Falling back to the portable artifact would report success while silently
+// removing every non-Go parser.
+func TestArtifactForSelectsTheMatchingVariant(t *testing.T) {
+	release := Release{
+		Tag: "v1.0.0",
+		Assets: []Asset{
+			{Name: "ohgo-v1.0.0-linux-amd64.tar.gz", URL: "https://example.test/portable"},
+			{Name: "ohgo-v1.0.0-linux-amd64-multilang.tar.gz", URL: "https://example.test/multilang"},
+			{Name: ChecksumAssetName, URL: "https://example.test/sums"},
+		},
+	}
+	portable, err := release.ArtifactFor(Target{GOOS: "linux", GOARCH: "amd64"})
+	if err != nil {
+		t.Fatalf("portable: %v", err)
+	}
+	if portable.Archive.Name != "ohgo-v1.0.0-linux-amd64.tar.gz" {
+		t.Fatalf("portable artifact = %q", portable.Archive.Name)
+	}
+	multi, err := release.ArtifactFor(Target{GOOS: "linux", GOARCH: "amd64", MultiLanguage: true})
+	if err != nil {
+		t.Fatalf("multilang: %v", err)
+	}
+	if multi.Archive.Name != "ohgo-v1.0.0-linux-amd64-multilang.tar.gz" {
+		t.Fatalf("multilang artifact = %q", multi.Archive.Name)
+	}
+
+	portableOnly := Release{
+		Tag: "v1.0.0",
+		Assets: []Asset{
+			{Name: "ohgo-v1.0.0-linux-amd64.tar.gz", URL: "https://example.test/portable"},
+			{Name: ChecksumAssetName, URL: "https://example.test/sums"},
+		},
+	}
+	if _, err := portableOnly.ArtifactFor(Target{GOOS: "linux", GOARCH: "amd64", MultiLanguage: true}); !errors.Is(err, ErrMalformedRelease) {
+		t.Fatalf("a missing multilang artifact must fail closed, not downgrade: %v", err)
+	}
+}
+
 func TestArtifactForRequiresChecksumsAndSupportedPlatform(t *testing.T) {
 	release := Release{
 		Tag: "v1.0.0",

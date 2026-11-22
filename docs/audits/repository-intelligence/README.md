@@ -24,3 +24,11 @@ Start with `FINAL_REPORT.md`. The supporting documents are:
 Status at publication: the fixes in `FIXES.md` are implemented and verified;
 `OHGO-COMP-001`, `OHGO-CTRL-001`, and the limitations in the final report
 remain open. No commit or release was made.
+
+**Superseded 2026-11-22:** the portable-only release policy (OHGO-BUILD-002)
+was replaced. The default build now uses the host toolchain, the release
+publishes a multi-language artifact beside the portable one, `install.sh`
+prefers it, and `ohgo update` selects the variant matching the running binary.
+`BUILD_MATRIX.md` and `docs/architecture/STRUCTURAL_LANGUAGES.md` carry the
+current build contract; the measurements below remain the audit record for the
+2026-11-20 revision.

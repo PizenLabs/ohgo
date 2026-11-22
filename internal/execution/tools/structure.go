@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1440,8 +1441,22 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 // adapterSummary names the syntax adapters compiled into this binary. Without
 // it a symbol-free snapshot is unattributable: "no symbols" and "no adapter"
 // would render identically.
+//
+// The identities are adapter names, matching `ohgo doctor`. Listing language
+// aliases here made one adapter (tree-sitter-javascript) look like two and
+// disagreed with the diagnostic that tells a user which build they have.
 func adapterSummary() string {
-	names := structuralLanguageNames()
+	names := make([]string, 0)
+	seen := map[string]bool{}
+	for _, adapter := range ast.DefaultAdapters() {
+		name := adapter.Name()
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	if len(names) == 0 {
 		return "none"
 	}

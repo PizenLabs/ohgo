@@ -62,6 +62,31 @@ jobs:
           files: ./coverage.out
           fail_ci_if_error: false
 
+  portable:
+    name: portable build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The portable variant has its own disclosure path (`//go:build !cgo`)
+      # and its own test files. The cgo job above never compiles them, so a
+      # regression that made the Go-only build claim unsupported languages
+      # would otherwise reach a release.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
+      - name: Test
+        env:
+          CGO_ENABLED: "0"
+        run: go test -shuffle=on ./...
+
   race:
     name: race detector
     runs-on: ubuntu-latest

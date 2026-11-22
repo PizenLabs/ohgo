@@ -23,7 +23,14 @@ func TestDoctorReportsStructuralAdapters(t *testing.T) {
 		if !strings.Contains(detail, "typescript") {
 			t.Fatalf("multi-language detail = %q, want TypeScript named", report.Detail)
 		}
-	} else if !strings.Contains(detail, "go") {
-		t.Fatalf("portable detail = %q, want the Go-only limitation", report.Detail)
+	} else {
+		if !strings.Contains(detail, "go") {
+			t.Fatalf("portable detail = %q, want the Go-only limitation", report.Detail)
+		}
+		// A limitation without the remedy leaves the user unable to change
+		// the build that produced it.
+		if !strings.Contains(report.Detail, "make build") {
+			t.Fatalf("portable detail = %q, want the rebuild command", report.Detail)
+		}
 	}
 }

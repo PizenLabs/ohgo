@@ -9,17 +9,19 @@ in [`STRUCTURAL_INTELLIGENCE.md`](STRUCTURAL_INTELLIGENCE.md). Topology and owne
 
 ## Build variants
 
-- **Go-only (`CGO_ENABLED=0`)** — the native `go/ast` backend is always present.
-  Every other supported extension is inventory metadata marked `UNSUPPORTED`;
-  it is never parsed by a second lexical parser and never counted as structural
-  completeness.
-- **Multi-language (`CGO_ENABLED=1`)** — the pinned tree-sitter grammars in
-  `github.com/smacker/go-tree-sitter` compile into the binary. No grammar is
-  downloaded or loaded at runtime.
+- **Multi-language (default)** — `make build` uses the host toolchain. With a
+  C compiler the pinned tree-sitter grammars in
+  `github.com/smacker/go-tree-sitter` compile into the binary; no grammar is
+  downloaded or loaded at runtime. `make build-multilang` is the explicit cgo
+  target and fails loudly without a toolchain.
+- **Portable (`CGO_ENABLED=0`)** — `make build-portable` keeps the native
+  `go/ast` backend only. Every other supported extension is inventory metadata
+  marked `UNSUPPORTED`; it is never parsed by a second lexical parser and never
+  counted as structural completeness.
 
-The dependency is pinned in `go.mod`; grammar versions are fixed by that module
-revision. The release matrix stays CGO-free for portability; use
-`make build-multilang` for the complete adapter build.
+The release publishes both variants for every supported platform. `install.sh`
+prefers the multi-language artifact, and `ohgo update` selects the artifact
+matching the running binary so an update never silently removes adapters.
 
 ## Project scope
 

@@ -230,7 +230,7 @@ func structuralReport() doctorReport {
 	if len(names) <= 1 {
 		return doctorReport{
 			Name: "structural", OK: true,
-			Detail: "1 adapter (go); portable build: other language adapters are unsupported",
+			Detail: "1 adapter (go); portable build: TypeScript/TSX/JavaScript, Java, C#, Rust, Kotlin, Ruby, C, and C++ are not compiled in; rebuild with `make build` (needs a C toolchain)",
 		}
 	}
 	return doctorReport{

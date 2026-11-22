@@ -1725,8 +1725,10 @@ CapabilityRequest → admission → root budget → bounded execution
   interface, so a real BPE encoder drops in without touching call sites.
 
 Run `make bench` for the current numbers; `make check` for the full gate
-(build + vet + gofmt + tests). Releases are `make release` (four static
-tarballs: linux/darwin × amd64/arm64, `CGO_ENABLED=0`) installed via
-`install.sh` or `make install` (`~/.local/bin` by default). The complete
-versioned-document and upgrade-verification checklist is
+(build + vet + gofmt + tests). Releases publish portable static tarballs
+(`CGO_ENABLED=0`, Go adapters only) and multi-language tarballs (native cgo
+build, all tree-sitter adapters) for linux/darwin × amd64/arm64, installed via
+`install.sh` or `make install` (`~/.local/bin` by default); `install.sh`
+prefers the multi-language artifact and `ohgo update` keeps the running
+variant. The complete versioned-document and upgrade-verification checklist is
 [`docs/RELEASING.md`](../RELEASING.md).
