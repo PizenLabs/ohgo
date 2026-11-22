@@ -38,6 +38,7 @@ func TestBuiltinToolActionMetadata(t *testing.T) {
 		{name: "edit", tool: NewEditTool(""), classes: []agent.ActionClass{agent.ActionMutate, agent.ActionRequiresExisting}, operation: contract.ChangeModify},
 		{name: "delete", tool: NewDeleteTool(""), classes: []agent.ActionClass{agent.ActionMutate, agent.ActionRequiresExisting}, operation: contract.ChangeDelete},
 		{name: "bash", tool: NewBashTool(""), classes: []agent.ActionClass{agent.ActionExecute, agent.ActionMutate}, operation: contract.ChangeAny},
+		{name: "check", tool: NewCheckTool(source), classes: []agent.ActionClass{agent.ActionExecute}},
 		{name: "web_fetch", tool: NewWebFetchTool(), classes: []agent.ActionClass{agent.ActionExternal}},
 		{name: "symbols", tool: NewSymbolsToolWithSource(source), classes: []agent.ActionClass{agent.ActionObserve, agent.ActionStructure}, allStructural: true},
 		{name: "graph", tool: NewGraphTool(source), classes: []agent.ActionClass{agent.ActionObserve, agent.ActionRelationship, agent.ActionStructure}, language: "go"},

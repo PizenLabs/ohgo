@@ -446,6 +446,10 @@ type EvidenceState struct {
 	// It lets sufficiency distinguish a documentation-only project from a code
 	// project whose broad account still lacks an implementation observation.
 	Facts RepositoryFacts `json:"facts,omitempty"`
+	// conclusionMode is the terminal-outcome vocabulary of the current shape.
+	// It is derived state, not a durable fact, so it is rebuilt by
+	// ensureRequirements on every resume and is never serialized.
+	conclusionMode contract.ConclusionMode
 }
 
 // NewEvidenceState returns an empty state.
@@ -956,6 +960,7 @@ func (s *EvidenceState) ObserveTurns(shape TaskShape, turns []agent.Turn) (obser
 // ensureRequirements records the shape's needs once.
 func (s *EvidenceState) ensureRequirements(shape TaskShape) {
 	s.Facts = shape.RepositoryFacts
+	s.conclusionMode = contract.ConclusionModeFor(shape.Kind, shape.Objective)
 	for _, need := range shape.RequiredKnowledge {
 		found := false
 		for _, existing := range s.Requirements {
@@ -1152,22 +1157,35 @@ func (s *EvidenceState) addRead(outcome agent.ToolOutcome, path string, details 
 	if item.Source.StartLine > 0 && totalLines > 0 {
 		item.Source.EndLine = min(item.Source.StartLine+max(limit, 1)-1, totalLines)
 	}
-	if previous, ok := s.Find(item.ID); ok && previous.Digest != "" && previous.Digest != item.Digest {
-		if mutationSeq, changed := s.LastMutationSeq[path]; changed && mutationSeq > previous.Seq {
-			// The runtime changed the file; the new read is the current truth.
-		} else if sameReadWindow(previous, item) {
-			// Two observations of the same window disagree without a runtime
-			// mutation between them. That is a real conflict.
-			item.Status = StatusConflicting
-			item.Conflict = "the file changed without a recorded runtime mutation"
-			item.Summary = bound(path+": CONFLICTING content observed at two different times", MaxEvidenceSummaryBytes)
-			if item.Value == "" {
-				item.Value = previous.Value
+	if previous, ok := s.Find(item.ID); ok {
+		if previous.Digest != "" && previous.Digest != item.Digest {
+			if mutationSeq, changed := s.LastMutationSeq[path]; changed && mutationSeq > previous.Seq {
+				// The runtime changed the file; the new read is the current truth.
+			} else if sameReadWindow(previous, item) {
+				// Two observations of the same window disagree without a runtime
+				// mutation between them. That is a real conflict.
+				item.Status = StatusConflicting
+				item.Conflict = "the file changed without a recorded runtime mutation"
+				item.Summary = bound(path+": CONFLICTING content observed at two different times", MaxEvidenceSummaryBytes)
+				if item.Value == "" {
+					item.Value = previous.Value
+				}
 			}
 		}
 		// Different windows of one file are different observations, not a
-		// contradiction. Comparing their digests directly would manufacture a
-		// conflict when a model pages through a large file.
+		// contradiction. Keep both: the opening window carries a document's
+		// identity definition, and a later page used to overwrite it, so the
+		// project's own name became "documentation-only" and vetoed an answer
+		// that merely repeated it. The value stays bounded and is not
+		// completeness evidence.
+		if !sameReadWindow(previous, item) && previous.Value != "" && item.Value != "" {
+			merged := mergeReadWindows(previous, item)
+			if merged != item.Value {
+				item.Value = merged
+				item.Complete = false
+				item.Digest = digest(merged)
+			}
+		}
 	}
 	return s.upsert(item)
 }
@@ -1183,6 +1201,24 @@ func sameReadWindow(previous, current EvidenceItem) bool {
 	}
 	return previous.Source.StartLine == current.Source.StartLine &&
 		previous.Source.EndLine == current.Source.EndLine
+}
+
+// mergeReadWindows keeps the opening window first and appends the later page,
+// bounded. The opening window is what names the document; a later page alone
+// does not define the project.
+func mergeReadWindows(previous, current EvidenceItem) string {
+	first, second := previous.Value, current.Value
+	if current.Source.StartLine > 0 && current.Source.StartLine <= 1 &&
+		previous.Source.StartLine > 1 {
+		first, second = current.Value, previous.Value
+	}
+	if strings.Contains(first, second) {
+		return first
+	}
+	if strings.Contains(second, first) {
+		return second
+	}
+	return bound(first+"\n\n"+second, MaxEvidenceValueBytes)
 }
 
 // addListing records a directory listing as structural evidence.
@@ -1339,7 +1375,7 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 // UNRESOLVED. This is what keeps "I could not determine X" from becoming a
 // terminal answer before X was even inspected.
 func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
-	verdict := strings.ToUpper(strings.TrimSpace(detailString(details, "verdict")))
+	verdict := contract.ConclusionVerdict(strings.ToUpper(strings.TrimSpace(detailString(details, "verdict"))))
 	if verdict == "" {
 		return false
 	}
@@ -1349,15 +1385,28 @@ func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[str
 	}
 	evidence := strings.TrimSpace(detailString(details, "evidence"))
 	uncertainty := strings.TrimSpace(detailString(details, "uncertainty"))
+	// The control plane, not the model, owns the vocabulary. A SAFE/BUG
+	// verdict on a general answer is not a closed investigation, and an
+	// ANSWERED verdict on a failure hypothesis does not establish safety.
+	if !s.conclusionMode.Accepts(verdict) {
+		return s.addConclusionRejected(outcome, verdict, evidence, seq)
+	}
 	// Admission is a control decision, not a consequence of calling the tool.
 	// A payload that says it is provisional, lacks supporting evidence, or
 	// carries an unrecognized status remains an observation. It cannot satisfy
 	// investigation_conclusion or open the answer boundary.
 	if status == "IN_PROGRESS" || (status != "FINAL" && status != "") ||
 		evidence == "" || contract.IsProvisionalConclusion(evidence, uncertainty) {
-		return s.addConclusionProgress(outcome, verdict, evidence, details, seq)
+		return s.addConclusionProgress(outcome, string(verdict), evidence, details, seq)
 	}
-	targets := unresolvedConclusionTargets(uncertainty)
+	declared := unresolvedConclusionTargets(uncertainty)
+	targets := declared
+	if verdict == contract.VerdictPartial {
+		// PARTIAL is an explicit decision to stop with named gaps. Treating
+		// those gaps as a pre-conclusion obligation would make the verdict
+		// unusable: the answer could never be partial, only unfinished.
+		targets = nil
+	}
 	previous, hasPrevious := s.latestConclusion()
 	// A provisional conclusion's obligation cannot be erased by simply
 	// omitting it from the next call. If it is not observed, it remains the
@@ -1379,23 +1428,27 @@ func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[str
 	// actually attempted the named gap. A repeated conclusion with no new
 	// observation is not an attempt; the projection's no-progress bound closes
 	// that shape instead of accepting it here.
-	hardLimit := !resolved && verdict == "UNRESOLVED" &&
+	hardLimit := !resolved && verdict == contract.VerdictUnresolved &&
 		attempts >= MaxConclusionAttempts && newEvidence
 	complete := resolved || hardLimit
 	unresolved := append([]string(nil), targets...)
-	if complete && resolved {
+	if verdict == contract.VerdictPartial {
+		// Keep the declared gaps in the record for audit even though they are
+		// not obligations. PendingConclusionTargets ignores a complete record.
+		unresolved = declared
+	} else if complete && resolved {
 		unresolved = nil
 	}
-	value := "verdict: " + verdict + "\nevidence: " + evidence
+	value := "verdict: " + string(verdict) + "\nevidence: " + evidence
 	if uncertainty != "" {
 		value += "\nuncertainty: " + uncertainty
 	}
 	item := EvidenceItem{
-		ID:         "conclusion:" + digest(verdict+"\x00"+evidence),
+		ID:         "conclusion:" + digest(string(verdict)+"\x00"+evidence),
 		Status:     StatusKnown,
 		Retention:  RetentionExact,
 		Provenance: ProvenanceDiagnostic,
-		Summary:    bound("conclusion "+verdict+": "+evidence, MaxEvidenceSummaryBytes),
+		Summary:    bound("conclusion "+string(verdict)+": "+evidence, MaxEvidenceSummaryBytes),
 		Value:      bound(value, MaxEvidenceValueBytes),
 		Digest:     digest(value),
 		Complete:   complete,
@@ -1434,6 +1487,32 @@ func (s *EvidenceState) addConclusionProgress(outcome agent.ToolOutcome, verdict
 		Digest:     digest(value),
 		Complete:   false,
 		View:       "conclusion_progress",
+		Source:     Source{Tool: "conclude", CallID: outcome.CallID},
+		Seq:        seq,
+	})
+	return false
+}
+
+// addConclusionRejected records a verdict from the wrong vocabulary. It is
+// deliberately not a progress observation: progress implies the model is
+// still gathering evidence for the same verdict, while this payload is a
+// category error the projection must correct explicitly. It is never a
+// completed conclusion and never satisfies investigation_conclusion.
+func (s *EvidenceState) addConclusionRejected(outcome agent.ToolOutcome, verdict contract.ConclusionVerdict, evidence string, seq int) bool {
+	value := "rejected verdict: " + string(verdict) +
+		"\nrequired: " + s.conclusionMode.VerdictList() +
+		"\nevidence: " + evidence
+	s.upsert(EvidenceItem{
+		ID:         "conclusion-invalid:" + digest(string(verdict)+"\x00"+evidence),
+		Status:     StatusKnown,
+		Retention:  RetentionDiagnostic,
+		Provenance: ProvenanceDiagnostic,
+		Summary:    bound("invalid conclusion verdict "+string(verdict)+"; required "+s.conclusionMode.VerdictList(), MaxEvidenceSummaryBytes),
+		Value:      bound(value, MaxEvidenceValueBytes),
+		Digest:     digest(value),
+		Complete:   false,
+		Conflict:   "invalid conclusion verdict: " + string(verdict) + " is not valid for this objective",
+		View:       "conclusion_rejected",
 		Source:     Source{Tool: "conclude", CallID: outcome.CallID},
 		Seq:        seq,
 	})
@@ -1495,7 +1574,9 @@ func (s *EvidenceState) investigationTargetObserved(target string, _ ExecutionSt
 // progress record is not evidence of the repository and cannot satisfy either
 // a conclusion or a named target.
 func isConclusionObservation(id string) bool {
-	return strings.HasPrefix(id, "conclusion:") || strings.HasPrefix(id, "conclusion-progress:")
+	return strings.HasPrefix(id, "conclusion:") ||
+		strings.HasPrefix(id, "conclusion-progress:") ||
+		strings.HasPrefix(id, "conclusion-invalid:")
 }
 
 // hasObservationAfter reports whether the state recorded a non-conclusion
@@ -2032,6 +2113,53 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Value:      text,
 			Digest:     digest(text),
 			Source:     Source{Tool: "bash", CallID: outcome.CallID},
+			Seq:        seq,
+		}) {
+			changed = true
+		}
+	}
+	if s.addShellSourceReads(outcome, command, text, seq) {
+		changed = true
+	}
+	return changed
+}
+
+// addShellSourceReads records the source files a shell command opened. A shell
+// content read is the same observation as the read tool's: the model saw the
+// bytes, so the requirement ledger must not keep asking for a source read it
+// already has. A command that concatenated several files is content evidence
+// but not a complete observation of any one of them.
+func (s *EvidenceState) addShellSourceReads(outcome agent.ToolOutcome, command, text string, seq int) bool {
+	if outcome.Result.IsError || outcome.Refused() || strings.TrimSpace(text) == "" {
+		return false
+	}
+	reads := agent.ShellSourceReads(command)
+	if len(reads) == 0 {
+		return false
+	}
+	changed := false
+	truncated := agent.ShellOutputTruncated(text)
+	for _, read := range reads {
+		path := cleanPath(read.Path)
+		if path == "" {
+			continue
+		}
+		summary := path + " — shell content read"
+		if len(reads) == 1 {
+			if first := firstContentLine(text); first != "" {
+				summary += " — " + bound(first, 120)
+			}
+		}
+		if s.upsert(EvidenceItem{
+			ID:         "file:" + path,
+			Status:     StatusKnown,
+			Retention:  RetentionExact,
+			Provenance: classifyPathProvenance(path),
+			Summary:    bound(summary, MaxEvidenceSummaryBytes),
+			Value:      text,
+			Digest:     digest(text),
+			Complete:   read.WholeFile && len(reads) == 1 && !truncated,
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
 			Seq:        seq,
 		}) {
 			changed = true

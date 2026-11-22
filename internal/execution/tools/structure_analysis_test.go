@@ -203,3 +203,58 @@ func TestStructureAnalysisRejectsOverviewActivationForGraphIntent(t *testing.T) 
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+// The analysis header and details must not claim completeness when the focus
+// report itself carries a disclosed static gap. A consumer reads `complete` to
+// decide whether an absence or count is authoritative.
+func TestStructureAnalysisDoesNotClaimCompletenessForPartialFocus(t *testing.T) {
+	tool := NewStructureTool(NewStructuralSource(structureFixture(t, map[string]string{
+		"api/api.go": "package api\n\nfunc Handle() { Missing() }\n",
+	})))
+	result := tool.Execute(testContext(), map[string]any{
+		"view": "analysis", "intent": "impact", "symbol": "Handle",
+	})
+	if result.IsError {
+		t.Fatalf("analysis failed: %s", result.Text)
+	}
+	details := structureDetails(t, result)
+	focus, ok := details["focus_report"].(map[string]any)
+	if !ok {
+		t.Fatalf("focus_report = %T", details["focus_report"])
+	}
+	evidence, ok := focus["evidence"].(map[string]any)
+	if !ok || evidence["state"] != "PARTIALLY_OBSERVED" {
+		t.Fatalf("focus evidence = %v, want PARTIALLY_OBSERVED", focus["evidence"])
+	}
+	if details["complete"] != false {
+		t.Fatalf("partial focus analysis claimed completeness: %v", details["complete"])
+	}
+}
+
+// An ambiguous focus must name distinct coordinates. Two identical qualified
+// names left a consumer unable to choose the declaration it meant.
+func TestStructureAnalysisNamesAmbiguousCandidateCoordinates(t *testing.T) {
+	tool := NewStructureTool(NewStructuralSource(structureFixture(t, map[string]string{
+		"alpha/alpha.go": "package alpha\n\nfunc Dup() {}\n",
+		"beta/beta.go":   "package beta\n\nfunc Dup() {}\n",
+	})))
+	result := tool.Execute(testContext(), map[string]any{
+		"view": "analysis", "intent": "impact", "symbol": "Dup",
+	})
+	if result.IsError {
+		t.Fatalf("analysis failed: %s", result.Text)
+	}
+	for _, path := range []string{"alpha/alpha.go", "beta/beta.go"} {
+		if !strings.Contains(result.Text, path) {
+			t.Fatalf("ambiguous candidates omitted %s:\n%s", path, result.Text)
+		}
+	}
+	details := structureDetails(t, result)
+	focus, ok := details["focus_report"].(map[string]any)
+	if !ok {
+		t.Fatalf("focus_report = %T", details["focus_report"])
+	}
+	if candidates, ok := focus["candidates"].([]string); !ok || len(candidates) != 2 {
+		t.Fatalf("candidates = %v, want two coordinates", focus["candidates"])
+	}
+}

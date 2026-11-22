@@ -775,7 +775,9 @@ func nextEvidence(key string) string {
 	case key == "implementation_observation":
 		return "read the implementation file that contains the requested change; documentation and manifests are not enough to choose an edit"
 	case key == "investigation_conclusion":
-		return "call the conclude tool with status FINAL, SAFE, BUG, or UNRESOLVED, the evidence that supports it, and any remaining uncertainty"
+		return "call the conclude tool with status FINAL, " +
+			contract.ConclusionDefect.VerdictList() +
+			", the evidence that supports it, and any remaining uncertainty"
 	case strings.HasPrefix(key, "investigation_target:"):
 		return "inspect " + strings.TrimPrefix(key, "investigation_target:") + " and determine the named uncertainty; do not repeat the same conclusion until this observation exists"
 	case key == "test_inventory":

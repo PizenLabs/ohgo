@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // Claim scope is the answer-side complement to evidence sufficiency.
@@ -28,6 +30,86 @@ type claimIssue struct {
 	Code string
 	// Detail explains the missing observation and the narrower claim.
 	Detail string
+	// Claim, Location, Category, Requirement, Reference, and Action are the
+	// bounded repair instruction. They are optional; an issue that does not
+	// set Category keeps the prose-only correction.
+	Claim       string
+	Location    string
+	Category    string
+	Requirement string
+	Reference   string
+	Action      string
+}
+
+// groundingIssue projects one claim issue into the shared assessment contract.
+// It is the same audit, not a second one.
+func (i claimIssue) groundingIssue() contract.GroundingIssue {
+	issue := contract.GroundingIssue{
+		Code:        i.Code,
+		Detail:      i.Detail,
+		Claim:       i.Claim,
+		Location:    i.Location,
+		Category:    i.Category,
+		Requirement: i.Requirement,
+		Reference:   i.Reference,
+		Action:      i.Action,
+	}
+	// A check that does not populate the repair fields still has a stable
+	// category. The mapping is finite and mirrors the code's ownership; an
+	// unknown code stays prose-only.
+	if issue.Category == "" {
+		switch i.Code {
+		case "unsupported_source_citation":
+			issue.Category = "citation"
+			issue.Requirement = "source content for the cited path"
+			issue.Action = "read the cited path or present it as an unverified pointer"
+		case "unsupported_code_entity":
+			issue.Category = "entity"
+			issue.Requirement = "the declaration of the named identifier"
+			issue.Action = "read the declaration or remove the identifier"
+		case "unsupported_line_count":
+			issue.Category = "line_count"
+			issue.Requirement = "an observed line count"
+			issue.Action = "read the file, run a line-count command, or remove the count"
+		case "unsupported_concept_absence":
+			issue.Category = "absence"
+			issue.Requirement = "source evidence covering the concept"
+			issue.Action = "inspect the relevant source or bound the claim"
+		case "unsupported_implementation_claim", "unsupported_completeness_claim":
+			issue.Category = "implementation"
+			issue.Requirement = "source content for the named component"
+			issue.Action = "read the component or narrow the status claim"
+		case "unsupported_dependency_claim":
+			issue.Category = "dependency"
+			issue.Requirement = "a source operation or runtime observation"
+			issue.Action = "verify the dependency use in source or weaken the wording"
+		case "unsupported_wiring_claim":
+			issue.Category = "wiring"
+			issue.Requirement = "the registration or call site"
+			issue.Action = "read the wiring site or describe it as declared only"
+		case "unsupported_runtime_state":
+			issue.Category = "runtime"
+			issue.Requirement = "a live runtime observation"
+			issue.Action = "observe the process or qualify the state claim"
+		case "unsupported_structural_claim":
+			issue.Category = "structural"
+			issue.Requirement = "a structural observation"
+			issue.Action = "query the structure or remove the relationship claim"
+		case "unsupported_deployment_claim":
+			issue.Category = "deployment"
+			issue.Requirement = "a deployment manifest"
+			issue.Action = "cite the manifest or weaken the deployment claim"
+		case "unsupported_test_inventory_claim":
+			issue.Category = "test_inventory"
+			issue.Requirement = "a complete current test inventory"
+			issue.Action = "query the test view or remove the count"
+		case "unverified_speculation":
+			issue.Category = "speculation"
+			issue.Requirement = "an observation supporting the inference"
+			issue.Action = "verify the inference or mark it explicitly unverified"
+		}
+	}
+	return issue
 }
 
 var (
@@ -136,9 +218,13 @@ var (
 		`(?i)\b(?:surfaced|found|detected|observed|seen|encountered|reported)\b[^.\n]{0,80}\b(?:in|during|from|by)\s+(?:the\s+|this\s+)?(?:probes?|pass|scan|search|listing|observations?|run|investigation)\b`)
 
 	// boundedRunPattern reports that a check did not run. That is a fact
-	// about the run, not a repository absence.
+	// about the run, not a repository absence. The negator distributes over a
+	// coordinated subject list ("no tests, server, or binary were executed");
+	// a list item must start after a comma so "no tests exist, server was
+	// executed" keeps its repository conclusion.
 	boundedRunPattern = regexp.MustCompile(
-		`(?i)\bno\s+(?:tests?|checks?|commands?)\s+(?:were|was|have\s+been|has\s+been)?\s*(?:run|executed|performed)\b`)
+		`(?i)\bno\s+(?:test\s+files?|tests?|checks?|commands?)(?:\s*,\s*(?:or|and|nor)?\s*[a-z0-9][a-z0-9_.+/-]*(?:\s+[a-z0-9][a-z0-9_.+/-]*){0,2}){0,4}` +
+			`\s+(?:were|was|have\s+been|has\s+been)?\s*(?:run|ran|executed|performed|started|launched)\b`)
 
 	// boundedScopePattern reports a claim limited to what this run actually
 	// inspected: "no tests detected in inspected scope", "no API routes in the
@@ -160,7 +246,7 @@ var (
 	// globalNegativeScopePattern prevents a bounded-search phrase from
 	// excusing the same sentence's repository-wide conclusion.
 	globalNegativeScopePattern = regexp.MustCompile(
-		`(?i)\b(?:in|across|throughout)\s+(?:the\s+)?(?:repository|repo|project|codebase|workspace|directory|folder)\b|\banywhere\b|\bat\s+all\b`)
+		`(?i)\b(?:in|across|throughout)\s+(?:the\s+)?(?:repository|repo|project|codebase|workspace|directory|folder)\b|\banywhere\b`)
 
 	// claimedPortPattern extracts a concrete port literal from a behavior
 	// sentence. It requires a colon or the word "port" so a version, a count,
@@ -268,6 +354,11 @@ func lineCountClaimIssue(sentence string, turns []Turn) *claimIssue {
 		if claimed <= 0 {
 			continue
 		}
+		// "first ~90 lines" describes the excerpt the answer quotes, not the
+		// file's total length. Audit a total only when the sentence claims one.
+		if lineCountIsReadWindow(sentence, match[0]) {
+			continue
+		}
 		path := nearestClaimPath(sentence, match[0], match[1])
 		if path == "" {
 			if commandLineCountObserved(turns, claimed) {
@@ -278,15 +369,34 @@ func lineCountClaimIssue(sentence string, turns []Turn) *claimIssue {
 				Detail: fmt.Sprintf(
 					"the answer gives a line count of about %d but the run never measured one; read the file or run a line-count command, or remove the count",
 					claimed),
+				Claim:       fmt.Sprintf("%d lines", claimed),
+				Category:    "line_count",
+				Requirement: "an observed line count",
+				Action:      "read the file, run a line-count command, or remove the count",
 			}
 		}
 		total, observed := observedReadLineCount(turns, path)
 		if !observed {
+			total, observed = shellReadLineCount(turns, path)
+		}
+		if !observed {
+			detail := fmt.Sprintf(
+				"the answer gives %s about %d lines, but the run never read it; a listing reports bytes, not lines. Read it or remove the count",
+				path, claimed)
+			if shellReadObserved(turns, path) {
+				detail = fmt.Sprintf(
+					"the answer gives %s about %d lines, but the shell read covered only a page, not the file total; read the whole file or cite the page",
+					path, claimed)
+			}
 			return &claimIssue{
-				Code: "unsupported_line_count",
-				Detail: fmt.Sprintf(
-					"the answer gives %s about %d lines, but the run never read it; a listing reports bytes, not lines. Read it or remove the count",
-					path, claimed),
+				Code:        "unsupported_line_count",
+				Detail:      detail,
+				Claim:       fmt.Sprintf("%s: %d lines", path, claimed),
+				Location:    claimLocation(sentence, path),
+				Category:    "line_count",
+				Requirement: "an observed line count",
+				Reference:   path,
+				Action:      "read the whole file, run a line-count command, or remove the count",
 			}
 		}
 		if !lineCountMatches(total, claimed) {
@@ -295,6 +405,12 @@ func lineCountClaimIssue(sentence string, turns []Turn) *claimIssue {
 				Detail: fmt.Sprintf(
 					"the answer says %s has about %d lines, but the observed read reported %d; correct the count or cite the measurement",
 					path, claimed, total),
+				Claim:       fmt.Sprintf("%s: %d lines", path, claimed),
+				Location:    claimLocation(sentence, path),
+				Category:    "line_count",
+				Requirement: "an observed line count",
+				Reference:   path,
+				Action:      fmt.Sprintf("correct the count to the observed %d lines or cite the measurement", total),
 			}
 		}
 	}
@@ -898,6 +1014,8 @@ func claimIsBounded(sentence string) bool {
 		"in the files inspected",
 		"in the observed source", "within the inspected",
 		"based on the inspected", "so far", "inferred",
+		"pending a read", "pending an inspection", "pending a check",
+		"needs to be read", "need to be read", "stays open", "remains open",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -997,10 +1115,13 @@ func boundedNegativeReport(sentence string) bool {
 	for _, marker := range []string{
 		"not evaluated", "not inspected", "not checked", "not probed",
 		"not searched", "in the inspected scope", "in the inspected source",
-		"in the inspected files", "limited to the inspected", "limited to the tested",
+		"in the inspected files", "for the inspected scope",
+		"for the inspected source", "for the inspected files",
+		"limited to the inspected", "limited to the tested",
 		"limited to the searched", "worth verifying", "would need to check",
 		"would need to verify", "would need to inspect", "would need to search",
 		"in the probes", "in this pass", "in this scan",
+		"no files matched", "no matches", "returned 0", "matched only",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -1019,11 +1140,23 @@ func nearestClaimPath(sentence string, start, end int) string {
 	const maxDistance = 96
 	best := ""
 	bestDistance := 1 << 30
+	// A count inside a parenthetical annotation belongs to the path that
+	// introduces the parenthesis: "`order_factory.go` (read, 97 lines) and
+	// `order.go` (read, 413 lines)". Distance alone binds 97 to order.go,
+	// because the next path starts before the following clause. The path
+	// immediately before the "(" is the annotation's subject.
+	annotated := ""
+	annotatedDistance := 1 << 30
 	for _, path := range claimPathPattern.FindAllStringIndex(sentence, -1) {
 		distance := 0
 		switch {
 		case path[1] <= start:
 			distance = start - path[1]
+			gap := sentence[path[1]:start]
+			if strings.Contains(gap, "(") && !strings.ContainsAny(gap, ".;") && distance < annotatedDistance {
+				annotatedDistance = distance
+				annotated = sentence[path[0]:path[1]]
+			}
 		case path[0] >= end:
 			distance = path[0] - end
 		default:
@@ -1033,6 +1166,10 @@ func nearestClaimPath(sentence string, start, end int) string {
 			bestDistance = distance
 			best = sentence[path[0]:path[1]]
 		}
+	}
+	if annotated != "" {
+		best = annotated
+		bestDistance = annotatedDistance
 	}
 	if bestDistance > maxDistance {
 		return ""
@@ -1104,6 +1241,23 @@ func nearestReferencePath(sentence string, start, end int) string {
 	return strings.Trim(best, "`'\" ")
 }
 
+// lineCountIsReadWindow reports whether the count describes an excerpt. The
+// phrase "first 90 lines" is a read range; the command that produced it may
+// have read exactly 90 lines without establishing the file's total.
+func lineCountIsReadWindow(sentence string, start int) bool {
+	prefix := strings.ToLower(strings.TrimSpace(sentence[:start]))
+	if len(prefix) > 40 {
+		prefix = prefix[len(prefix)-40:]
+	}
+	prefix = strings.TrimRight(prefix, "~≈ `")
+	for _, marker := range []string{"first", "opening", "initial", "top"} {
+		if strings.HasSuffix(prefix, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // observedReadLineCount returns the total line count reported by a successful
 // read of path.
 func observedReadLineCount(turns []Turn, path string) (int, bool) {
@@ -1121,6 +1275,65 @@ func observedReadLineCount(turns []Turn, path string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// shellReadObserved reports any shell content read of path, whole or paged.
+// It distinguishes "opened a page" from "never opened the file" in a review.
+func shellReadObserved(turns []Turn, path string) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.ToolName != "bash" || outcome.Result.IsError || outcome.Refused() {
+				continue
+			}
+			for _, read := range ShellSourceReads(proposalArgString(outcome.Args, "command")) {
+				if claimPathsMatch(read.Path, path) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// shellReadLineCount returns the line count of a whole-file shell read. A
+// paged read (sed/head/tail) is deliberately excluded: its output length is
+// the page, not the file.
+func shellReadLineCount(turns []Turn, path string) (int, bool) {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.ToolName != "bash" || outcome.Result.IsError || outcome.Refused() {
+				continue
+			}
+			command := proposalArgString(outcome.Args, "command")
+			for _, read := range ShellSourceReads(command) {
+				if !read.WholeFile || !claimPathsMatch(read.Path, path) {
+					continue
+				}
+				if ShellOutputTruncated(outcome.Result.Text) {
+					continue
+				}
+				if lines := countTextLines(outcome.Result.Text); lines > 0 {
+					return lines, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// ShellOutputTruncated reports the bash tool's explicit capture cap. A capped
+// capture is still content, but it is not a whole-file observation or a total
+// line measurement.
+func ShellOutputTruncated(text string) bool {
+	return strings.Contains(text, "[output truncated at ")
+}
+
+func countTextLines(text string) int {
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return 0
+	}
+	return strings.Count(text, "\n") + 1
 }
 
 // commandLineCountObserved reports a line count measured by a command.

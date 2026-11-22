@@ -8,24 +8,19 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
-// ConclusionVerdict is the terminal judgement of a bounded investigation.
-type ConclusionVerdict string
-
-// Investigation verdicts.
-const (
-	ConclusionSafe       ConclusionVerdict = "SAFE"
-	ConclusionBug        ConclusionVerdict = "BUG"
-	ConclusionUnresolved ConclusionVerdict = "UNRESOLVED"
-)
-
-// ConcludeTool records the investigation conclusion after the required
-// evidence has been established.
+// ConcludeTool records the terminal outcome of a bounded investigation after
+// the required evidence has been established.
 //
 // It is a control observation, not proof: the evidence field states what the
 // runtime observed, the uncertainty field preserves what remains open, and
 // completion still belongs to the evidence evaluator. The tool exists so a
 // bounded investigation has an explicit terminal action instead of leaving the
 // model to decide whether "enough" means another repository survey.
+//
+// The verdict vocabulary is objective-dependent. A general project analysis
+// records ANSWERED, PARTIAL, or UNRESOLVED; only a failure investigation may
+// record SAFE or BUG. Context.ConclusionMode is the authority for that split,
+// so the model cannot turn "what is this project?" into a safety verdict.
 type ConcludeTool struct {
 	Base
 }
@@ -35,13 +30,14 @@ func NewConcludeTool() *ConcludeTool {
 	tool := &ConcludeTool{}
 	tool.Base = NewBase("conclude",
 		"Record a bounded investigation outcome. Use status FINAL only after the "+
-			"production entrypoint, the reference/validation flow, persistence "+
-			"ordering, and bypass paths are sufficiently established; use "+
-			"IN_PROGRESS for a progress observation while evidence is still being "+
-			"gathered. A progress observation never satisfies the conclusion and "+
-			"never starts the answer boundary. State the verdict, the evidence that "+
-			"supports it, and any remaining uncertainty. This records an observation; "+
-			"it does not prove the claim and it does not authorize a change.",
+			"evidence the runtime asked for is established; use IN_PROGRESS for a "+
+			"progress observation while evidence is still being gathered. A progress "+
+			"observation never satisfies the conclusion and never starts the answer "+
+			"boundary. A general answer uses ANSWERED, PARTIAL, or UNRESOLVED; SAFE "+
+			"and BUG are reserved for a request that asks whether a failure is "+
+			"production-reachable. State the verdict, the evidence that supports it, "+
+			"and any remaining uncertainty. This records an observation; it does not "+
+			"prove the claim and it does not authorize a change.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -53,9 +49,12 @@ func NewConcludeTool() *ConcludeTool {
 					"description": "FINAL records a terminal verdict. IN_PROGRESS records a progress observation only and never satisfies the investigation conclusion or starts the answer boundary.",
 				},
 				"verdict": map[string]any{
-					"type":        "string",
-					"enum":        []string{string(ConclusionSafe), string(ConclusionBug), string(ConclusionUnresolved)},
-					"description": "SAFE: the production flow prevents the failure. BUG: a production-reachable path creates it. UNRESOLVED: available evidence cannot establish either.",
+					"type": "string",
+					"enum": []string{
+						string(contract.VerdictAnswered), string(contract.VerdictPartial),
+						string(contract.VerdictUnresolved), string(contract.VerdictSafe), string(contract.VerdictBug),
+					},
+					"description": "ANSWERED: the request was answered by observed evidence. PARTIAL: a usable answer exists and names what remains unverified. SAFE: the production flow prevents the failure. BUG: a production-reachable path creates it. UNRESOLVED: available evidence cannot establish the answer or the defect verdict.",
 				},
 				"evidence": map[string]any{
 					"type":        "string",
@@ -85,12 +84,19 @@ func (t *ConcludeTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	if err != nil {
 		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing recorded.", err)
 	}
-	verdict := ConclusionVerdict(strings.ToUpper(strings.TrimSpace(verdictArg)))
-	switch verdict {
-	case ConclusionSafe, ConclusionBug, ConclusionUnresolved:
-	default:
+	verdict := contract.ConclusionVerdict(strings.ToUpper(strings.TrimSpace(verdictArg)))
+	mode := ctx.ConclusionMode
+	if !verdict.Known() {
 		return requestError(agent.ToolFailureInvalidArgument,
-			"argument \"verdict\" must be SAFE, BUG, or UNRESOLVED; nothing recorded.")
+			"argument \"verdict\" must be %s; nothing recorded.", mode.VerdictList())
+	}
+	if !mode.Accepts(verdict) {
+		// A general answer is not a safety verdict. The request's vocabulary is
+		// installed by the control plane, not chosen by the model, so the
+		// correction cannot be argued away in prose.
+		return requestError(agent.ToolFailureInvalidArgument,
+			"argument \"verdict\" must be %s for this request; %s is only valid for a defect investigation; nothing recorded.",
+			mode.VerdictList(), verdict)
 	}
 	evidence, err := strArg(args, "evidence", "")
 	if err != nil {
@@ -125,7 +131,11 @@ func (t *ConcludeTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	if status == "FINAL" && contract.IsProvisionalConclusion(evidence, uncertainty) {
 		status = "IN_PROGRESS"
 	}
-	text := fmt.Sprintf("conclusion: %s\n%s", verdict, evidence)
+	label := "conclusion"
+	if mode == contract.ConclusionAnswer {
+		label = "answer"
+	}
+	text := fmt.Sprintf("%s: %s\n%s", label, verdict, evidence)
 	if status == "IN_PROGRESS" {
 		text = "progress: investigation remains open; this observation alone does not close the action surface or satisfy the conclusion"
 	}
@@ -134,6 +144,7 @@ func (t *ConcludeTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 		Details: map[string]any{
 			"verdict":     string(verdict),
 			"status":      status,
+			"mode":        string(mode),
 			"evidence":    evidence,
 			"uncertainty": uncertainty,
 		},

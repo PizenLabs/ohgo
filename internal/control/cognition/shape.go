@@ -1466,13 +1466,16 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		if shape.Investigation && !shape.Phase && diagnosticProbeRequired(shape.Objective) {
 			add("execution_result", "the investigation must observe the failing behavior, not only read about it")
 		}
-		if shape.Investigation && !shape.Phase && (conclusionRequired(shape.Objective) || failureInvestigation(shape.Objective)) {
-			add("investigation_conclusion", "the investigation must record SAFE, BUG, or UNRESOLVED with the evidence that supports it")
-			if shape.RepositoryScope && !shape.BroadRepositoryAnalysis {
-				// A repository-wide verdict needs at least two content observations
-				// before the conclusion surface takes over; one file cannot establish
-				// an entrypoint and a bypass answer.
-				add("repository_survey", "a repository-wide verdict needs more than one content observation before concluding")
+		if shape.Investigation && !shape.Phase {
+			mode := contract.ConclusionModeFor(shape.Kind, shape.Objective)
+			if mode == contract.ConclusionDefect {
+				add("investigation_conclusion", "the investigation must "+mode.Instruction())
+				if shape.RepositoryScope && !shape.BroadRepositoryAnalysis {
+					// A repository-wide verdict needs at least two content observations
+					// before the conclusion surface takes over; one file cannot establish
+					// an entrypoint and a bypass answer.
+					add("repository_survey", "a repository-wide verdict needs more than one content observation before concluding")
+				}
 			}
 		}
 		if shape.Investigation {
@@ -1527,40 +1530,6 @@ func diagnosticProbeRequired(objective string) bool {
 	return false
 }
 
-// failureInvestigation reports an investigation whose subject is a failure
-// mode. Those prompts need a verdict even when they do not spell out the word
-// "conclude": "the parser doesn't validate empty input" is a claim that must be
-// closed as SAFE, BUG, or UNRESOLVED, not left as another survey.
-func failureInvestigation(objective string) bool {
-	normalized := " " + normalizeWords(objective) + " "
-	for _, phrase := range []string{
-		" failure ", " failures ", " failing ", " bug ", " bugs ", " crash ",
-		" panics ", " panic ", " deadlock ", " race condition ", " reproduce ",
-	} {
-		if strings.Contains(normalized, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-// conclusionRequired reports an investigation prompt that explicitly asks for
-// a terminal verdict. A plain explanation does not need a verdict artifact; a
-// production-safety benchmark that says "conclude SAFE, BUG, or UNRESOLVED"
-// does, because otherwise another repository survey can always look useful.
-func conclusionRequired(objective string) bool {
-	normalized := " " + normalizeWords(objective) + " "
-	for _, phrase := range []string{
-		" conclude ", " conclusion ", " verdict ", " safe or bug ",
-		" safe bug ", " safe or unresolved ", " bug or unresolved ",
-	} {
-		if strings.Contains(normalized, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
 // completionConditions derives the deterministic completion conditions.
 func completionConditions(shape TaskShape, intent contract.IntentContract) []CompletionCondition {
 	var out []CompletionCondition
@@ -1599,21 +1568,7 @@ func completionConditions(shape TaskShape, intent contract.IntentContract) []Com
 
 // normalizeWords lowercases text and collapses every non-alphanumeric run.
 func normalizeWords(text string) string {
-	var b strings.Builder
-	b.Grow(len(text))
-	space := false
-	for _, r := range strings.ToLower(text) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			b.WriteRune(r)
-			space = false
-			continue
-		}
-		if !space {
-			b.WriteByte(' ')
-			space = true
-		}
-	}
-	return strings.TrimSpace(b.String())
+	return contract.NormalizeWords(text)
 }
 
 // cleanPath normalizes a repository-relative path.

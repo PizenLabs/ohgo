@@ -61,6 +61,9 @@ const (
 	KindImportEdge EvidenceKind = "import_edge"
 	// KindInventory is a filesystem fact observed during the scan.
 	KindInventory EvidenceKind = "inventory"
+	// KindDocumentClaim is a path or component claim read from documentation.
+	// It proves the document says it, never that the implementation exists.
+	KindDocumentClaim EvidenceKind = "document_claim"
 	// KindPathConvention is a classification implied by a path or filename.
 	KindPathConvention EvidenceKind = "path_convention"
 	// KindUnavailable means no observation was possible.
@@ -77,6 +80,7 @@ const (
 	confidenceManifestFact = 0.90
 	confidenceImportEdge   = 0.85
 	confidenceInventory    = 0.80
+	confidenceDocument     = 0.90
 	confidencePathRule     = 0.45
 	confidenceAggregateCap = 0.90
 )
@@ -102,6 +106,13 @@ type Evidence struct {
 	Confidence float64       `json:"confidence"`
 	Reason     string        `json:"reason,omitempty"`
 	Refs       []EvidenceRef `json:"refs,omitempty"`
+}
+
+// Complete reports that the evidence supports every claim the caller could
+// make. PARTIALLY_OBSERVED and weaker states are explicit gaps, not a rounding
+// error: a consumer must not present a count or an absence as authoritative.
+func (e Evidence) Complete() bool {
+	return e.State == StateObserved || e.State == StateVerified
 }
 
 // Band labels a confidence numerically for display, not for reasoning.
@@ -142,6 +153,8 @@ func ObservedEvidence(kind EvidenceKind, refs ...EvidenceRef) Evidence {
 		base = confidenceImportEdge
 	case KindInventory:
 		base = confidenceInventory
+	case KindDocumentClaim:
+		base = confidenceDocument
 	default:
 		return UnknownEvidence("no confidence table entry for evidence kind " + string(kind))
 	}

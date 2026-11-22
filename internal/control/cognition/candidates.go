@@ -63,6 +63,29 @@ func informationalEvidenceBoundary(shape TaskShape, suff Sufficiency) bool {
 	return shape.RepositoryScope || len(shape.RequiredKnowledge) > 0
 }
 
+// correctionCandidates reopens the surface a failed answer review needs.
+//
+// It is Candidates with the answer-boundary closure removed, nothing else:
+// mutation authority, scope, language, external requirement, and budget still
+// exclude what they excluded. The correction turn is evidence gathering for an
+// answer the runtime already asked for, so a tool the task shape permits is
+// available again; a tool the shape forbids stays withheld.
+func correctionCandidates(shape TaskShape, execution ExecutionState, tools []agent.Tool, facts RepositoryFacts, suff Sufficiency) ([]agent.Tool, []agent.CandidateExclusion) {
+	open := suff
+	open.Stage = StageExplore
+	open.Kind = BlockNone
+	offered := make([]agent.Tool, 0, len(tools))
+	var excluded []agent.CandidateExclusion
+	for _, tool := range tools {
+		if reason, closed := candidateExclusion(shape, execution, tool, facts, open); closed {
+			excluded = append(excluded, agent.CandidateExclusion{Tool: tool.Name(), Reason: reason})
+			continue
+		}
+		offered = append(offered, tool)
+	}
+	return offered, excluded
+}
+
 // Candidates narrows a tool surface to what the task shape can use.
 //
 // The policy is deliberately conservative. It removes a tool only when its

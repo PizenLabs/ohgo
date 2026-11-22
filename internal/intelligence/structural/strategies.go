@@ -512,8 +512,51 @@ func runSymbolNeighborhood(s *analysisState) error {
 	report.Truncated = result.Truncated
 	report.Reason = result.Reason
 	report.Unknown = result.Unknown
+	const maxFocusCalls = 12
+	for _, edge := range result.Callees {
+		if len(report.Calls) >= maxFocusCalls {
+			report.Truncated = true
+			if report.Reason == "" {
+				report.Reason = "focus_call_limit"
+			}
+			break
+		}
+		report.Calls = append(report.Calls, FocusCall{
+			Direction: "callee", Symbol: focusCallSymbol(edge.Callee),
+			Path: edge.CallPath, Line: edge.CallLine, Test: edge.Test,
+		})
+	}
+	for _, edge := range result.Callers {
+		if len(report.Calls) >= maxFocusCalls {
+			report.Truncated = true
+			if report.Reason == "" {
+				report.Reason = "focus_call_limit"
+			}
+			break
+		}
+		report.Calls = append(report.Calls, FocusCall{
+			Direction: "caller", Symbol: focusCallSymbol(edge.Caller),
+			Path: edge.CallPath, Line: edge.CallLine, Test: edge.Test,
+		})
+	}
+	for _, dir := range result.Importers {
+		if len(report.ImporterPaths) >= 8 {
+			break
+		}
+		report.ImporterPaths = append(report.ImporterPaths, dir)
+	}
 	for _, candidate := range result.Candidates {
-		report.Candidates = append(report.Candidates, candidate.QualifiedName)
+		label := candidate.QualifiedName
+		if label == "" {
+			label = candidate.Symbol
+		}
+		if candidate.Path != "" {
+			// An ambiguous selector is only actionable when the candidates
+			// name distinct coordinates. Two identical qualified names gave a
+			// consumer no way to choose.
+			label = fmt.Sprintf("%s (%s:%d)", label, candidate.Path, candidate.Line)
+		}
+		report.Candidates = append(report.Candidates, label)
 	}
 	switch {
 	case result.Ambiguous:
@@ -547,14 +590,147 @@ func runSymbolNeighborhood(s *analysisState) error {
 	return nil
 }
 
-// representativeFile returns the first production file in dir, ordered by path.
-// It is a citation coordinate, not a sample of the file's content.
+// focusCallSymbol renders a call node as package-qualified when the adapter
+// did not already include the package.
+func focusCallSymbol(node ast.CallNode) string {
+	name := node.Symbol
+	if name == "" {
+		return node.Package
+	}
+	if node.Package == "" || strings.HasPrefix(name, node.Package+".") {
+		return name
+	}
+	return node.Package + "." + name
+}
+
+// runModuleSurvey checks whether every module is represented by a sample and
+// selects a coordinate for modules the degree-ranked sampler did not cover.
+// It never invents a module: the hierarchy is the only source of containers.
+func runModuleSurvey(s *analysisState) error {
+	if s.snapshot == nil {
+		return errors.New("hierarchy was not built")
+	}
+	level := LevelModule
+	nodes := sourceSurveyNodes(s.snapshot.AtLevel(level))
+	if len(nodes) <= 1 {
+		// A repository with one module would report a single coverage unit.
+		// Expand to the module's direct package children so bounded contexts
+		// inside that module are visible without listing every nested package.
+		base := "."
+		if len(nodes) == 1 {
+			base = nodes[0].Path
+		}
+		var direct []Node
+		for _, node := range sourceSurveyNodes(s.snapshot.AtLevel(LevelPackage)) {
+			if directSurveyChild(base, node.Path) {
+				direct = append(direct, node)
+			}
+		}
+		if len(direct) > len(nodes) {
+			level = LevelPackage
+			nodes = direct
+		}
+	}
+	if len(nodes) == 0 {
+		s.survey = &SurveyReport{
+			Level: level.String(), Evidence: UnknownEvidence("no module or workspace container was materialised"),
+		}
+		return nil
+	}
+	const maxModules = 200
+	report := &SurveyReport{Level: level.String()}
+	inventoryBounded := s.inventory.FilesTruncated
+	if inventoryBounded {
+		report.Truncated = true
+		report.Reason = "file inventory was truncated; module coverage may be incomplete"
+	}
+	refs := make([]EvidenceRef, 0, 4)
+	explored := 0
+	for index, node := range nodes {
+		if index >= maxModules {
+			report.Truncated = true
+			report.Reason = fmt.Sprintf("module list bounded to %d containers", maxModules)
+			break
+		}
+		if node.Files == 0 || (node.Classes[ClassProduction] == 0 && node.Classes[ClassTest] == 0) {
+			// Documentation, configuration, and tooling containers are not
+			// source modules; counting them as unexplored would overstate the
+			// survey gap.
+			continue
+		}
+		entry := SurveyModule{Path: node.Path, Files: node.Files}
+		for _, sample := range s.samples {
+			if node.Path == "." || sample.Path == node.Path ||
+				strings.HasPrefix(sample.Path, strings.TrimSuffix(node.Path, "/")+"/") {
+				entry.Sample = sample.Path
+				entry.Explored = true
+				break
+			}
+		}
+		if !entry.Explored {
+			if candidate := s.representativeFile(node.Path); candidate != "" {
+				entry.Sample = candidate
+				entry.Explored = true
+				if len(s.samples) < 24 {
+					s.samples = append(s.samples, Sample{
+						Path: candidate, NodeID: node.ID,
+						Reason: "module not covered by degree-ranked sampling",
+						Evidence: ObservedEvidence(KindInventory, EvidenceRef{
+							Kind: KindInventory, Path: candidate, Rule: "module survey",
+						}),
+					})
+				} else {
+					report.Truncated = true
+					report.Reason = "sample budget reached before every module had a coordinate"
+				}
+			}
+		}
+		if entry.Explored {
+			explored++
+		} else {
+			report.Unexplored = append(report.Unexplored, node.Path)
+		}
+		report.Modules = append(report.Modules, entry)
+		if len(refs) < 4 {
+			refs = append(refs, EvidenceRef{Kind: KindInventory, Path: node.Path, Rule: "module hierarchy"})
+		}
+	}
+	report.Explored = explored
+	if len(refs) == 0 {
+		report.Evidence = UnknownEvidence("no module coordinate was observed")
+	} else {
+		report.Evidence = ObservedEvidence(KindInventory, refs...)
+	}
+	if len(report.Unexplored) > 0 {
+		report.Evidence.State = StatePartiallyObserved
+		report.Evidence.Reason = fmt.Sprintf("%d module(s) have no sampled source coordinate", len(report.Unexplored))
+	}
+	if stale := s.inventory.Snapshot.StaleFiles; stale > 0 {
+		report.Evidence.State = StatePartiallyObserved
+		if report.Evidence.Reason != "" {
+			report.Evidence.Reason += "; "
+		}
+		report.Evidence.Reason += fmt.Sprintf("%d source files are stale and were not sampled", stale)
+	}
+	if report.Truncated && report.Evidence.State == StateObserved {
+		report.Evidence.State = StatePartiallyObserved
+		if report.Evidence.Reason == "" {
+			report.Evidence.Reason = report.Reason
+		}
+	}
+	s.survey = report
+	return nil
+}
+
+// representativeFile returns a production source coordinate inside dir. It
+// prefers a direct child and falls back to the deepest subtree so a module
+// whose source lives in nested packages is still representable.
 func (s *analysisState) representativeFile(dir string) string {
 	for _, file := range s.inventory.Files {
 		if path.Dir(file.Path) != dir {
 			continue
 		}
-		if file.Test {
+		if file.Test || !sampleableState(file.State) || file.Language == "" {
 			continue
 		}
 		class, _ := classifyPath(file.Path, false)
@@ -563,7 +739,71 @@ func (s *analysisState) representativeFile(dir string) string {
 		}
 		return file.Path
 	}
-	return ""
+	prefix := strings.TrimSuffix(dir, "/")
+	if prefix == "." {
+		prefix = ""
+	} else {
+		prefix += "/"
+	}
+	var best string
+	for _, file := range s.inventory.Files {
+		if prefix != "" && !strings.HasPrefix(file.Path, prefix) {
+			continue
+		}
+		if file.Test || !sampleableState(file.State) {
+			continue
+		}
+		class, _ := classifyPath(file.Path, false)
+		if class != ClassProduction {
+			continue
+		}
+		if file.Language == "" {
+			continue
+		}
+		if best == "" || file.Path < best {
+			best = file.Path
+		}
+	}
+	return best
+}
+
+// sourceSurveyNodes keeps containers that hold at least one recognised source
+// language. Documentation, deployment YAML, and SQL-only directories are not
+// source modules; counting them as unexplored would overstate the survey gap.
+func sourceSurveyNodes(nodes []Node) []Node {
+	out := make([]Node, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Files == 0 || len(node.Languages) == 0 {
+			continue
+		}
+		out = append(out, node)
+	}
+	return out
+}
+
+// directSurveyChild reports whether path is base itself or one directory below
+// it. It is the bounded-context resolution for a single-module repository.
+func directSurveyChild(base, path string) bool {
+	if base == "" || base == "." {
+		return path == "." || !strings.Contains(path, "/")
+	}
+	if path == base {
+		return true
+	}
+	rest := strings.TrimPrefix(path, base+"/")
+	return rest != path && rest != "" && !strings.Contains(rest, "/")
+}
+
+// sampleableState rejects a coordinate whose content is unknown or historical.
+// Pending source is sampleable because a project orientation deliberately does
+// not parse it; the sample is still a file the model can read.
+func sampleableState(state ast.ParseState) bool {
+	switch state {
+	case ast.ParseStateStale, ast.ParseStateFailed, ast.ParseStateUnsupported:
+		return false
+	default:
+		return true
+	}
 }
 
 // dominantClass names the class a node's membership implies.

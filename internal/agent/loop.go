@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -49,6 +50,12 @@ var ErrCapabilityUnavailable = errors.New("agent: capability unavailable")
 // small enough that a runaway loop is visible rather than open-ended.
 const DefaultMaxTurns = 100
 
+// DefaultCorrectionToolCalls bounds the evidence a single answer correction may
+// gather. Three calls is enough to read a cited file, inspect a declaration, or
+// run one check; a larger number turns the bounded repair back into the
+// investigation that already failed to support the claim.
+const DefaultCorrectionToolCalls = 3
+
 // Turn is one request/response cycle.
 type Turn struct {
 	// Assistant is the message the model produced.
@@ -58,6 +65,16 @@ type Turn struct {
 	Results []ToolOutcome
 	// Err is set when the turn failed before any tool call was dispatched.
 	Err error
+	// SuppressText marks assistant prose that accompanied a tool call. It was
+	// narration or an answer the model abandoned to keep investigating, not
+	// the final conclusion: the call and its result remain, the prose does
+	// not. This is the "text then more tools" publication boundary.
+	SuppressText bool
+	// Suppressed marks a rejected answer candidate. The loop kept it in the
+	// provider context so the correction request can see what it must repair,
+	// but it is not a publication: hosts must hide it from the transcript,
+	// persistence, and plain output. Only the accepted final answer is shown.
+	Suppressed bool
 }
 
 // ToolOutcome records what happened to one tool call.
@@ -160,12 +177,38 @@ type Config struct {
 	// qualify the claim. Empty disables correction even when AnswerReview is
 	// installed, so a host cannot spend a turn on an absent instruction.
 	CompletionReviewRequest string
+	// RepairRequest is the claim-level correction directive. It may contain
+	// {{count}}, {{budget}}, {{repairs}}, and {{reason}}. When non-empty and
+	// AnswerRepairs returns a repairable claim, it replaces the prose
+	// CompletionReviewRequest. Empty falls back to the prose directive.
+	RepairRequest string
+	// AnswerRepairs returns the claim-level repairs for a rejected answer. It
+	// must be a projection of the same audit AnswerReview runs; the loop only
+	// renders it into the correction request. nil keeps the prose correction.
+	AnswerRepairs func(turns []Turn, answer string) []contract.GroundingIssue
 	// AnswerReview is the optional answer-level completion gate. It receives
 	// the run so far and the candidate answer and returns a non-empty reason
 	// when the answer cannot be published as complete. It can only request a
 	// correction; authority, completion, and publication remain the runtime's.
 	// A nil hook accepts every answer.
 	AnswerReview func(turns []Turn, answer string) string
+	// EvidenceGap returns the control plane's current evidence-frontier gap.
+	// It is read when an answer is reviewed and again when it is finalized.
+	// A non-empty value means the model answered before the task's required
+	// evidence existed, so the answer is a premature candidate, not a result.
+	EvidenceGap func() string
+	// FinalizeAnswer is the last gate before a candidate answer is published.
+	// It receives the accepted answer and the current evidence gap, and may
+	// remove or qualify claims the evidence cannot support. The returned text
+	// is the only text the host may commit for this run. It cannot authorize
+	// an action or complete a task; completion still evaluates the finalized
+	// text and the durable evidence.
+	FinalizeAnswer func(turns []Turn, answer, evidenceGap string) FinalizedAnswer
+	// CorrectionToolCalls bounds tool execution during the one correction
+	// window. Zero uses DefaultCorrectionToolCalls. The bound is per correction,
+	// not per run: the initial investigation already has the tree budget, and a
+	// repair must not re-run the whole investigation.
+	CorrectionToolCalls int
 	// Tools are offered to the model.
 	Tools []Tool
 	// MaxTokens caps each completion.
@@ -236,6 +279,11 @@ type Config struct {
 	// security boundary is consulted. It narrows the action space; it never
 	// grants authority.
 	Grounding *contract.IntentGrounding
+	// ConclusionMode is the terminal-outcome vocabulary of the active
+	// informational contract. It is handed to control tools through Context so
+	// a general answer cannot be recorded as a defect verdict. Empty means the
+	// host did not install a contract.
+	ConclusionMode contract.ConclusionMode
 	// Compaction configures context reduction. The zero value disables it.
 	Compaction Compaction
 	// Summarize replaces the compacted prefix during compaction. Required when
@@ -402,6 +450,12 @@ type Loop struct {
 	// set MaxTurns, while a host with a real tree budget receives a resource
 	// stop the completion layer can inspect.
 	explicitBudget bool
+	// correctionActive marks the one answer-correction window. Tool calls
+	// dispatched while it is set consume correctionCalls instead of reopening
+	// the whole investigation. Tool calls dispatch concurrently, so both are
+	// atomic.
+	correctionActive atomic.Bool
+	correctionCalls  atomic.Int64
 	// admissionMu guards admissionErr. Tool calls dispatch concurrently, so
 	// the first failed admission is recorded under the mutex and surfaced to
 	// Run after the batch joins.
@@ -453,6 +507,11 @@ type Loop struct {
 	// spans a session, not a turn.
 	frozen []ai.Message
 	prefix prefixState
+	// responseMu guards the one-response transaction audit. The loop is
+	// reused across user turns; Run resets it so a previous commit cannot make
+	// the next turn look already published.
+	responseMu sync.Mutex
+	response   ResponseAudit
 }
 
 // SetUsageLog installs the ledger that receives per-request cache samples.
@@ -823,12 +882,45 @@ func (l *Loop) SetGrounding(grounding *contract.IntentGrounding) {
 	l.cfg.Grounding = grounding
 }
 
+// SetConclusionMode installs the terminal-outcome vocabulary for this turn.
+// The zero value clears it, which preserves unrestricted legacy behaviour.
+func (l *Loop) SetConclusionMode(mode contract.ConclusionMode) {
+	if l != nil {
+		l.cfg.ConclusionMode = mode
+	}
+}
+
 // SetAnswerReview installs the bounded answer-level completion gate for the
 // next run, or nil to accept every answer. The gate can ask for one corrected
 // answer; it cannot authorize an action, widen the tool set beyond the loop's
 // constructed capabilities, or mark the run complete.
 func (l *Loop) SetAnswerReview(review func(turns []Turn, answer string) string) {
 	l.cfg.AnswerReview = review
+}
+
+// SetEvidenceGap installs the current evidence-frontier gap for the next run.
+//
+// The host projects this from the same evidence state the completion evaluator
+// uses; it is not model output. Passing nil clears it.
+func (l *Loop) SetEvidenceGap(gap func() string) {
+	if l != nil {
+		l.cfg.EvidenceGap = gap
+	}
+}
+
+// SetAnswerFinalizer installs the last gate before a candidate answer is
+// published. Passing nil accepts the sanitized answer unchanged.
+func (l *Loop) SetAnswerFinalizer(finalize func(turns []Turn, answer, evidenceGap string) FinalizedAnswer) {
+	if l != nil {
+		l.cfg.FinalizeAnswer = finalize
+	}
+}
+
+// SetAnswerRepairs installs the claim-level repair planner for the next run,
+// or nil to keep the prose correction. The planner is a projection of the
+// review's own audit; it cannot authorize an action or accept a claim.
+func (l *Loop) SetAnswerRepairs(repairs func(turns []Turn, answer string) []contract.GroundingIssue) {
+	l.cfg.AnswerRepairs = repairs
 }
 
 // SetProjectionReportHook installs the projection audit reporter.
@@ -917,6 +1009,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	l.mutationMu.Unlock()
 	l.compactionAttempts = 0
 	l.compactionCooldown = 0
+	l.beginResponse()
+	defer func() { l.abortResponse(runErr) }()
 
 	edit := &runEdit{journal: l.cfg.Journal}
 	defer func() {
@@ -1000,6 +1094,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// that never produced text or a call at all.
 	activityObserved := false
 	stopReason := ""
+	// lastEvidenceReview is the projection's frontier verdict for the request
+	// that produced the current candidate. It is the control plane's
+	// statement that the answer may be premature, not a model judgement.
+	lastEvidenceReview := ""
 	turns = nil
 	// nudges are the one-shot runtime directives for the next request only:
 	// the answer request, the execution-intent recovery, and the protocol
@@ -1056,6 +1154,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// it and a later turn can still re-read the source.
 		requestMessages := live
 		requestSystem := l.system()
+		lastEvidenceReview = ""
 		// runtimeBlocks is the volatile tail of this request: caller-supplied
 		// per-turn state first, then the projection's briefing, then any
 		// one-shot directive, so the directive is the last thing read. It is
@@ -1076,13 +1175,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// refuses to treat a call to one as evidence.
 		var redundant map[string]bool
 		if l.cfg.Project != nil {
+			// The correction window spans every request until the model
+			// answers, not just the first one: a repair may need a read, a
+			// second read, and then the corrected text.
+			correcting := correctionPending || l.correctionActive.Load()
 			projected := l.cfg.Project(ProjectionRequest{
-				Messages:    copyMessages(live),
-				Turns:       append([]Turn(nil), turns...),
-				Turn:        len(turns),
-				Tools:       tools,
-				System:      requestSystem,
-				ForceAnswer: forceAnswer,
+				Messages:         copyMessages(live),
+				Turns:            append([]Turn(nil), turns...),
+				Turn:             len(turns),
+				Tools:            tools,
+				System:           requestSystem,
+				ForceAnswer:      forceAnswer && !correcting,
+				Correcting:       correcting,
+				CorrectionBudget: l.remainingCorrectionCalls(),
 			})
 			emptyProjection := false
 			if projected.Messages != nil {
@@ -1111,6 +1216,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			terminal = report.Terminal
 			stopReason = report.StopReason
 			refusals = projected.Refusals
+			lastEvidenceReview = report.EvidenceReview()
 			if projected.ToolChoice.Type != "" || projected.ToolChoice.ToolName != "" {
 				projectedToolChoice = projected.ToolChoice
 			}
@@ -1127,6 +1233,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// projector may have supplied a different value under a known
 			// name, and the loop must execute its own capability instance.
 			activeTools = filtered
+			// The projection's correction surface, before the answer-boundary
+			// closure below clears it. A correction request may use these
+			// tools to gather the evidence the review named.
+			correctionSurface := append([]Tool(nil), activeTools...)
 			// AnswerEligible and Terminal are the control plane's semantic
 			// closure, not hints. The loop owns the request shape, so it must
 			// withdraw every tool rather than trusting a projector to also
@@ -1137,13 +1247,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			}
 			closed = answerEligible || terminal || len(activeTools) == 0
 			// The previous answer failed the answer-level review. Reopen the
-			// loop's constructed tool set for exactly this correction request:
+			// surface the projection described for this correction request:
 			// the missing evidence may be one read away, while the projection
-			// closed the surface from its own evidence model. This never widens
-			// authority; every call still crosses grounding and the security
-			// gate, and a terminal capability/stall stop is not overridden.
-			if correctionPending && !terminal {
-				activeTools = tools
+			// closed the surface from its own evidence model. Without a
+			// projector, the constructed set is the only available surface.
+			// This never widens authority; every call still crosses grounding
+			// and the security gate, and a terminal capability/stall stop is
+			// not overridden.
+			if correcting && !terminal {
+				if len(correctionSurface) > 0 {
+					activeTools = correctionSurface
+				} else {
+					activeTools = tools
+				}
 				closed = false
 				answerEligible = false
 				forceAnswer = false
@@ -1277,6 +1393,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if len(calls) > 0 || strings.TrimSpace(assistant.Text()) != "" {
 			activityObserved = true
 		}
+		// Prose that is followed by tool calls is not a conclusion. The call
+		// remains visible and its result is evidence; the prose would read as
+		// an answer the run later replaces.
+		if len(calls) > 0 && strings.TrimSpace(assistant.Text()) != "" {
+			turn.SuppressText = true
+			l.noteDraft()
+		}
 		if len(calls) > 0 {
 			// A canonical call is the correction both protocol recoveries ask
 			// for. It may still be refused by authority or schema, but it is
@@ -1287,8 +1410,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if len(calls) == 0 {
 			turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
 			turns = append(turns, turn)
-			if l.cfg.OnTurn != nil {
-				l.cfg.OnTurn(turn)
+			// The hook publishes the completed turn. It is deliberately called
+			// after the answer review: a rejected candidate is marked suppressed
+			// first, so a host never displays it as an answer.
+			reportTurn := func() {
+				if l.cfg.OnTurn != nil {
+					l.cfg.OnTurn(turns[len(turns)-1])
+				}
 			}
 			// A terminal surface with neither a proposal nor an answer is a
 			// blocked task, not a clean model stop. Preserve the terminal reason
@@ -1299,6 +1427,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				if reason == "" {
 					reason = "the runtime closed the task because no further action can make progress"
 				}
+				reportTurn()
 				return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
 			}
 			// Serialized syntax that could not be normalized is a provider
@@ -1312,8 +1441,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					if strings.TrimSpace(l.cfg.ProtocolRecoveryRequest) != "" {
 						nudges = append(nudges, l.cfg.ProtocolRecoveryRequest)
 					}
+					reportTurn()
 					continue
 				}
+				reportTurn()
 				return turns, fmt.Errorf("%w: %s", ErrToolNormalizationFailed,
 					normalizationFailureReason(assistant.NormalizationFailures))
 			}
@@ -1329,8 +1460,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					if strings.TrimSpace(l.cfg.ExecutionRecoveryRequest) != "" {
 						nudges = append(nudges, l.cfg.ExecutionRecoveryRequest)
 					}
+					reportTurn()
 					continue
 				}
+				reportTurn()
 				return turns, fmt.Errorf("%w: the model announced an execution it never emitted as a tool call",
 					ErrExecutionIntentWithoutTool)
 			}
@@ -1349,6 +1482,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				live = live[:len(live)-1]
 				origins = origins[:len(origins)-1]
 				forceAnswer = true
+				reportTurn()
 				continue
 			}
 			// The surface was already answer-only and the model returned only
@@ -1372,6 +1506,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				// would turn the lifecycle failure into another action loop.
 				forceAnswer = true
 				answerRetried = true
+				reportTurn()
 				continue
 			}
 			if strings.TrimSpace(assistant.Text()) == "" {
@@ -1379,10 +1514,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				// Silence after it is the outcome of that stage, not a generic
 				// empty model stop.
 				if executionIntentPending {
+					reportTurn()
 					return turns, fmt.Errorf("%w: the model announced an execution and then produced no tool call",
 						ErrExecutionIntentWithoutTool)
 				}
 				if normalizationPending {
+					reportTurn()
 					return turns, fmt.Errorf("%w: provider tool-call syntax did not resolve after recovery",
 						ErrToolNormalizationFailed)
 				}
@@ -1391,21 +1528,33 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					// question. Returning the turns lets the evaluator judge
 					// the evidence instead of replacing it with a protocol
 					// error.
+					reportTurn()
 					return turns, nil
 				}
+				reportTurn()
 				return turns, fmt.Errorf("%w: the provider produced no visible text and no tool call",
 					ErrNoModelOutput)
 			}
+			// A visible text turn ends any correction tool window. A second
+			// rejection is returned to the evaluator, never another window.
+			l.correctionActive.Store(false)
 			if !answerCorrectionAttempted && len(turns) < l.cfg.MaxTurns {
 				if reason := l.answerReviewReason(turns); reason != "" {
-					if directive := completionReviewDirective(l.cfg.CompletionReviewRequest, reason); directive != "" {
+					if directive := l.correctionDirective(turns, reason); directive != "" {
+						turns[len(turns)-1].Suppressed = true
+						l.noteRejected()
 						answerCorrectionAttempted = true
 						correctionPending = true
+						l.correctionActive.Store(true)
+						l.correctionCalls.Store(0)
 						nudges = append(nudges, directive)
+						reportTurn()
 						continue
 					}
 				}
 			}
+			l.finalizeResponse(turns, &live, lastEvidenceReview)
+			reportTurn()
 			return turns, nil
 		}
 
@@ -1423,23 +1572,34 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			(closed || (!answerIsDeferredPlan(text) &&
 				l.noEvidenceInBatch(activeByName, redundant, calls, len(turns)))) {
 			turn.Assistant = SanitizeAssistantMessage(answerWithoutToolCalls(assistant))
+			turn.SuppressText = false
 			turns = append(turns, turn)
-			if l.cfg.OnTurn != nil {
-				l.cfg.OnTurn(turn)
-			}
+			// A visible text turn ends any correction tool window.
+			l.correctionActive.Store(false)
 			if !answerCorrectionAttempted && len(turns) < l.cfg.MaxTurns {
 				if reason := l.answerReviewReason(turns); reason != "" {
-					if directive := completionReviewDirective(l.cfg.CompletionReviewRequest, reason); directive != "" {
+					if directive := l.correctionDirective(turns, reason); directive != "" {
 						// The stored turn dropped the call blocks; the live
 						// conversation must drop them too, or the correction
 						// request would replay a call with no result.
 						live[len(live)-1] = AssistantMessage{Message: turn.Assistant}
+						turns[len(turns)-1].Suppressed = true
+						l.noteRejected()
 						answerCorrectionAttempted = true
 						correctionPending = true
+						l.correctionActive.Store(true)
+						l.correctionCalls.Store(0)
 						nudges = append(nudges, directive)
+						if l.cfg.OnTurn != nil {
+							l.cfg.OnTurn(turns[len(turns)-1])
+						}
 						continue
 					}
 				}
+			}
+			l.finalizeResponse(turns, &live, lastEvidenceReview)
+			if l.cfg.OnTurn != nil {
+				l.cfg.OnTurn(turns[len(turns)-1])
 			}
 			return turns, nil
 		}
@@ -2439,6 +2599,21 @@ func (l *Loop) execute(
 		return fail(err.Error())
 	}
 
+	// A correction has its own small bound. The initial investigation already
+	// spent the tree budget; reopening it would turn one rejected claim into a
+	// second investigation, which is the cost this window exists to prevent.
+	// Authority still runs first: a denied call never consumes the correction
+	// allowance.
+	// Conclude records a control observation, not evidence. It must remain
+	// available after the evidence allowance is spent; refusing it forces
+	// another full answer and turns the terminal control action into a failure.
+	if l.correctionActive.Load() && call.Name != "conclude" {
+		limit := int64(l.correctionToolBudget())
+		if used := l.correctionCalls.Add(1); used > limit {
+			return failClass(ToolFailureCorrectionBudget, fmt.Sprintf(
+				"correction budget exhausted: this repair may use at most %d tool call(s). Answer with the evidence already observed; qualify or remove any claim that remains unsupported", limit))
+		}
+	}
 	// Authority has admitted the operation; budget now decides whether the
 	// tree can still afford it. The two are deliberately separate: a grant is
 	// not permission, and remaining budget cannot widen authority. Admission
@@ -2450,13 +2625,14 @@ func (l *Loop) execute(
 
 	started = time.Now()
 	toolCtx := Context{
-		Ctx:       ctx,
-		CallID:    call.ID,
-		ToolName:  call.Name,
-		SessionID: l.cfg.SessionID,
-		ReadOnly:  decision != nil && decision.ReadOnly,
-		Budget:    l.budget,
-		Deadline:  l.deadline(),
+		Ctx:            ctx,
+		CallID:         call.ID,
+		ToolName:       call.Name,
+		SessionID:      l.cfg.SessionID,
+		ReadOnly:       decision != nil && decision.ReadOnly,
+		ConclusionMode: l.cfg.ConclusionMode,
+		Budget:         l.budget,
+		Deadline:       l.deadline(),
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(err.Error())

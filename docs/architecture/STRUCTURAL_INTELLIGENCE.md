@@ -122,6 +122,7 @@ from model intuition.
 | `manifest_fact` | `OBSERVED` | 0.90 |
 | `import_edge` (aggregated dependency) | `OBSERVED` | 0.85 |
 | `inventory` (filesystem scan) | `OBSERVED` | 0.80 |
+| `document_claim` (documentation path claim) | `OBSERVED` | 0.90 |
 | `path_convention` | `INFERRED` | 0.45 |
 | no observation possible | `UNKNOWN` | 0.00 |
 
@@ -141,6 +142,16 @@ Coverage is independent of evidence: `Coverage.State` describes what was
 observed (files, parse, edges, truncation), and `Coverage.Complete()` is the
 only place a consumer may read "repository-wide claim supported".
 
+A file carries one `ast.ParseState`, not an independent set of booleans:
+`PARSED`, `PARTIAL`, `PENDING`, `FAILED`, `UNSUPPORTED`, `STALE`, or
+`INVENTORY`. The state is the contract; the accompanying reason is only an
+explanation. `STALE` means the last parsed declarations are retained because
+the entry became unreadable. Those declarations are historical: they are
+excluded from lookups, references, calls, entrypoints, tests, and every graph,
+and they make `structural_complete` false. They remain visible as inventory so
+"cannot see" never becomes a clean not-found. `INVENTORY` names a non-source
+artifact, which is known to exist but has no structural parse to claim.
+
 ## 4. Strategy portfolio
 
 A strategy is a named, versioned, costed analysis step with an explicit
@@ -158,6 +169,8 @@ can select any subset.
 | `scc-cycles` | module | yes | nodes | architecture, isolation |
 | `boundary-analysis` | module | yes | nodes | architecture |
 | `architecture-inference` | module | yes | constant | architecture |
+| `documentation-drift` | project | — | constant | drift |
+| `module-survey` | module | — | modules | project, architecture |
 | `degree-centrality` | package | yes | nodes | — |
 | `betweenness-centrality` | package | yes | nodes² | — (bounded to 400 nodes / 4000 edges) |
 | `modularity-label-propagation` | package | yes | edges | architecture (≤800 estimated nodes) |
@@ -167,6 +180,15 @@ can select any subset.
 Costs are relative units, not durations; the band (`low`/`medium`/`high`) is the
 only user-facing form. Every selected and skipped strategy is recorded in the
 `Plan` with a reason, so the decision is auditable after the fact.
+
+`module-survey` names every module the hierarchy materialised and whether a
+sample represents it. A module with no degree-ranked sample gets a
+representative production coordinate; a module with no production file stays
+in `Survey.Unexplored` rather than disappearing. A survey never claims the
+module was read: its sample is a coordinate the model can open, and the
+survey's evidence is inventory-level. When the repository has only one source
+module, the survey expands to that module's direct package children, so
+bounded contexts inside the module remain visible.
 
 ## 5. Planner
 
@@ -273,14 +295,71 @@ a directory graph and a module graph from the same edges.
   `not-established`. Fewer than three modules is always `not-established`.
   Incomplete graph evidence caps confidence at 0.5 and demotes the state to
   `PARTIALLY_OBSERVED`.
+- **Focus neighborhood**: the bounded focus report names the target and keeps
+  up to 12 call edges (`direction`, `symbol`, call-site `path`/`line`) plus up
+  to 8 importer directories. Counts alone do not trace a flow; the edges are
+  the evidence a consumer can follow, and a bounded set is marked truncated.
 
-## 8. Cache and incremental behaviour
+## 8. Documentation drift
+
+Intent `drift` compares what documents claim exists with what the same snapshot
+inventoried. It is path-shaped by design: a document can prove that it names a
+path, and the inventory can prove whether that path exists. Prose never becomes
+implementation evidence.
+
+- Up to 20 current documentation files (README, `docs/`, contributor guides) are
+  read, bounded to 256 KiB each and 1 MiB total. Changelogs, licenses,
+  `old_docs/`, vendor trees, and dependency directories are excluded because
+  their paths are historical or external by design.
+- Markdown links and inline code spans are extracted outside fenced code
+  blocks. A claim must be a relative repository path: URLs, mailto links, shell
+  commands, globs, prose, domain-shaped first segments, and home-relative paths
+  such as `~/.tmux.conf` are rejected. An inline code span whose first segment
+  is not an observed repository or module directory is treated as a claim only
+  when it is explicitly relative (`./`, `../`), is a single file-like name, or
+  starts with a conventional repository directory (`src`, `cmd`, `internal`,
+  `docs`, `pkg`, `app`, and similar); `home/hypr/hyprland.conf` in a tutorial is
+  machine guidance, not a repository claim. The conventional list is disclosed
+  because it is a heuristic, not a filesystem fact.
+- A leading `/` is repository-rooted; every other claim resolves relative to the
+  document. A target that escapes the repository is ignored.
+- Existence is checked against the inventory's file and directory sets. A
+  missing target is `documented_path_missing` only when the inventory is
+  complete for that scope and not truncated; otherwise the finding is
+  `documented_path_unverified` with an `UNKNOWN` source state.
+- Each finding carries both sides: `document_claim` evidence with the document
+  path and line, and `inventory` evidence for the target. Severity is `high` for
+  source, configuration, API, or executable paths, `medium` for documentation
+  targets such as linked pages and images, and `low` for unclassified or
+  unverifiable targets.
+- The report's evidence is `UNKNOWN` when no documentation or no comparable
+  claim exists, `PARTIALLY_OBSERVED` when a bound or incomplete scope prevented
+  a check, and `OBSERVED` only when every claim was checked against a complete
+  inventory.
+
+`Coverage` for the intent is the documentation comparison's own evidence, not
+the parse axis: unparsed source does not make a path comparison incomplete, and
+a complete comparison does not claim the source was parsed.
+
+`investigate` projects the structural snapshot onto the shared freshness
+vocabulary. A stale file or stale snapshot makes its facts `STALE`; an
+incomplete inventory makes them `UNVERIFIED`; only a complete analysis with a
+complete inventory reports `CURRENT`. Every record carries the snapshot
+identity, so evidence cannot silently outlive the state it describes.
+
+## 9. Cache and incremental behaviour
 
 Two caches exist, with different jobs.
 
 1. **Snapshot freshness** is owned by `ast.Index`. It stats the tree, parses
    added/changed files, reuses retained syntax for unchanged files, and
    publishes a new snapshot identity. This is process-local and incremental.
+   `EnsureParsed` parses every pending supported file; `EnsureParsedScope`
+   parses only the pending source beneath one or more files or directories.
+   The rest stays `PENDING` and the rebuilt projections describe that partial
+   state honestly. A later `EnsureParsed` converges to the whole snapshot;
+   scoped parsing is a cheaper first answer, not a second snapshot model. The
+   `structure` tool uses it for a targeted `files` view with a path.
 2. **Analysis reuse** is owned by `structural`. Entries are keyed by
    `SHA-256(schema, analyzer version, adapter fingerprint, root, snapshot id,
    normalized request)`. A changed tree, schema, analyzer, adapter set, Go
@@ -299,7 +378,7 @@ stale evidence.
 `<state>/cache/structural` is wired by `cmd/ohgo`; without a resolvable state
 directory the cache is disabled and analysis still runs.
 
-## 9. Failure semantics
+## 10. Failure semantics
 
 | Code | Meaning |
 |---|---|
@@ -319,7 +398,7 @@ Unknown stays unknown. A missing dependency is never emitted as an edge, an
 unresolved module-local import is listed rather than dropped, and an incomplete
 graph cannot support an `OBSERVED` architecture claim.
 
-## 10. Token cost and model-facing output
+## 11. Token cost and model-facing output
 
 The model never receives the node list or the raw graph.
 
@@ -334,7 +413,7 @@ The model never receives the node list or the raw graph.
 - The cache prevents a repeated intent from recomputing or re-emitting the same
   structural work.
 
-## 11. Benchmarks
+## 12. Benchmarks
 
 ```sh
 go test ./internal/intelligence/structural/ -run '^$' -bench . -benchmem
@@ -358,7 +437,7 @@ cold, incremental ≪ cold), not a promise about any real repository. The
 hierarchy microbenchmark shows 15 ms / 17 MB for 10,000 materialised file nodes;
 above `MaxFiles` (4,000) the model clamps to directory resolution instead.
 
-## 12. Deliberate limits and remaining risks
+## 13. Deliberate limits and remaining risks
 
 - Syntax-level resolution only: no type checker, no method dispatch, no macro
   expansion. Dynamic, ambiguous, and unsupported sites are disclosed, not
@@ -379,14 +458,41 @@ above `MaxFiles` (4,000) the model clamps to directory resolution instead.
 - Clustering quality is measured only on synthetic layouts. Real-repository
   tuning of the modularity sweep bound and the 800-node threshold is future work, and
   the benchmark exists so that work can be evidence-based.
+- Documentation drift checks path claims, not prose claims: component counts,
+  architectural assertions, and single-word component names are outside the
+  extractor. A missing path is a documentation/source contradiction, not proof
+  that the feature was intended or removed. Only current documentation is
+  scanned; archived documents are excluded rather than reported as drift. A
+  single file-like inline code span (for example `hyprland.conf`) and every
+  Markdown link are still treated as claims, so a tutorial that links a
+  machine-local file can appear as a missing target.
+- A module survey proves representation, not understanding. It selects at most
+  24 samples; a module with no production source stays explicitly unexplored,
+  and a sample still has to be read before any implementation claim is made.
+  A truncated file inventory or a stale record demotes the survey evidence to
+  `PARTIALLY_OBSERVED`; stale or failed files are never selected as samples.
 
-## 13. Migration notes
+## 14. Migration notes
 
 - `structure` gained two views (`analysis`, `expand`) and three arguments
   (`intent`, `level`, `node`). Existing views, arguments, and details are
   unchanged; the claim-grounding keys (`graph_state`, `scope_complete`,
   `inventory_complete`, `structural_complete`, `test_files`, `truncated`,
   `excluded_roots`, `nested_projects`) remain the shared vocabulary.
+- `structure` `analysis` gained intent `drift` and the
+  `documentation_drift` details object; the planner gained the same intent and
+  the `documentation-drift` strategy. The analysis cache is invalidated by the
+  analyzer version bump.
+- `structure` `analysis` gained `module-survey` and the `survey` details
+  object. Project and architecture analyses name unexplored modules instead of
+  implying every subsystem was inspected.
+- Non-Go resolution is import-aware: a repeated name is resolved through the
+  referring file's resolved imports before the global-name rule, and a
+  qualified reference with an unknown qualifier no longer falls back to a bare
+  global declaration. TypeScript `typeof X` is a collected reference. Package
+  selectors accept the directory-shaped name the `packages` view reports for
+  non-Go languages. Entrypoint conventions are owned by
+  `ast.WebRouteModule` and include the full Next.js App/Pages Router surface.
 - `StructuralSource` gained `NewStructuralSourceWithOptions` and
   `AnalysisCacheDir`; `NewStructuralSource` keeps its signature and behaviour.
 - `ast.Index` gained `Inventory` and `Dependencies`. Both are whole-snapshot,

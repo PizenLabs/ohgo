@@ -91,8 +91,12 @@ type languageGraph struct {
 	symbols     []Match
 	byName      map[string][]Match
 	byQualified map[string][]Match
-	unresolved  int
-	ambiguous   int
+	// byFile indexes declarations by declaring file, then by exact name. It
+	// lets a reference be disambiguated by the file's resolved imports when
+	// the same name is declared in more than one module.
+	byFile     map[string]map[string][]Match
+	unresolved int
+	ambiguous  int
 }
 
 // buildLanguageGraph resolves the retained generic syntax against every
@@ -102,6 +106,7 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 	graph := &languageGraph{
 		byName:      map[string][]Match{},
 		byQualified: map[string][]Match{},
+		byFile:      map[string]map[string][]Match{},
 	}
 	paths := make([]string, 0, len(records))
 	for rel := range records {
@@ -114,7 +119,7 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 	// stored in this projection.
 	for _, rel := range paths {
 		rec := records[rel]
-		if !rec.parsed || rec.err != nil {
+		if !rec.current() {
 			continue
 		}
 		for _, symbol := range rec.symbols {
@@ -129,6 +134,16 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 			if symbol.Receiver != "" && symbol.Receiver+"."+symbol.Name != symbol.Name {
 				qualified := symbol.Receiver + "." + symbol.Name
 				graph.byName[qualified] = append(graph.byName[qualified], symbol)
+			}
+			fileSymbols := graph.byFile[symbol.Path]
+			if fileSymbols == nil {
+				fileSymbols = map[string][]Match{}
+				graph.byFile[symbol.Path] = fileSymbols
+			}
+			fileSymbols[symbol.Name] = append(fileSymbols[symbol.Name], symbol)
+			if symbol.Receiver != "" && symbol.Receiver+"."+symbol.Name != symbol.Name {
+				qualified := symbol.Receiver + "." + symbol.Name
+				fileSymbols[qualified] = append(fileSymbols[qualified], symbol)
 			}
 		}
 	}
@@ -148,7 +163,7 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 			return nil, err
 		}
 		rec := records[rel]
-		if !rec.parsed || rec.err != nil {
+		if !rec.current() {
 			continue
 		}
 		if rec.language != string(LanguageGo) {
@@ -179,7 +194,7 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 			if !ok {
 				continue
 			}
-			target, resolution := graph.resolveCall(call)
+			target, resolution := graph.resolveCall(call, rel, rec.imports)
 			graph.calls = append(graph.calls, genericCall{
 				call: call, caller: caller, callee: target, resolution: resolution,
 			})
@@ -191,7 +206,7 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 			}
 		}
 		for _, ref := range rec.genericReferences {
-			target, resolution := graph.resolveName(ref.Name, ref.Qualifier)
+			target, resolution := graph.resolveName(ref.Name, ref.Qualifier, rel, rec.imports)
 			graph.references = append(graph.references, genericReference{
 				ref: ref, file: rel, language: rec.languageValue(), test: rec.test,
 				tests: rec.tests, target: target, resolution: resolution,
@@ -204,7 +219,7 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 			}
 		}
 		for _, relation := range rec.relations {
-			target, resolution := graph.resolveName(relation.Target, "")
+			target, resolution := graph.resolveName(relation.Target, "", rel, rec.imports)
 			if resolution != ResolutionResolved {
 				graph.ambiguous++
 				continue
@@ -241,12 +256,15 @@ func buildLanguageGraph(ctx context.Context, records map[string]fileRecord) (*la
 
 // resolveCall applies the call-specific target filter and then the shared
 // exact-name rule.
-func (g *languageGraph) resolveCall(call rawGenericCall) (Match, Resolution) {
-	matches := g.matchName(call.Name, call.Qualifier)
+func (g *languageGraph) resolveCall(call rawGenericCall, from string, imports []Import) (Match, Resolution) {
+	matches := g.disambiguate(call.Name, call.Qualifier, from, imports)
 	if len(matches) == 0 {
 		return Match{}, ResolutionUnresolved
 	}
-	filtered := matches[:0]
+	// Allocate rather than filtering in place: matches aliases the byName
+	// index, and overwriting that backing array would corrupt every later
+	// lookup of the same name.
+	filtered := make([]Match, 0, len(matches))
 	for _, match := range matches {
 		switch match.Canonical {
 		case SymbolFunction, SymbolMethod, SymbolConstructor, SymbolClass,
@@ -264,8 +282,8 @@ func (g *languageGraph) resolveCall(call rawGenericCall) (Match, Resolution) {
 }
 
 // resolveName resolves an exact name or qualified name.
-func (g *languageGraph) resolveName(name, qualifier string) (Match, Resolution) {
-	matches := g.matchName(name, qualifier)
+func (g *languageGraph) resolveName(name, qualifier, from string, imports []Import) (Match, Resolution) {
+	matches := g.disambiguate(name, qualifier, from, imports)
 	switch len(matches) {
 	case 0:
 		return Match{}, ResolutionUnresolved
@@ -276,17 +294,94 @@ func (g *languageGraph) resolveName(name, qualifier string) (Match, Resolution) 
 	}
 }
 
-func (g *languageGraph) matchName(name, qualifier string) []Match {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil
-	}
+// disambiguate narrows a name to the declarations the referring file can
+// actually reach.
+//
+// A syntax-only graph otherwise has to call every repeated name ambiguous: two
+// modules may export `useToast`, or a template may be copied into a generated
+// component directory. The import declaration is proof of which module the
+// referring file meant, so a local declaration wins, then a unique declaration
+// in a uniquely resolved imported file. Anything less than uniqueness stays
+// ambiguous and emits no edge.
+//
+// A qualified reference is stricter: `console.log` is not proof of a local
+// `log`, and `<ui.Button />` is not proof of a global `Button`. The qualifier
+// must name a declared member (`Class.method`), a local qualified declaration,
+// or an imported namespace/default whose target declares the member. Otherwise
+// the reference is unresolved.
+func (g *languageGraph) disambiguate(name, qualifier, from string, imports []Import) []Match {
 	if qualifier != "" {
 		if matches := g.byQualified[qualifier+"."+name]; len(matches) > 0 {
 			return matches
 		}
+		if matches := g.byFile[from][qualifier+"."+name]; len(matches) > 0 {
+			return matches
+		}
+		if matches := g.importedMatches(name, qualifier, imports); len(matches) > 0 {
+			return matches
+		}
+		return nil
 	}
-	return g.byName[name]
+	matches := g.byName[name]
+	if len(matches) < 2 {
+		return matches
+	}
+	if local := g.byFile[from][name]; len(local) == 1 {
+		return local
+	}
+	if imported := g.importedMatches(name, "", imports); len(imported) > 0 {
+		return imported
+	}
+	return matches
+}
+
+// importedMatches collects the declarations a file's resolved imports can
+// introduce for one name. Duplicates from the same declaration are removed; the
+// caller treats anything other than one unique candidate as unresolved or
+// ambiguous.
+func (g *languageGraph) importedMatches(name, qualifier string, imports []Import) []Match {
+	candidates := map[string]Match{}
+	for _, imported := range imports {
+		if imported.Resolution != ResolutionResolved || imported.Resolved == "" {
+			continue
+		}
+		if !importBindsName(imported, name, qualifier) {
+			continue
+		}
+		for _, match := range g.byFile[imported.Resolved][name] {
+			candidates[matchKey(match)] = match
+		}
+	}
+	out := make([]Match, 0, len(candidates))
+	for _, match := range candidates {
+		out = append(out, match)
+	}
+	sortSymbols(out)
+	return out
+}
+
+// importBindsName reports whether one import declaration can introduce the
+// referenced name. A qualified reference must match a namespace/default alias;
+// a bare reference must be a named import or a default import alias.
+func importBindsName(imported Import, name, qualifier string) bool {
+	if qualifier != "" {
+		return imported.Alias != "" && imported.Alias != "." && imported.Alias != "_" &&
+			imported.Alias == qualifier
+	}
+	if imported.Alias != "" && imported.Alias != "." && imported.Alias != "_" &&
+		imported.Alias == name {
+		return true
+	}
+	for _, importedName := range imported.Names {
+		if importedName == name {
+			return true
+		}
+	}
+	return false
+}
+
+func matchKey(match Match) string {
+	return match.Path + "\x00" + itoa(match.Line) + "\x00" + match.QualifiedName + "\x00" + match.Name
 }
 
 // mergeGenericImpactLocked merges the language-neutral projection into an
@@ -730,7 +825,7 @@ func sortGenericGraph(graph *languageGraph) {
 // graph. Unresolved external modules remain import facts but produce no edge.
 func resolveRecordImports(records map[string]fileRecord, js jsPathConfig) {
 	for rel, rec := range records {
-		if !rec.parsed || rec.err != nil || rec.language == string(LanguageGo) {
+		if !rec.current() || rec.language == string(LanguageGo) {
 			continue
 		}
 		language := rec.languageValue()

@@ -536,6 +536,10 @@ func (a *availability) apply(dst *planner.Availability) {
 func InferIntent(question string) planner.Intent {
 	text := strings.ToLower(question)
 	switch {
+	case containsAny(text, "documentation drift", "docs drift", "readme drift", "outdated docs",
+		"documentation matches", "docs match", "docs agree", "readme accurate",
+		"compare documentation", "documented but", "documented path", "stale documentation"):
+		return planner.IntentDrift
 	case containsAny(text, "architect", "layering", "coupling", "boundar", "monorepo structure"):
 		return planner.IntentArchitecture
 	case containsAny(text, "impact", "depend", "affect", "safe to change", "reverse"):

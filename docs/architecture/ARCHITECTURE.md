@@ -665,8 +665,11 @@ user's request before execution and the evidence the runtime observed.
   `Runtime` evidence a successful `verify` plan reports: the service reached
   readiness, at least one check passed against it while it was alive, and it
   did not exit mid-verification. An informational objective needs
-  non-empty visible assistant text in the final turn. Empty or whitespace text
-  is `NEEDS_REVIEW`. A request that explicitly required external knowledge also
+  non-empty visible assistant text in the final turn, and that text must pass
+  the claim/evidence audit before publication. The audit withholds a rejected
+  sentence and publishes a bounded limitation instead; a draft is never the
+  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A request
+  that explicitly required external knowledge also
   needs a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from
   observed implementation facts: a term that appears only in README/docs, never
@@ -876,6 +879,37 @@ the model said. Two properties keep the loop honest and small:
   corrected-invocation window before that forced boundary, so malformed
   proposals cannot consume turns but a valid correction is never mistaken for a
   repeated outage.
+- **An answer correction reopens the permitted surface.** When the answer-level
+  review rejects a candidate answer, the next request may gather the evidence
+  the review named. The loop reopens the surface for that turn
+  (`ProjectionRequest.Correcting`; the constructed set when no projector is
+  installed), and the projection reports the same surface: the answer-boundary
+  closure is removed, while mutation authority,
+  scope, language, external, and budget exclusions still apply. The request is
+  not answer-eligible, so a call during it is evidence gathering rather than
+  continuation after a finished answer. Without this synchronisation the model
+  reads a stale "no tool is available" verdict next to a live tool block and
+  spends the correction turn reconciling the contradiction.
+- **A correction is proportional to its rejected claims.** The answer audit
+  projects each repairable issue into the shared `GroundingIssue` contract
+  (claim, location, category, required evidence, reference, permitted action).
+  The loop's `AnswerRepairs` planner is a projection of the same audit, never a
+  second check, and `ClaimRepairRequest` renders at most
+  `MaxRepairInstructions` claims with a tool-call allowance. The correction
+  keeps the initial conversation and evidence; the directive explicitly forbids
+  re-reading what is already present. A reused observation is answered from the
+  loop's replay cache and does not consume the correction allowance.
+  `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 3) is enforced
+  before tool execution and survives concurrent batches; calls beyond it fail
+  closed with `ToolFailureCorrectionBudget` and the model must answer with the
+  evidence it has. The pre-answer review includes the documentation-only
+  provenance audit when the host supplies the last projection summary, so a
+  documented claim is repaired before completion rather than after it.
+- **A paged read keeps the document's opening identity.** A later window of the
+  same file no longer overwrites the opening window in the evidence ledger. The
+  merged value is bounded and not completeness evidence, but it preserves the
+  definition that names the project; without it a chunked README made the
+  project's own name documentation-only.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
   refused, the turn could not change the runtime's state; this is true even when
@@ -1155,6 +1189,37 @@ this project's entry point, only that something the model launched became ready
 and answered a check while it stayed alive. The model sees a short summary, not
 a transcript dump. Completion still decides PROVEN; readiness, a tool call, or a
 zero exit code alone is not proof.
+
+## Repository checks
+
+`check` is the repository-wide verification capability, separate from the
+service lifecycle `verify` owns. Discovery reads the shared structural
+inventory and the manifests it already observed; it starts no process.
+
+1. `mode=discover` (the default) returns the ecosystem, the exact argv commands,
+   the directory each would run in, and every reason a command was omitted.
+2. `mode=run` executes only the requested kinds (default `test`), sequentially,
+   with one bounded timeout each and a 64 KiB output tail per command.
+3. Commands are argv, never a shell. A script name from `package.json` is
+   passed to the package manager as an argument, so manifest text cannot inject
+   shell syntax.
+4. Test counts are parsed from Go, pytest, Cargo, and common JS runner output.
+   `0 tests` becomes `NOT_RUN`, never `PASS`. A check that did not run is
+   distinct from a check that passed.
+5. Go commands are scoped by `path` (`go test ./pkg/...`). Other ecosystems run
+   at the manifest root and the result says the scope was not applied.
+6. Safety boundaries: the working directory must resolve inside the workspace;
+   the process environment is filtered of credential-shaped variables; a
+   `package.json` script body is inspected before planning and refused on
+   destructive or privileged shapes; the body is disclosed in discovery. A
+   package manager may still run pre/post lifecycle scripts, so approval
+   remains `TierExec`. This is not a sandbox: a check can write inside the
+   workspace and read files under `HOME`.
+
+A passing run reports `Verifies` with the strongest successful check
+(`test` > `build` > `vet`/static) and the command scope; a failing run is an
+observed failure with its exit code and bounded output, not an unavailable
+observation. Discovery reports `TierRead`; execution reports `TierExec`.
 
 ## Concurrency
 

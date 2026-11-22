@@ -675,3 +675,148 @@ func TestSurveyAnswerBoundedToInspectedScopeIsNotAnAbsenceClaim(t *testing.T) {
 		t.Fatalf("grounded survey was not completed: %s", verdict.Reason)
 	}
 }
+
+func claimBash(command, text string) ToolOutcome {
+	return ToolOutcome{
+		ToolName: "bash",
+		Args:     map[string]any{"command": command},
+		Result:   Result{Text: text, Executes: true, Finished: true},
+	}
+}
+
+// A model pages a large file with sed instead of the read tool. The answer's
+// "first ~90 lines" names the excerpt it used, not the file's total length; the
+// audit must not turn that into a byte-size-to-line-count failure.
+func TestShellReadWindowIsNotATotalLineCount(t *testing.T) {
+	text := strings.Repeat("func wiring() {}\n", 90)
+	turns := []Turn{{Results: []ToolOutcome{
+		claimBash("cd backend && sed -n '1,90p' layout/bounded_context.go", text),
+	}}}
+	verdict := claimVerdict(turns,
+		"The contexts are wired in backend/layout/bounded_context.go (first ~90 lines).")
+	if !verdict.Complete() {
+		t.Fatalf("a documented read window was reviewed: %s", verdict.Reason)
+	}
+}
+
+// A whole-file shell read reports the same total as the read tool, so a total
+// line count from it is an observed measurement.
+func TestShellWholeFileLineCountCompletes(t *testing.T) {
+	text := strings.Repeat("line\n", 40)
+	turns := []Turn{{Results: []ToolOutcome{
+		claimBash("cat src/App.tsx", text),
+	}}}
+	verdict := claimVerdict(turns, "src/App.tsx is 40 lines.")
+	if !verdict.Complete() {
+		t.Fatalf("a whole-file shell read was not accepted: %s", verdict.Reason)
+	}
+}
+
+// A paged read is not a whole-file measurement. Claiming the page length as
+// the file total stays a review boundary.
+func TestShellPagedReadIsNotATotalLineCount(t *testing.T) {
+	text := strings.Repeat("line\n", 90)
+	turns := []Turn{{Results: []ToolOutcome{
+		claimBash("sed -n '1,90p' src/App.tsx", text),
+	}}}
+	verdict := claimVerdict(turns, "src/App.tsx is 90 lines.")
+	if verdict.Complete() {
+		t.Fatal("a paged shell read was accepted as a file total")
+	}
+	if !strings.Contains(verdict.Reason, "page") {
+		t.Fatalf("reason = %q, want the paged-read boundary", verdict.Reason)
+	}
+}
+
+func TestShellSourceReadsTrackWorkingDirectoryAndPages(t *testing.T) {
+	reads := ShellSourceReads("cd backend && sed -n '1,90p' layout/bounded_context.go")
+	if len(reads) != 1 || reads[0].Path != "backend/layout/bounded_context.go" || reads[0].WholeFile {
+		t.Fatalf("paged read = %+v", reads)
+	}
+	reads = ShellSourceReads("cat backend/Readme.md")
+	if len(reads) != 1 || reads[0].Path != "backend/Readme.md" || !reads[0].WholeFile {
+		t.Fatalf("whole-file read = %+v", reads)
+	}
+}
+
+func TestShellSourceReadsIgnoreRedirections(t *testing.T) {
+	reads := ShellSourceReads("cat README.md 2>/dev/null | head -100")
+	if len(reads) != 1 || reads[0].Path != "README.md" || reads[0].WholeFile {
+		t.Fatalf("redirected read = %+v", reads)
+	}
+}
+
+// The exact review shape from the ecommerce run: a listing prints a byte
+// size, the model pages the file with sed, and the answer describes that page.
+// The listing is not a line count, but the sed read is a real observation.
+func TestShellPageAgainstListingCompletes(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimListing("backend/layout", "3901  bounded_context.go\n"),
+		claimBash("cd backend && sed -n '1,90p' layout/bounded_context.go",
+			strings.Repeat("func wiring() {}\n", 90)),
+	}}}
+	verdict := claimVerdict(turns,
+		"Composition lives in backend/layout/bounded_context.go (first ~90 lines).")
+	if !verdict.Complete() {
+		t.Fatalf("a shell-paged source file was reviewed: %s", verdict.Reason)
+	}
+}
+
+func TestTruncatedShellCaptureIsNotATotalLineCount(t *testing.T) {
+	text := strings.Repeat("line\n", 40) + "\n[output truncated at 30000 bytes]\n"
+	turns := []Turn{{Results: []ToolOutcome{
+		claimBash("cat src/App.tsx", text),
+	}}}
+	verdict := claimVerdict(turns, "src/App.tsx is 40 lines.")
+	if verdict.Complete() {
+		t.Fatal("a truncated shell capture was accepted as a file total")
+	}
+}
+
+// A count inside a parenthetical annotation belongs to the path that
+// introduces it. The completion audit bound "97 lines" to the *next* file in
+// the sentence ("order.go", read at 413 lines) and rejected a corrected answer
+// that had already clarified the attribution.
+func TestParentheticalLineCountBindsToItsOwnFile(t *testing.T) {
+	sentence := "**`backend/checkout/domain/order_factory.go`** (read in full, 97 lines) and " +
+		"**`backend/checkout/domain/order.go`** (read, 413 lines, first ~125 lines observed in detail; " +
+		"the 97-line count belongs to `order_factory.go`)."
+	turns := []Turn{{Results: []ToolOutcome{
+		claimRead("backend/checkout/domain/order_factory.go", "1\tx\n", 97),
+		claimRead("backend/checkout/domain/order.go", "1\tx\n", 413),
+	}}}
+	if issue := lineCountClaimIssue(sentence, turns); issue != nil {
+		t.Fatalf("a parenthetical count was bound to the wrong file: %+v", issue)
+	}
+}
+
+// A terminal answer conclusion is a control observation, not a proof. When the
+// answer itself makes an unsupported absence claim, the run is a review even if
+// the model already recorded ANSWERED.
+func TestTerminalAnswerConclusionCannotOverrideGroundingVeto(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimListing(".", "README.md\npackage.json\nbackend\nsrc\nsupabase\n"),
+		{
+			CallID:   "conclude-1",
+			ToolName: "conclude",
+			Args: map[string]any{
+				"verdict": "ANSWERED", "status": "FINAL",
+				"evidence": "the repository root was listed",
+			},
+			Result: Result{
+				Text: "answer: ANSWERED\nthe repository root was listed",
+				Details: map[string]any{
+					"verdict": "ANSWERED", "status": "FINAL", "mode": "answer",
+					"evidence": "the repository root was listed",
+				},
+			},
+		},
+	}}}
+	verdict := claimVerdict(turns, "No test files were found in the repository by the probes.")
+	if verdict.Complete() {
+		t.Fatal("a terminal answer conclusion overrode the grounding veto")
+	}
+	if !strings.Contains(verdict.Reason, "intent grounding") {
+		t.Fatalf("reason = %q, want the grounding boundary", verdict.Reason)
+	}
+}

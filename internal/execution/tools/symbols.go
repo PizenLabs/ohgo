@@ -286,7 +286,7 @@ func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Resu
 		if packageQuery != "" {
 			filtered := symbols[:0]
 			for _, s := range symbols {
-				if s.Package == packageQuery {
+				if ast.MatchInPackage(s, packageQuery) {
 					filtered = append(filtered, s)
 				}
 			}

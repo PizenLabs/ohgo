@@ -155,29 +155,11 @@ func configLanguage(rel string) Language {
 func conventionalEntrypoints(files map[string]fileRecord) []Entrypoint {
 	out := make([]Entrypoint, 0)
 	for rel := range files {
-		language, ok := LanguageForPath(rel)
-		if !ok || (language != LanguageTSX && language != LanguageTypeScript &&
-			language != LanguageJavaScript && language != LanguageJSX) {
+		base, ok := WebRouteModule(rel)
+		if !ok {
 			continue
 		}
-		normalized := strings.ReplaceAll(rel, "\\", "/")
-		base := path.Base(normalized)
-		conventional := false
-		for _, prefix := range []string{"app/", "src/app/", "pages/", "src/pages/"} {
-			if strings.Contains("/"+normalized, "/"+prefix) {
-				conventional = true
-				break
-			}
-		}
-		if !conventional {
-			continue
-		}
-		switch base {
-		case "page.tsx", "page.ts", "page.jsx", "page.js", "layout.tsx", "layout.ts",
-			"layout.jsx", "layout.js", "index.tsx", "index.ts", "index.jsx", "index.js":
-		default:
-			continue
-		}
+		language, _ := LanguageForPath(rel)
 		out = append(out, Entrypoint{
 			Path: rel, Symbol: base, QualifiedName: rel, Language: language,
 			NativeKind: "route_convention", Line: 1, EndLine: 1, Column: 1,

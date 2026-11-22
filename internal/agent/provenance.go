@@ -43,6 +43,18 @@ func AssessAnswerProvenance(intent contract.IntentContract, answer string, prove
 		return assessment
 	}
 
+	seen := map[string]bool{}
+	addReview := func(sentence, term string) bool {
+		if seen[term] {
+			return false
+		}
+		seen[term] = true
+		review := provenanceReview(sentence, term)
+		assessment.Verdict = contract.GroundingReview
+		assessment.Issues = append(assessment.Issues, review.Issues...)
+		assessment.Reasons = append(assessment.Reasons, review.Reasons...)
+		return len(assessment.Issues) >= MaxRepairInstructions
+	}
 	previous := ""
 	attributedSection := false
 	for _, line := range strings.Split(answer, "\n") {
@@ -68,7 +80,9 @@ func AssessAnswerProvenance(intent contract.IntentContract, answer string, prove
 				if !documented[term] {
 					continue
 				}
-				return provenanceReview(term)
+				if addReview(sentence, term) {
+					return assessment
+				}
 			}
 			// A lower-case technology or concept name can still be a specific
 			// documentation claim. Content terms in the answer that only the
@@ -79,7 +93,9 @@ func AssessAnswerProvenance(intent contract.IntentContract, answer string, prove
 				if len(term) < 4 || genericClaimTerm(term) || !documented[term] {
 					continue
 				}
-				return provenanceReview(term)
+				if addReview(sentence, term) {
+					return assessment
+				}
 			}
 			previous = sentence
 		}
@@ -88,12 +104,18 @@ func AssessAnswerProvenance(intent contract.IntentContract, answer string, prove
 }
 
 // provenanceReview builds the completion veto for one documentation-only term.
-func provenanceReview(term string) contract.GroundingAssessment {
+func provenanceReview(sentence, term string) contract.GroundingAssessment {
 	return contract.GroundingAssessment{
 		Verdict: contract.GroundingReview,
 		Issues: []contract.GroundingIssue{{
-			Code:   "unsupported_documentation_claim",
-			Detail: "the answer presents documentation-only term " + term + " as an observed repository fact",
+			Code:        "unsupported_documentation_claim",
+			Detail:      "the answer presents documentation-only term " + term + " as an observed repository fact",
+			Claim:       term,
+			Location:    claimLocation(sentence, term),
+			Category:    "attribution",
+			Requirement: "a source observation or an explicit documentation attribution",
+			Reference:   term,
+			Action:      "attribute the term to the documentation or verify it in the observed source",
 		}},
 		Reasons: []string{
 			"the answer presents documentation-only term " + term + " as an observed repository fact; attribute it to the documentation or verify it in the implementation",
@@ -283,6 +305,24 @@ var genericClaimTerms = map[string]bool{
 	"tokens": true, "auth": true, "authentication": true, "security": true,
 	"logging": true, "error": true, "errors": true, "metrics": true,
 	"health": true,
+	// Common domain vocabulary. These nouns name the product's subject, not a
+	// specific documented claim; flagging them turns an ordinary storefront
+	// description into a provenance review.
+	"customer": true, "customers": true, "color": true, "colors": true,
+	"colour": true, "colours": true, "document": true, "documents": true,
+	"account": true, "accounts": true, "address": true, "addresses": true,
+	"admin": true, "product": true, "products": true, "order": true,
+	"orders": true, "cart": true, "carts": true, "checkout": true,
+	"payment": true, "payments": true, "shipping": true, "review": true,
+	"reviews": true, "wishlist": true, "price": true, "prices": true,
+	"stock": true, "category": true, "categories": true, "attribute": true,
+	"attributes": true, "promo": true, "fulfillment": true, "store": true,
+	"stores": true, "search": true, "user": true, "users": true,
+	"ui": true, "ux": true, "adapter": true, "adapters": true,
+	"port": true, "ports": true, "domain": true, "domains": true,
+	"context": true, "contexts": true, "bounded": true, "hexagonal": true,
+	"monolith": true, "monolithic": true, "crud": true,
+	"no": true, "not": true, "shared": true,
 }
 
 // genericClaimTerm reports whether a token is a grammar word, a generic

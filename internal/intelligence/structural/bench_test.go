@@ -36,7 +36,7 @@ func syntheticInventory(modules, dirsPerModule, filesPerDir int) ast.Inventory {
 					Dir:      dirPath,
 					Language: "go",
 					Kind:     ast.FileGoSource,
-					Parsed:   true,
+					State:    ast.ParseStateParsed,
 					Symbols:  3,
 				})
 			}

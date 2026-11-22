@@ -90,6 +90,8 @@ func messageTexts(messages []ai.Message) []string {
 			out = append(out, m.Text())
 		case ai.ToolResultMessage:
 			out = append(out, m.Text())
+		case ai.RuntimeStateMessage:
+			out = append(out, m.Text)
 		}
 	}
 	return out

@@ -43,25 +43,30 @@ Guidelines:
   declaration or call site, read that exact coordinate before claiming what
   the implementation does. Do not stop at a candidate list.
 - When the runtime state asks for an investigation conclusion, call conclude
-  with SAFE, BUG, or UNRESOLVED, the evidence that supports it, and status
-  FINAL for a terminal verdict or IN_PROGRESS for a progress observation.
-  Call FINAL only after the entrypoint and validation/persistence boundary are
-  observed. Do not use UNRESOLVED as a progress report. An IN_PROGRESS call
-  never satisfies the conclusion; a placeholder or preliminary payload is
-  treated as progress even when the status says FINAL. If uncertainty names a
-  concrete symbol or path, inspect that coordinate first; the runtime keeps the
-  conclusion requirement open until it is observed or a bounded attempt
-  explicitly settles as UNRESOLVED. Do not keep surveying after the required
-  entrypoint, reference flow, validation boundary, and bypass paths are
-  established.
+  with the vocabulary that state names. A failure investigation records SAFE,
+  BUG, or UNRESOLVED. A general answer about the project records ANSWERED,
+  PARTIAL, or UNRESOLVED; SAFE and BUG are not answers to "what is this
+  project?". Include the evidence that supports the verdict and status FINAL
+  for a terminal verdict or IN_PROGRESS for a progress observation. Call FINAL
+  only after the evidence the runtime asked for is observed. Do not use
+  UNRESOLVED as a progress report. An IN_PROGRESS call never satisfies the
+  conclusion; a placeholder or preliminary payload is treated as progress even
+  when the status says FINAL. If uncertainty names a concrete symbol or path,
+  inspect that coordinate first; the runtime keeps the conclusion requirement
+  open until it is observed or a bounded attempt explicitly settles as
+  UNRESOLVED. Do not keep surveying after the required entrypoint, reference
+  flow, validation boundary, and bypass paths are established.
 - If no Gry or runtime evidence was obtained, the static-vs-runtime comparison
   was not assessable. Say that plainly; do not claim that no contradiction
   exists. Use the read tool for source content when available; a successful
   shell content read (sed, cat, head, tail) also opens the file, but a
   listing or a path mentioned in prose does not.
-- Use verify for an acceptance check or test command that must count as
-  completion evidence. bash output is an observation; it is not the structured
-  verification record the completion contract requires.
+- Use check to discover the repository's own tests, static analysis, and build
+  commands, then run only the kinds the task needs. Discovery is read-only;
+  run mode returns structured outcomes and verification evidence. Use verify
+  when the acceptance requires starting a service, checking it while it is
+  live, and stopping it. bash output is an observation; it is not the
+  structured verification record the completion contract requires.
 - Make the smallest change that solves the problem. Do not refactor code the
   task did not ask you to touch.
 - Never guess a file's contents. Read it before editing it.
@@ -111,6 +116,18 @@ const ProtocolRecoveryRequest = `Runtime protocol recovery: your previous messag
 // user turn, and never shown in the transcript.
 const CompletionReviewRequest = `Runtime completion review: the previous answer cannot be accepted because {{reason}}. Correct it now using evidence already observed, or use an available tool to obtain the missing evidence. Do not repeat a claim the evidence does not support. If the missing fact cannot be established, state that limitation explicitly instead of completing the claim.`
 
+// ClaimRepairRequest is the bounded, claim-level correction. It is used in
+// place of CompletionReviewRequest when the review can name the rejected
+// claims. The model must repair only those sentences, keep the rest of the
+// answer, and stay inside the correction's small tool allowance. It is
+// runtime-authored, never persisted as a user turn, and never shown in the
+// transcript.
+const ClaimRepairRequest = `Runtime completion review: {{count}} claim(s) in the previous answer lack sufficient evidence. Repair only these claims; keep every other sentence, structure, and supported claim exactly as it is. The initial observations are already in the conversation — do not repeat a read, listing, or structural query that is already present unless the listed repair says the evidence is stale or missing. You may use at most {{budget}} tool call(s), only for the evidence named below. If a claim cannot be evidenced, qualify or remove that sentence and state the remaining uncertainty.
+
+{{repairs}}
+
+Audit reason: {{reason}}`
+
 // WorkspaceContract returns the semantic contract for a workspace, or "" for
 // an unknown name.
 //
@@ -151,9 +168,10 @@ advice. Inspect the repository, reason, derive an internal plan, and carry
 the objective through to implementation and verification.
 Task status, todos, and persisted plans are state and context, not blockers:
 a missing plan means derive one internally, never stop to ask the user.
-After a repository change, run the runtime's verify tool for the acceptance
-check. A bash assertion is an observation, not the structured verification
-evidence the completion contract requires.
+After a repository change, run the runtime's check tool for the tests, static
+analysis, or build the change needs. Use verify when acceptance requires a
+live service. A bash assertion is an observation, not the structured
+verification evidence the completion contract requires.
 Mutations remain subject to the runtime security policy.`
 	}
 	return ""

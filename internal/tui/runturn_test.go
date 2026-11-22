@@ -2,11 +2,13 @@ package tui
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
@@ -156,5 +158,146 @@ func TestRunTurnPublishesReusedOutcomeBeforeFinalAnswer(t *testing.T) {
 		case <-timeout:
 			t.Fatal("runTurn hung")
 		}
+	}
+}
+
+// The TUI must publish exactly one assistant answer for a task even when the
+// model produces a rejected draft, acquires evidence, and answers again. The
+// draft may exist in the internal provider context; it must never become a
+// transcript delta.
+func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
+	read := &orderReadTool{}
+	index := 0
+	script := []ai.AssistantMessage{
+		{Content: []ai.ContentBlock{ai.TextContent{Text: "There is no database."}}},
+		{Content: []ai.ContentBlock{ai.ToolCall{ID: "read-1", Name: "read", Arguments: map[string]any{"path": "README.md"}}}, StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: "This project is a Go coding agent."}}},
+	}
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			if index >= len(script) {
+				t.Fatalf("provider request %d exceeded the script", index+1)
+			}
+			message := script[index]
+			index++
+			return ai.NewCompletedStream(message), nil
+		},
+		Tools:                   []agent.Tool{read},
+		CompletionReviewRequest: "Runtime completion review: {{reason}}. Re-read the evidence or state the limitation.",
+		MaxTurns:                6,
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.runTurn("analyze this project and report what it is")
+	}()
+
+	var published strings.Builder
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-p.events:
+			if delta, ok := event.(AssistantDelta); ok {
+				published.WriteString(delta.Text)
+			}
+			p.state.Apply(event)
+		case <-done:
+			for {
+				select {
+				case event := <-p.events:
+					if delta, ok := event.(AssistantDelta); ok {
+						published.WriteString(delta.Text)
+					}
+					p.state.Apply(event)
+					continue
+				default:
+				}
+				break
+			}
+			got := published.String()
+			if strings.Contains(got, "no database") {
+				t.Fatalf("a rejected draft reached the transcript: %q", got)
+			}
+			if strings.Count(got, "This project is a Go coding agent.") != 1 {
+				t.Fatalf("published answer = %q, want exactly the committed answer", got)
+			}
+			audit := loop.LastResponseAudit()
+			if audit.State != agent.ResponseCommitted {
+				t.Fatalf("response state = %s, want COMMITTED", audit.State)
+			}
+			if audit.Rejected != 1 {
+				t.Fatalf("rejected drafts = %d, want 1", audit.Rejected)
+			}
+			if read.calls != 1 {
+				t.Fatalf("correction read calls = %d, want 1", read.calls)
+			}
+			return
+		case <-timeout:
+			t.Fatal("runTurn hung")
+		}
+	}
+}
+
+// The durable transcript is part of the one-response invariant, not only the
+// visible frame. A rejected draft and its tool round never become assistant
+// answers in the session store.
+func TestRunTurnPersistsExactlyOneAssistantAnswer(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("session.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sess, err := store.Create(t.TempDir(), "m")
+	if err != nil {
+		t.Fatalf("session.Create: %v", err)
+	}
+
+	index := 0
+	script := []ai.AssistantMessage{
+		{Content: []ai.ContentBlock{ai.TextContent{Text: "There is no database."}}},
+		{Content: []ai.ContentBlock{ai.ToolCall{ID: "read-1", Name: "read", Arguments: map[string]any{"path": "README.md"}}}, StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: "This project is a Go coding agent."}}},
+	}
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			if index >= len(script) {
+				t.Fatalf("provider request %d exceeded the script", index+1)
+			}
+			message := script[index]
+			index++
+			return ai.NewCompletedStream(message), nil
+		},
+		Tools:                   []agent.Tool{&orderReadTool{}},
+		CompletionReviewRequest: "Repair the answer: {{reason}}",
+		MaxTurns:                6,
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	p.AttachSession(store, &sess, nil)
+	p.runTurn("analyze this project and report what it is")
+
+	rows, err := store.Messages(sess.ID, 0)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var answers []string
+	for _, row := range rows {
+		if row.Role == "assistant" && strings.TrimSpace(row.Text) != "" {
+			answers = append(answers, row.Text)
+		}
+	}
+	if len(answers) != 1 {
+		t.Fatalf("persisted %d assistant answers, want one: %#v", len(answers), answers)
+	}
+	if answers[0] != "This project is a Go coding agent." {
+		t.Fatalf("persisted answer = %q, want the committed answer", answers[0])
 	}
 }

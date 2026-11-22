@@ -367,6 +367,10 @@ func TestAssessGroundingSeparatesChangeReportsFromAbsenceClaims(t *testing.T) {
 			answer: "Workspace unchanged — git status is clean; no files were modified.",
 		},
 		{
+			name:   "readme content read report",
+			answer: "No README content was read; README.md and docs/Readme.md exist but were not opened.",
+		},
+		{
 			name:   "file existence claim",
 			answer: "README.md does not exist in this repository.",
 			review: true,
@@ -987,5 +991,250 @@ func TestNegatedRunObservationIsNotARepositoryAbsence(t *testing.T) {
 	}
 	if assessment := AssessGrounding(intent, nil, "No tests exist in this repository."); assessment.Pass() {
 		t.Fatal("a repository-wide absence claim passed without a scan")
+	}
+}
+
+// Session 812: "No tests, server, or binary were executed" was reviewed on
+// both audits. The external-state check read "server ... executed" as a claim
+// that the server ran, and the absence check read "no tests" as a repository
+// conclusion. The negator introduces one coordinated subject list and
+// distributes over every item, so the sentence reports what the run did not
+// do — exactly the honest limitation the answer needs.
+func TestNegationDistributesOverACoordinatedSubjectList(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective:  "Investigate this project and analyze what this project is about.",
+		Action:     contract.GroundingRead,
+		Confidence: contract.GroundingConfidenceHigh,
+	})
+	for _, answer := range []string{
+		"No tests, server, or binary were executed: runtime behavior is entirely unobserved.",
+		"No test files, server, or binary were executed.",
+	} {
+		if assessment := AssessGrounding(intent, nil, answer); !assessment.Pass() {
+			t.Fatalf("%q was reviewed: %s", answer, assessment.Reason())
+		}
+		if claims := negativeClaims(answer); len(claims) != 0 {
+			t.Fatalf("%q became an absence claim: %+v", answer, claims)
+		}
+	}
+
+	// The negator governs its own clause only. A predicate before the list
+	// closes the negation, a separate existence predicate keeps the
+	// repository conclusion, and a discourse marker is not a list.
+	for _, control := range []string{
+		"No tests were run, but the deployment was executed.",
+		"The server and binary were executed.",
+		"No tests exist in this repository.",
+		"No, the server was executed.",
+	} {
+		if verdict := AssessGrounding(intent, nil, control); verdict.Pass() {
+			t.Fatalf("%q passed without an external observation or absence proof", control)
+		}
+	}
+}
+
+// The observed inventory already reported 110 test files, so a run report that
+// no test was executed must not be promoted into "the project has no tests".
+// The two statements are compatible: inventory establishes existence, only
+// execution establishes pass/fail.
+func TestObservedTestInventoryDoesNotContradictANegatedRunReport(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimStructureTests(110, true),
+		claimRead("backend/Readme.md", "# Backend\n\n`go test ./...` runs the in-memory suite.\n", 45),
+		claimRead("backend/cmd/web/main.go", "package main\n\nfunc main() {}\n", 202),
+	}}}
+	answer := "The project has 110 test files.\n\n" +
+		"Testing (documented + inventory): the README describes `go test ./...` as in-memory mode and `-tags=integration` as Postgres-backed. I did not run either, so pass/fail status is unknown.\n\n" +
+		"No tests, server, or binary were executed: runtime behavior is entirely unobserved."
+	verdict := claimVerdict(turns, answer)
+	if !verdict.Complete() {
+		t.Fatalf("an honest unexecuted-test report was reviewed: %s", verdict.Reason)
+	}
+}
+
+// "I make no claim about test coverage" is an epistemic limit. The noun after
+// "no" is the claim the answer declines to make, not a repository artifact it
+// asserts absent; the 110 test files the inventory reported are compatible with
+// never having executed them.
+func TestDecliningToClaimIsNotAnAbsenceConclusion(t *testing.T) {
+	inventory := []Turn{{Results: []ToolOutcome{claimStructureTests(110, true)}}}
+	for _, answer := range []string{
+		"I make no claim about test coverage or pass/fail.",
+		"The inventory reports 110 test files; I make no claim about test coverage because none were executed.",
+	} {
+		if assessment := AssessGrounding(claimContract(), inventory, answer); !assessment.Pass() {
+			t.Fatalf("%q was reviewed as an absence claim: %s", answer, assessment.Reason())
+		}
+		if claims := negativeClaims(answer); len(claims) != 0 {
+			t.Fatalf("%q produced absence claims: %+v", answer, claims)
+		}
+	}
+	if assessment := AssessGrounding(claimContract(), nil, "No tests exist in this repository."); assessment.Pass() {
+		t.Fatal("a repository-wide test absence still needs coverage")
+	}
+}
+
+// "No static-vs-runtime comparison to report" is the same epistemic limit as
+// "no contradiction to arbitrate": the run did not execute the runtime, so it
+// cannot offer the comparison. It is not a claim that the repository lacks the
+// pieces being compared.
+func TestEpistemicReportLimitIsNotAbsence(t *testing.T) {
+	for _, answer := range []string{
+		"There is no static-vs-runtime comparison to report.",
+		"There is no runtime behavior to describe from this inspection.",
+	} {
+		if claims := negativeClaims(answer); len(claims) != 0 {
+			t.Fatalf("%q was treated as an absence claim: %+v", answer, claims)
+		}
+		if assessment := AssessGrounding(claimContract(), nil, answer); !assessment.Pass() {
+			t.Fatalf("%q was reviewed: %s", answer, assessment.Reason())
+		}
+	}
+}
+
+// "Could not be read before the evidence window closed" reports this run's
+// budget, not an inaccessible file. The model named the frontier it could not
+// finish; completion must accept that limitation instead of demanding a call
+// the run had no turn left to make.
+func TestEvidenceWindowLimitIsNotAnUnverifiedSearchResult(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimListing("backend/internal/dependency", "Readme.md\n"),
+		claimRead("backend/auth/bounded_context.go", "package auth\n", 40),
+	}}}
+	answer := "backend/internal/dependency was named as a frontier but its Readme could not be read before the evidence window closed."
+	if assessment := AssessGrounding(claimContract(), turns, answer); !assessment.Pass() {
+		t.Fatalf("a budget-bounded limitation was reviewed: %s", assessment.Reason())
+	}
+
+	// The same admission without the bound still reports an unusable result,
+	// and a stem must not be attributed to an unrelated observed path.
+	unbounded := "The authentication implementation could not be read, so behavior is unknown."
+	assessment := AssessGrounding(claimContract(), turns, unbounded)
+	if assessment.Pass() {
+		t.Fatal("an unbounded inability report completed")
+	}
+	if strings.Contains(assessment.Reason(), "backend/auth") {
+		t.Fatalf("an unrelated path was attributed to the admission: %s", assessment.Reason())
+	}
+}
+
+// An unsupported absence conclusion is a claim-level repair: it names the
+// subject and the inventory evidence it needs, not just a prose reason.
+func TestNegativeConclusionCarriesAClaimRepair(t *testing.T) {
+	assessment := AssessGrounding(claimContract(), nil, "No tests exist in this repository.")
+	repairs := assessment.Repairs()
+	if len(repairs) != 1 {
+		t.Fatalf("repairs = %+v, want one absence claim", repairs)
+	}
+	repair := repairs[0]
+	if repair.Category != "absence" || repair.Reference != "tests" || repair.Requirement == "" || repair.Action == "" {
+		t.Fatalf("repair = %+v, want absence/tests/requirement/action", repair)
+	}
+}
+
+// Multiple independent unsupported conclusions are repaired in one pass. The
+// correction budget must be proportional to the claims, not to the answer's
+// overall length.
+func TestMultipleIndependentAbsenceClaimsProduceMultipleRepairs(t *testing.T) {
+	answer := "No tests exist in this repository. No documentation exists in this repository."
+	repairs := AssessGrounding(claimContract(), nil, answer).Repairs()
+	if len(repairs) < 2 {
+		t.Fatalf("repairs = %+v, want both absence claims", repairs)
+	}
+}
+
+// Runtime-state and citation failures are claim-level repairs too: the model is
+// told which observation is missing, not asked to rewrite the whole answer.
+func TestRuntimeAndCitationClaimsCarryRepairs(t *testing.T) {
+	runtime := AssessGrounding(claimContract(), nil, "The workflow ran successfully today.").Repairs()
+	if len(runtime) != 1 || runtime[0].Category != "runtime" || runtime[0].Requirement == "" {
+		t.Fatalf("runtime repairs = %+v", runtime)
+	}
+	turns := []Turn{{Results: []ToolOutcome{claimListing("lib", "search.ts\n")}}}
+	citation := AssessGrounding(claimContract(), turns,
+		"Search uses the index built in lib/search.ts (lib/search.ts).").Repairs()
+	if len(citation) != 1 || citation[0].Category != "citation" || citation[0].Reference != "lib/search.ts" {
+		t.Fatalf("citation repairs = %+v", citation)
+	}
+}
+
+// "When the cart is missing" is a behavior condition, not a claim that the
+// repository has no cart. The corrected deep answer described a redirect branch
+// and was reviewed as an absence conclusion.
+func TestConditionalAbsenceIsNotARepositoryClaim(t *testing.T) {
+	answer := "The handler redirects to `/cart` when the cart is missing."
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("a behavior condition became an absence claim: %+v", claims)
+	}
+	if assessment := AssessGrounding(claimContract(), nil, answer); !assessment.Pass() {
+		t.Fatalf("a behavior condition was reviewed: %s", assessment.Reason())
+	}
+	if claims := negativeClaims("The cart is missing from the repository."); len(claims) == 0 {
+		t.Fatal("an unconditional absence claim was ignored")
+	}
+}
+
+// A package directory does not refute a claim about a check inside it.
+func TestPackageDirectoryDoesNotRefuteConceptAbsence(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{claimListing("backend", "productcatalog\ncart\ncheckout\n")}}}
+	coverage := collectGroundingCoverage(turns)
+	if got := coverage.contradicts("productcatalog existence check"); got != "" {
+		t.Fatalf("a package listing refuted a concept absence: %s", got)
+	}
+	if got := coverage.contradicts("portfolio file"); got != "" {
+		t.Fatalf("unexpected contradiction in fixture: %s", got)
+	}
+	coverage.observedPaths = append(coverage.observedPaths, "app/portfolio.tsx")
+	if got := coverage.contradicts("portfolio file"); got != "app/portfolio.tsx" {
+		t.Fatalf("a file claim was not refuted by its path: %s", got)
+	}
+}
+
+// An explicit open question and next read is a limitation, not a claim about
+// the inspected evidence.
+func TestOpenQuestionAndPendingReadAreBounded(t *testing.T) {
+	sentence := "The reach-persistence question stays open pending a read of the stock reserver and the Postgres projection."
+	if !claimIsBounded(sentence) {
+		t.Fatal("an explicit pending read was not treated as a limitation")
+	}
+}
+
+// "The absence of a particular test is not evidence" is an epistemic
+// limitation, not a repository test-absence conclusion.
+func TestAbsenceOfEvidenceIsNotAnAbsenceClaim(t *testing.T) {
+	answer := "The test inventory was truncated, so the absence of a particular test is not evidence."
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("an epistemic limit became an absence claim: %+v", claims)
+	}
+	if assessment := AssessGrounding(claimContract(), nil, answer); !assessment.Pass() {
+		t.Fatalf("an epistemic limit was reviewed: %s", assessment.Reason())
+	}
+}
+
+// "At all" is an intensifier, not a repository-wide scope marker. It must not
+// veto the same sentence's "in the inspected scope" qualification.
+func TestIntensifierDoesNotWidenABoundedAbsence(t *testing.T) {
+	answer := "There is no automated correctness gate at all beyond lint; no test files, CI workflow, or test runner were found in the inspected scope."
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("bounded report became absence claims: %+v", claims)
+	}
+}
+
+// "For the inspected scope" is the same bounded report as "in the inspected
+// scope". A complete test inventory that reports zero tests supports it.
+func TestAbsenceSupportedForInspectedScope(t *testing.T) {
+	answer := "The absence of tests is supported for the inspected scope."
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("bounded absence became a claim: %+v", claims)
+	}
+}
+
+// Overlapping patterns can name one test gap as "known test", "tests", and
+// "test files". The repair must name it once.
+func TestOneTestGapProducesOneRepair(t *testing.T) {
+	answer := "No known test runner dependency, no tests, and no test files were found."
+	claims := negativeClaims(answer)
+	if len(claims) != 1 || claims[0].Subject != "test" {
+		t.Fatalf("claims = %+v, want one test claim", claims)
 	}
 }

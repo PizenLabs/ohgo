@@ -323,10 +323,38 @@ func listedEntities(text string) []string {
 	var out []string
 	for _, list := range lists {
 		for _, item := range splitEntityList(list) {
+			// "files and lines you inspected" is a directive, not a list of
+			// named entities. A relative pronoun or auxiliary verb makes the
+			// item a clause; requiring the answer to preserve it as a project
+			// name turns an instruction into an entity-loss review.
+			if listItemIsClause(item) {
+				continue
+			}
 			out = appendUnique(out, item)
 		}
 	}
 	return out
+}
+
+// listItemIsClause reports a list item that is a relative clause rather than a
+// name.
+func listItemIsClause(item string) bool {
+	for _, field := range strings.Fields(strings.ToLower(item)) {
+		if listClauseWords[field] {
+			return true
+		}
+	}
+	return false
+}
+
+var listClauseWords = map[string]bool{
+	"you": true, "we": true, "i": true, "they": true, "it": true,
+	"that": true, "which": true, "who": true, "whom": true, "whose": true,
+	"is": true, "are": true, "was": true, "were": true,
+	"has": true, "have": true, "had": true,
+	"can": true, "could": true, "should": true, "would": true, "will": true,
+	"may": true, "might": true, "do": true, "does": true, "did": true,
+	"inspected": true, "read": true, "named": true, "seen": true,
 }
 
 // coordinatedClause reports whether a captured object is really two clauses

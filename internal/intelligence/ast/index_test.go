@@ -513,6 +513,121 @@ func TestIndexReportsUnreadableDirectoryAndRecovers(t *testing.T) {
 	}
 }
 
+func TestEnsureParsedScopeLeavesOtherSourcePending(t *testing.T) {
+	// A path-scoped parse is a cheap first answer, not a second snapshot
+	// model: the selected directory is parsed, everything else stays PENDING,
+	// and a later full parse converges without losing the scoped work.
+	root := indexFixture(t, map[string]string{
+		"alpha/a.go": "package alpha\n\nfunc Alpha() {}\n",
+		"beta/b.go":  "package beta\n\nfunc Beta() {}\n",
+	})
+	idx, err := NewIndexWithOptions(root, IndexOptions{Adaptive: true})
+	if err != nil {
+		t.Fatalf("NewIndexWithOptions: %v", err)
+	}
+	if err := idx.EnsureParsedScope(context.Background(), []string{"alpha"}); err != nil {
+		t.Fatalf("EnsureParsedScope: %v", err)
+	}
+	info := idx.Info()
+	if info.ParsedFiles != 1 || info.PendingFiles != 1 {
+		t.Fatalf("scoped snapshot = %+v, want parsed=1 pending=1", info)
+	}
+	if info.StructuralComplete {
+		t.Fatal("scoped snapshot claimed structural completeness")
+	}
+	if info.LastResolution != "scoped_parse" {
+		t.Fatalf("LastResolution = %q, want scoped_parse", info.LastResolution)
+	}
+	files, err := idx.Files(context.Background(), FileQuery{})
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	states := map[string]ParseState{}
+	for _, file := range files.Files {
+		states[file.Path] = file.State
+	}
+	if states["alpha/a.go"] != ParseStateParsed || states["beta/b.go"] != ParseStatePending {
+		t.Fatalf("file states = %v, want alpha PARSED and beta PENDING", states)
+	}
+
+	if err := idx.EnsureParsed(context.Background()); err != nil {
+		t.Fatalf("EnsureParsed: %v", err)
+	}
+	info = idx.Info()
+	if info.ParsedFiles != 2 || info.PendingFiles != 0 {
+		t.Fatalf("full snapshot = %+v, want parsed=2 pending=0", info)
+	}
+	if !info.StructuralComplete {
+		t.Fatal("full snapshot is not structurally complete")
+	}
+
+	if err := idx.EnsureParsedScope(context.Background(), []string{"missing"}); err == nil {
+		t.Fatal("unknown parse scope succeeded")
+	}
+}
+
+func TestIndexStaleEntryIsNotServedAsCurrent(t *testing.T) {
+	// A directory that becomes unreadable must not keep contributing its last
+	// declarations. The retained record is historical evidence, so a lookup
+	// must return nothing and the inventory must say STALE rather than parsed.
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	root := indexFixture(t, map[string]string{
+		"a.go":        "package p\n\nfunc Alpha() {}\n",
+		"locked/b.go": "package p\n\nfunc Beta() {}\n",
+	})
+	idx := mustIndex(t, root)
+	if lookupCount(t, idx, "Beta") != 1 {
+		t.Fatal("precondition: Beta is indexed while readable")
+	}
+	locked := filepath.Join(root, "locked")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	info, err := idx.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if info.StaleFiles != 1 {
+		t.Fatalf("StaleFiles = %d, want 1", info.StaleFiles)
+	}
+	if info.ParsedFiles != 1 {
+		t.Fatalf("ParsedFiles = %d, want 1 current file", info.ParsedFiles)
+	}
+	if info.PendingFiles != 0 {
+		t.Fatalf("PendingFiles = %d, want 0: a stale file is not pending", info.PendingFiles)
+	}
+	if info.StructuralComplete || !info.Partial {
+		t.Fatalf("snapshot = %+v, want partial and structurally incomplete", info)
+	}
+	if lookupCount(t, idx, "Beta") != 0 {
+		t.Fatal("stale declaration was served as a current lookup")
+	}
+	if _, err := idx.File("locked/b.go"); err == nil {
+		t.Fatal("stale file listing succeeded")
+	}
+	files, err := idx.Files(context.Background(), FileQuery{Path: "locked"})
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	if len(files.Files) != 1 || files.Files[0].State != ParseStateStale {
+		t.Fatalf("files = %+v, want one STALE row", files.Files)
+	}
+
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := lookupCount(t, idx, "Beta"); got != 1 {
+		t.Fatalf("recovered lookup = %d, want 1", got)
+	}
+	if info := idx.Info(); info.StaleFiles != 0 || !info.StructuralComplete {
+		t.Fatalf("recovered snapshot = %+v, want no stale and structurally complete", info)
+	}
+}
+
 func TestIndexFileEnforcesContainment(t *testing.T) {
 	root := indexFixture(t, map[string]string{
 		"a.go": "package main\n\nfunc alpha() {}\n",

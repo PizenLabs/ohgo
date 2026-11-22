@@ -136,6 +136,23 @@ func TestVerifyPlanNeedsStructuralFoundation(t *testing.T) {
 	}
 }
 
+func TestDriftPlanUsesOnlyTheInventoryComparison(t *testing.T) {
+	plan, err := Build(IntentDrift, Availability{Structural: true}, Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Steps) != 1 {
+		t.Fatalf("steps = %+v, want exactly the drift strategy", plan.Steps)
+	}
+	step := plan.Steps[0]
+	if step.Provider != ProviderStructural || step.Strategy != "documentation-drift" {
+		t.Fatalf("step = %+v, want structural documentation-drift", step)
+	}
+	if step.Cost.Band != "low" {
+		t.Fatalf("cost band = %q, want low", step.Cost.Band)
+	}
+}
+
 func selected(plan Plan) map[Provider]bool {
 	out := make(map[Provider]bool, len(plan.Steps))
 	for _, step := range plan.Steps {

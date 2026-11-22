@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
@@ -13,7 +15,7 @@ import (
 
 type reviewReadTool struct {
 	text string
-	n    int
+	n    atomic.Int64
 }
 
 func (t *reviewReadTool) Name() string        { return "read" }
@@ -24,17 +26,19 @@ func (t *reviewReadTool) Parameters() *jsonschema.Schema {
 func (t *reviewReadTool) Approval() Approval            { return Approval{Tier: TierRead} }
 func (t *reviewReadTool) Exclusive(map[string]any) bool { return false }
 func (t *reviewReadTool) Execute(Context, map[string]any) Result {
-	t.n++
+	t.n.Add(1)
 	return Result{Text: t.text, Details: map[string]any{"path": "components/TerminalBlog.tsx"}}
 }
 
 type reviewStream struct {
 	responses []ai.AssistantMessage
 	index     int
+	requests  []ai.Request
 }
 
 func (s *reviewStream) fn() ai.StreamFn {
-	return func(_ context.Context, _ ai.Request) (*ai.Stream, error) {
+	return func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+		s.requests = append(s.requests, req)
 		if s.index >= len(s.responses) {
 			return ai.NewCompletedStream(ai.AssistantMessage{
 				Content:    []ai.ContentBlock{ai.TextContent{Text: "done"}},
@@ -95,6 +99,8 @@ func TestAnswerReviewCorrectsMissingFacetOnce(t *testing.T) {
 		reviewAnswer("Tests: 4 associated test files."),
 	}}
 	loop := newReviewLoop(t, stream.fn(), &reviewReadTool{}, intent, testReviewDirective)
+	var reported []Turn
+	loop.SetTurnHook(func(turn Turn) { reported = append(reported, turn) })
 	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "report the tests"}})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -102,8 +108,17 @@ func TestAnswerReviewCorrectsMissingFacetOnce(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("turns = %d, want the rejected answer plus one correction", len(turns))
 	}
+	if len(reported) != 2 || !reported[0].Suppressed || reported[1].Suppressed {
+		t.Fatalf("reported turns = %+v, want the candidate suppressed before publication", reported)
+	}
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "Tests: 4") {
 		t.Fatalf("final answer = %q, want the corrected facet", got)
+	}
+	if !turns[0].Suppressed {
+		t.Fatal("the rejected candidate was not suppressed")
+	}
+	if turns[len(turns)-1].Suppressed {
+		t.Fatal("the accepted answer was suppressed")
 	}
 }
 
@@ -165,10 +180,157 @@ func TestAnswerReviewCorrectsInventedProp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if read.n != 1 {
-		t.Fatalf("read executions = %d, want 1", read.n)
+	if read.n.Load() != 1 {
+		t.Fatalf("read executions = %d, want 1", read.n.Load())
 	}
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "publishedAt") {
 		t.Fatalf("final answer = %q, want the corrected prop", got)
+	}
+}
+
+// The correction request names only the rejected claims, not a rewritten
+// answer. Each line carries the evidence class and the permitted action, and
+// the list is capped so a broad rejection stays a bounded repair.
+func TestClaimRepairDirectiveListsOnlyRejectedClaims(t *testing.T) {
+	repairs := []contract.GroundingIssue{
+		{Code: "doc", Detail: "documentation-only term htmx", Claim: "htmx", Category: "attribution", Requirement: "source observation or attribution", Action: "attribute or verify"},
+		{Code: "abs", Detail: "tests treated as absent", Claim: "tests", Category: "absence", Requirement: "complete inventory", Action: "inspect or bound"},
+	}
+	got := completionRepairDirective(
+		"count={{count}} budget={{budget}}\n{{repairs}}\nreason={{reason}}",
+		"fallback {{reason}}", "the audit reason", repairs, 2)
+	for _, want := range []string{
+		"count=2", "budget=2", `"htmx"`, `"tests"`, "required: complete inventory",
+		"action: attribute or verify", "reason=the audit reason",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("directive missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "fallback") {
+		t.Fatalf("the prose fallback replaced the claim list:\n%s", got)
+	}
+
+	many := make([]contract.GroundingIssue, 0, 8)
+	for index := 0; index < 8; index++ {
+		many = append(many, contract.GroundingIssue{Code: "x", Detail: "d", Claim: "claim", Category: "absence"})
+	}
+	if got := completionRepairDirective("{{count}}/{{repairs}}", "fb", "r", many, 1); !strings.HasPrefix(got, "5/") {
+		t.Fatalf("repair list was not capped: %s", got)
+	}
+	if got := completionRepairDirective("{{count}}", "fallback {{reason}}", "r", nil, 1); got != "fallback r" {
+		t.Fatalf("no repairs did not fall back to prose: %q", got)
+	}
+}
+
+// The correction window has its own small call bound. A model that tries to
+// reopen the whole investigation after one rejected claim executes only the
+// allowance; the remaining calls are refused before the tool runs.
+func TestCorrectionBudgetBoundsToolCalls(t *testing.T) {
+	intent := reviewIntent(contract.FacetTests)
+	read := &reviewReadTool{text: "source body"}
+	var calls []ai.ContentBlock
+	for index := 0; index < 5; index++ {
+		calls = append(calls, ai.ToolCall{
+			ID: fmt.Sprintf("call-%d", index), Name: "read",
+			Arguments: map[string]any{"path": fmt.Sprintf("src/%d.go", index)},
+		})
+	}
+	stream := &reviewStream{responses: []ai.AssistantMessage{
+		reviewAnswer("This is a Next.js blog."),
+		{Content: calls, StopReason: ai.StopToolUse},
+		reviewAnswer("Tests: 4 associated test files."),
+	}}
+	loop := newReviewLoop(t, stream.fn(), read, intent, testReviewDirective)
+	loop.cfg.RepairRequest = "Repairs: {{count}}; budget: {{budget}}\n{{repairs}}\nreason: {{reason}}"
+	loop.cfg.CorrectionToolCalls = 2
+	loop.SetInformationalRepairs(intent)
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "report the tests"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if read.n.Load() != 2 {
+		t.Fatalf("correction executed %d tool calls, want 2", read.n.Load())
+	}
+	if len(turns) != 3 {
+		t.Fatalf("turns = %d, want answer, bounded correction, answer", len(turns))
+	}
+	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "Tests: 4") {
+		t.Fatalf("final answer = %q, want the repaired facet", got)
+	}
+	// The correction request carries the claim list and the budget, not just
+	// the prose reason.
+	found := false
+	for _, request := range stream.requests {
+		if strings.Contains(strings.Join(messageTexts(request.Messages), "\n"), "Repairs: 1; budget: 2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the correction request did not carry the claim-level directive: %+v", stream.requests)
+	}
+}
+
+// A correction may need more than one model turn: read one thing, then
+// another. The reopened surface lasts for the whole correction window, not
+// only the first request, and the budget still bounds it.
+func TestCorrectionSurfaceSpansMultipleRequests(t *testing.T) {
+	intent := reviewIntent(contract.FacetTests)
+	read := &reviewReadTool{text: "source body"}
+	stream := &reviewStream{responses: []ai.AssistantMessage{
+		reviewAnswer("This is a Next.js blog."),
+		{Content: []ai.ContentBlock{ai.ToolCall{ID: "read-a", Name: "read", Arguments: map[string]any{"path": "src/a.go"}}}, StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.ToolCall{ID: "read-b", Name: "read", Arguments: map[string]any{"path": "src/b.go"}}}, StopReason: ai.StopToolUse},
+		reviewAnswer("Tests: 4 associated test files."),
+	}}
+	loop := newReviewLoop(t, stream.fn(), read, intent, testReviewDirective)
+	loop.cfg.CorrectionToolCalls = 3
+	loop.SetInformationalRepairs(intent)
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "report the tests"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if read.n.Load() != 2 {
+		t.Fatalf("correction reads = %d, want two across the correction window", read.n.Load())
+	}
+	if len(turns) != 4 {
+		t.Fatalf("turns = %d, want answer, read, read, answer", len(turns))
+	}
+	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "Tests: 4") {
+		t.Fatalf("final answer = %q", got)
+	}
+}
+
+// Three model texts — a rejected candidate, an answer abandoned for another
+// tool call, and the final answer — must publish exactly one conclusion.
+func TestOnlyTheFinalAnswerIsPublished(t *testing.T) {
+	intent := reviewIntent(contract.FacetTests)
+	stream := &reviewStream{responses: []ai.AssistantMessage{
+		reviewAnswer("This is a Next.js blog."),
+		{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: "I will replace this answer after one more read."},
+				ai.ToolCall{ID: "read-1", Name: "read", Arguments: map[string]any{"path": "components/TerminalBlog.tsx"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+		reviewAnswer("Tests: 4 associated test files."),
+	}}
+	loop := newReviewLoop(t, stream.fn(), &reviewReadTool{}, intent, testReviewDirective)
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "report the tests"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var published []string
+	for _, turn := range turns {
+		if text := strings.TrimSpace(TranscriptTurn(turn).Assistant.Text()); text != "" {
+			published = append(published, text)
+		}
+	}
+	if len(published) != 1 {
+		t.Fatalf("published %d answers: %q", len(published), published)
+	}
+	if !strings.Contains(published[0], "Tests: 4") {
+		t.Fatalf("published %q, want only the final answer", published[0])
 	}
 }

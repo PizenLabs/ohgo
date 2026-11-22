@@ -745,3 +745,35 @@ func TestConcurrentAppendsToTheSameSessionStayOrdered(t *testing.T) {
 		t.Fatalf("stored %d messages, want %d", len(seen), writers*each)
 	}
 }
+
+// Per-turn usage is audit data: a benchmark must be able to separate the
+// initial investigation from the answer correction. It survives persistence but
+// is not required for replay.
+func TestStorePersistsAssistantUsage(t *testing.T) {
+	store := openStore(t)
+	sess, err := store.Create("/tmp", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := FromAgentMessage(agent.AssistantMessage{Message: ai.AssistantMessage{
+		Content:    []ai.ContentBlock{ai.TextContent{Text: "answer"}},
+		StopReason: ai.StopEndTurn,
+		Usage:      ai.Usage{Input: 11, Output: 7, CacheRead: 3, Total: 21},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(sess.ID, stored); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Messages(sess.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || loaded[0].Usage == nil {
+		t.Fatalf("usage was not persisted: %+v", loaded)
+	}
+	if used := loaded[0].Usage; used.Input != 11 || used.Output != 7 || used.CacheRead != 3 {
+		t.Fatalf("usage = %+v, want the measured per-turn values", used)
+	}
+}

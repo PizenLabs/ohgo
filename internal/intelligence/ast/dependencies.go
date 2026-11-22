@@ -155,7 +155,9 @@ func (idx *Index) Dependencies(ctx context.Context, query DependencyQuery) (Depe
 		if rec.test {
 			entry.TestFiles++
 		}
-		entry.Symbols += len(rec.symbols)
+		if rec.current() {
+			entry.Symbols += len(rec.symbols)
+		}
 		if rec.language != "" {
 			if languages[dir] == nil {
 				languages[dir] = map[Language]bool{}

@@ -43,7 +43,7 @@ func (idx *Index) Files(ctx context.Context, query FileQuery) (FileResult, error
 				continue
 			}
 		}
-		if query.Package != "" && rec.packageName != query.Package {
+		if !recordInPackage(rel, rec, query.Package) {
 			continue
 		}
 		if query.Kind != "" && rec.kind != query.Kind {
@@ -201,22 +201,49 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 }
 
 // fileInfoLocked projects one record into the inventory shape.
+//
+// State is derived here once so every consumer reads the same answer. Symbol
+// counts are current facts: a stale record keeps its syntax internally for
+// diagnostics but contributes no declaration count.
 func (idx *Index) fileInfoLocked(rel string, rec fileRecord) FileInfo {
-	unsupported := false
-	if language, ok := LanguageForPath(rel); ok {
-		if _, supported := idx.adapterLanguageSupported(language); !supported {
-			unsupported = true
+	language, source := LanguageForPath(rel)
+	state := ParseStateInventory
+	reason := ""
+	if source {
+		switch {
+		case rec.stale:
+			state = ParseStateStale
+			reason = "entry is unreadable; last parsed facts are retained but not current"
+		case rec.err != nil:
+			state = ParseStateFailed
+			reason = parseErrorText(rec.err)
+		case rec.parsed && rec.partial:
+			state = ParseStatePartial
+			if len(rec.issues) > 0 {
+				reason = rec.issues[0].Message
+			}
+		case rec.parsed:
+			state = ParseStateParsed
+		default:
+			if _, supported := idx.adapterLanguageSupported(language); !supported {
+				state = ParseStateUnsupported
+				reason = "no adapter for " + pathExt(rel)
+			} else {
+				state = ParseStatePending
+				reason = "source not parsed yet"
+			}
 		}
 	}
-	parseError := parseErrorText(rec.err)
-	if parseError == "" && rec.partial && len(rec.issues) > 0 {
-		parseError = rec.issues[0].Message
+	symbols, exports := 0, 0
+	if state.Current() {
+		symbols = len(rec.symbols)
+		exports = exportedCount(rec.symbols)
 	}
 	return FileInfo{
 		Path: rel, Dir: dirOf(rel), Package: rec.packageName,
 		Language: rec.language, Adapter: rec.adapter, Kind: rec.kind, Test: rec.test,
-		Parsed: rec.parsed, ParseError: parseError, Unsupported: unsupported,
-		Size: rec.size, ModUnixNano: rec.mtime, Symbols: len(rec.symbols), Exports: exportedCount(rec.symbols),
+		State: state, Reason: reason,
+		Size: rec.size, ModUnixNano: rec.mtime, Symbols: symbols, Exports: exports,
 	}
 }
 
@@ -261,7 +288,7 @@ func (idx *Index) languagePackagesLocked(query PackageQuery, scope string, scope
 	}
 	aggregates := map[key]*PackageInfo{}
 	for rel, rec := range idx.files {
-		if !rec.parsed || rec.err != nil || rec.language == string(LanguageGo) || !IsSourcePath(rel) {
+		if !rec.current() || rec.language == string(LanguageGo) || !IsSourcePath(rel) {
 			continue
 		}
 		if scope != "" && !fileScopeContains(scope, scopeFile, rel) {
@@ -372,6 +399,9 @@ func (idx *Index) mergedEntrypointsLocked() []Entrypoint {
 	out := make([]Entrypoint, 0, len(idx.files))
 	parsedPaths := map[string]bool{}
 	for rel, rec := range idx.files {
+		if !rec.current() {
+			continue
+		}
 		for _, entry := range rec.entrypoints {
 			parsedPaths[rel] = true
 			out = append(out, Entrypoint{
@@ -462,6 +492,9 @@ func (idx *Index) Tests(ctx context.Context, query TestQuery) (TestResult, error
 
 	if query.Symbol == "" {
 		for rel, rec := range idx.files {
+			if !rec.current() {
+				continue
+			}
 			if scope != "" && !fileScopeContains(scope, scopeFile, rel) {
 				continue
 			}
@@ -482,7 +515,7 @@ func (idx *Index) Tests(ctx context.Context, query TestQuery) (TestResult, error
 	if err != nil {
 		return TestResult{}, err
 	}
-	if found && query.Package != "" && target.Package != query.Package {
+	if found && !targetInPackage(target, query.Package) {
 		found = false
 	}
 	result.Found = found
@@ -739,6 +772,9 @@ func (idx *Index) resolveImpactTargetLocked(ctx context.Context, symbol, scope s
 		if scope != "" && !fileScopeContains(scope, scopeFile, rel) {
 			continue
 		}
+		if !rec.current() {
+			continue
+		}
 		for _, sym := range rec.symbols {
 			if sym.Kind == KindPackage || sym.Kind == KindImport {
 				continue
@@ -769,6 +805,9 @@ func (idx *Index) pathTargetsLocked(scope string, scopeFile bool, limit int) ([]
 	var targets []RefTarget
 	for rel, rec := range idx.files {
 		if !fileScopeContains(scope, scopeFile, rel) {
+			continue
+		}
+		if !rec.current() {
 			continue
 		}
 		for _, sym := range rec.symbols {

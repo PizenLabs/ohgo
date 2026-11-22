@@ -13,7 +13,7 @@ const SchemaVersion = "structural/v1"
 // AnalyzerVersion identifies the analysis semantics: planner tables, strategy
 // behaviour, and evidence rules. Bumping it invalidates cached analyses even
 // when the repository and schema are unchanged.
-const AnalyzerVersion = "2026-11-14.2"
+const AnalyzerVersion = "2026-11-22.1"
 
 // Level is one resolution of the structural model.
 //
@@ -223,6 +223,7 @@ type Coverage struct {
 	Parsed           int           `json:"parsed_files"`
 	Pending          int           `json:"pending_files"`
 	Failed           int           `json:"failed_files"`
+	Stale            int           `json:"stale_files"`
 	GraphNodes       int           `json:"graph_nodes"`
 	GraphEdges       int           `json:"graph_edges"`
 	Unresolved       int           `json:"unresolved_dependencies"`

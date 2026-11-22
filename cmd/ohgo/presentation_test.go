@@ -43,3 +43,18 @@ func TestPrintTurnOmitsAnswerRequiredControlRefusals(t *testing.T) {
 		t.Fatalf("output = %q, want the control refusal omitted", text)
 	}
 }
+
+// The plain transcript is a publication. A rejected candidate is not.
+func TestPrintTurnHidesSuppressedCandidate(t *testing.T) {
+	turn := agent.Turn{
+		Assistant: ai.AssistantMessage{
+			Content: []ai.ContentBlock{ai.TextContent{Text: "The first, unsupported answer."}},
+		},
+		Suppressed: true,
+	}
+	var out bytes.Buffer
+	printTurn(&out, turn)
+	if got := out.String(); got != "" {
+		t.Fatalf("output = %q, want no suppressed candidate", got)
+	}
+}

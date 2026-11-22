@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -101,7 +102,18 @@ func (e *headlessExit) Error() string { return e.outcome.line() }
 // contextAuditEnabled reports whether the runtime should print projection
 // decisions. It is an operator/debug switch, never a task input.
 func contextAuditEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("OHGO_DEBUG_CONTEXT"))) {
+	return debugSwitch("OHGO_DEBUG_CONTEXT")
+}
+
+// responseAuditEnabled reports whether the runtime should print the
+// machine-readable response transaction. It is an operator/debug switch, never
+// a task input.
+func responseAuditEnabled() bool {
+	return debugSwitch("OHGO_DEBUG_RESPONSE")
+}
+
+func debugSwitch(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "yes", "on":
 		return true
 	default:
@@ -187,12 +199,31 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 	loop.SetGrounding(intent.Grounding)
 	defer loop.SetGrounding(nil)
 	// The answer-level review can spend one bounded correction turn. It uses
-	// the same grounding assessment as completion, but it cannot complete the
-	// run; the final verdict still comes from projectRun after the loop stops.
-	loop.SetAnswerReview(func(turns []agent.Turn, answer string) string {
-		return agent.ReviewInformationalAnswer(intent, turns, answer)
+	// the same grounding and provenance assessments as completion, but it
+	// cannot complete the run; the final verdict still comes from projectRun
+	// after the loop stops. lastReport is declared here because the review
+	// reads the projection that precedes the answer request.
+	var lastReport agent.ProjectionReport
+	haveReport := false
+	provenanceOf := func() agent.EvidenceProvenance {
+		if haveReport {
+			return lastReport.Provenance
+		}
+		return agent.EvidenceProvenance{}
+	}
+	loop.SetInformationalReviews(intent, provenanceOf)
+	loop.SetEvidenceGap(func() string {
+		if haveReport {
+			return lastReport.EvidenceReview()
+		}
+		return ""
 	})
-	defer loop.SetAnswerReview(nil)
+	loop.SetAnswerFinalizer(func(turns []agent.Turn, answer, gap string) agent.FinalizedAnswer {
+		return agent.FinalizeAnswer(intent, turns, answer, provenanceOf(), gap)
+	})
+	defer loop.ClearInformationalReviews()
+	defer loop.SetEvidenceGap(nil)
+	defer loop.SetAnswerFinalizer(nil)
 
 	var snapshot *agent.TargetSnapshot
 	if intent.Kind == workspace.ObjectiveMutation && root != "" {
@@ -229,6 +260,11 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 		Snapshot:  snapshot,
 		Budget:    cognition.BudgetShapeFrom(loop.Budget().Snapshot()),
 	})
+	// The conclusion vocabulary belongs to this turn, like grounding. A plain
+	// answer must not be recordable as SAFE/BUG; only a failure investigation
+	// gets the defect verdicts.
+	loop.SetConclusionMode(contract.ConclusionModeFor(shapeIntent.Kind, shapeIntent.Objective))
+	defer loop.SetConclusionMode("")
 	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
 	loop.SetProjectionHook(projector.Project)
 	// A stateless run has no durable task checkpoint, but it still has
@@ -243,8 +279,6 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 		return projection, true
 	})
 	defer loop.SetCompactionProjection(nil)
-	var lastReport agent.ProjectionReport
-	haveReport := false
 	loop.SetProjectionReportHook(func(report agent.ProjectionReport) {
 		lastReport = report
 		haveReport = true
@@ -273,8 +307,36 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 		provenance = lastReport.Provenance
 	}
 	outcome := projectRun(err, turns, intent, snapshot, resolver, deadlineExpired, review, provenance, loop.LastMutation())
+	if responseAuditEnabled() {
+		audit := struct {
+			Response       agent.ResponseAudit `json:"response"`
+			EvidenceReview string              `json:"evidence_review,omitempty"`
+			Completion     string              `json:"completion"`
+			Turns          int                 `json:"turns"`
+			ToolCalls      int                 `json:"tool_calls"`
+		}{
+			Response:       loop.LastResponseAudit(),
+			EvidenceReview: review,
+			Completion:     string(outcome.State),
+			Turns:          len(turns),
+			ToolCalls:      countToolCalls(turns),
+		}
+		if raw, marshalErr := json.Marshal(audit); marshalErr == nil {
+			_, _ = fmt.Fprintln(os.Stderr, "[ohgo response] "+string(raw))
+		}
+	}
 	if out != nil {
 		_, _ = fmt.Fprintln(out, outcome.line())
 	}
 	return outcome, turns
+}
+
+// countToolCalls reports how many tool outcomes the run observed. It is audit
+// data for the response report, not a budget decision.
+func countToolCalls(turns []agent.Turn) int {
+	total := 0
+	for _, turn := range turns {
+		total += len(turn.Results)
+	}
+	return total
 }

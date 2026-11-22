@@ -66,6 +66,11 @@ func entityClaimIssues(sentence, observed string) []claimIssue {
 					Detail: fmt.Sprintf(
 						"the answer says `%s` is absent, but an observation in this run contains it; correct the negative claim or bound it to the inspected scope",
 						entity[1]),
+					Claim:       entity[1],
+					Category:    "absence",
+					Requirement: "an observation covering the entity",
+					Reference:   entity[1],
+					Action:      "remove the negative claim or correct it against the observation",
 				}}
 			}
 		}
@@ -96,6 +101,12 @@ func entityClaimIssues(sentence, observed string) []claimIssue {
 			Detail: fmt.Sprintf(
 				"the answer names `%s` as code, but no observation in this run contains that identifier; read the declaration or remove the name",
 				identifier),
+			Claim:       identifier,
+			Location:    claimLocation(sentence, identifier),
+			Category:    "entity",
+			Requirement: "the declaration of the named identifier",
+			Reference:   identifier,
+			Action:      "read the declaration or remove the identifier",
 		})
 	}
 	return issues
@@ -111,6 +122,11 @@ func entityLooksProjectSpecific(identifier string) bool {
 	if codeClaimStopWords[strings.ToLower(identifier)] {
 		return false
 	}
+	// The runtime state block prints evidence statuses in backticks. They are
+	// the runtime's vocabulary, not identifiers the repository declares.
+	if runtimeStatusIdentifier(identifier) {
+		return false
+	}
 	if strings.ContainsAny(identifier, "._") {
 		return true
 	}
@@ -124,10 +140,85 @@ func entityLooksProjectSpecific(identifier string) bool {
 	return false
 }
 
+// runtimeStatusIdentifier reports an evidence-status token from the runtime
+// state block. A model may quote `NOT_OBSERVED` or `PARTIAL` as a status; that
+// is not a claim about a declaration.
+func runtimeStatusIdentifier(identifier string) bool {
+	return runtimeStatusIdentifiers[strings.ToUpper(identifier)]
+}
+
+var runtimeStatusIdentifiers = map[string]bool{
+	"OBSERVED": true, "NOT_OBSERVED": true, "UNOBSERVED": true,
+	"SUPPORTED": true, "UNSUPPORTED": true, "PARTIAL": true,
+	"UNVERIFIED": true, "VERIFIED": true, "UNKNOWN": true,
+	"KNOWN": true, "CURRENT": true, "STALE": true, "PENDING": true,
+	"PARSED": true, "UNPARSED": true, "FAILED": true, "COMPLETE": true,
+	"INCOMPLETE": true, "SUFFICIENT": true, "INSUFFICIENT": true,
+	"BLOCKED": true, "NOT_QUERIED": true, "NOT_APPLICABLE": true,
+	"TRUNCATED": true, "INVENTORY": true,
+}
+
 // codeTokenObserved reports an identifier occurrence on a code boundary. A
 // plain substring test would let `Order` claim support from `NewOrder` and
 // `NewOrder` claim support from `NewOrderView`.
 func codeTokenObserved(text, token string) bool {
+	if tokenObservedBoundary(text, token) {
+		return true
+	}
+	// A package-qualified reference names a declaration by its package, not
+	// its source spelling: `checkout.New` is the `New` declared in
+	// `package checkout`. The observed file contains `func New(`, so the
+	// literal `checkout.New` never appears even though the run read exactly
+	// the declaration the answer names. The qualifier must be declared in the
+	// same observation, so a bare `New` from another package cannot satisfy it.
+	if dot := strings.LastIndexByte(token, '.'); dot > 0 && dot < len(token)-1 {
+		qualifier, member := token[:dot], token[dot+1:]
+		if packageDeclared(text, qualifier) && tokenObservedBoundary(text, member) {
+			return true
+		}
+		if typeMemberDeclared(text, qualifier, member) {
+			return true
+		}
+	}
+	return false
+}
+
+// typeMemberDeclared reports a member declared on the named type: an interface
+// method inside `type T interface { … }`, or a method whose receiver is T.
+// `StockReserver.Reserve` and `httpHandler.Checkout` are how an answer names
+// the declaration; the source spells them `Reserve(ctx …)` inside the interface
+// and `func (handler httpHandler) Checkout(…)`.
+func typeMemberDeclared(text, qualifier, member string) bool {
+	if qualifier == "" || member == "" {
+		return false
+	}
+	receiver := regexp.MustCompile(`\bfunc\s*\([^)]*\b` + regexp.QuoteMeta(qualifier) + `\)\s*` + regexp.QuoteMeta(member) + `\b`)
+	if receiver.MatchString(text) {
+		return true
+	}
+	marker := "type " + qualifier + " interface"
+	offset := 0
+	for {
+		index := strings.Index(text[offset:], marker)
+		if index < 0 {
+			return false
+		}
+		start := offset + index + len(marker)
+		end := strings.IndexByte(text[start:], '}')
+		if end < 0 {
+			return false
+		}
+		block := text[start : start+end]
+		if tokenObservedBoundary(block, member) {
+			return true
+		}
+		offset = start + end + 1
+	}
+}
+
+// tokenObservedBoundary reports a literal identifier occurrence that is not
+// part of a longer identifier.
+func tokenObservedBoundary(text, token string) bool {
 	for offset := 0; offset < len(text); {
 		index := strings.Index(text[offset:], token)
 		if index < 0 {
@@ -143,6 +234,22 @@ func codeTokenObserved(text, token string) bool {
 			continue
 		}
 		return true
+	}
+	return false
+}
+
+// packageDeclared reports a `package <name>` clause in observed source. The
+// read tool renders line numbers, so a numeric gutter is tolerated.
+func packageDeclared(text, name string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimLeft(strings.TrimSpace(line), "0123456789 \t")
+		if !strings.HasPrefix(line, "package ") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "package "))
+		if len(fields) > 0 && fields[0] == name {
+			return true
+		}
 	}
 	return false
 }

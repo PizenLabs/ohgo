@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -306,10 +307,9 @@ func TestFencedCodeBodyFillsTheBlockWidth(t *testing.T) {
 	}
 }
 
-// Live text deltas reveal the answer while the stream is still open, and the
-// completed turn publishes only what was not already revealed: the
-// transcript holds the turn exactly once, in order, across several frames
-// rather than one dump.
+// The completed turn publishes the answer exactly once. Text is not streamed
+// while the request is open because the model can abandon it for a tool call
+// or the answer review can reject it.
 func TestLiveTextDeltasRevealWithoutDuplication(t *testing.T) {
 	want := "live streaming answer that reveals as it is generated"
 	loop, err := agent.New(agent.Config{
@@ -323,7 +323,9 @@ func TestLiveTextDeltasRevealWithoutDuplication(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	p := NewProgram(loop, "test", 0)
-	p.runTurn("go")
+	// A mutation objective has no answer review, so its text still streams
+	// token by token. An informational answer is published after the gate.
+	p.runTurn("fix the failing test")
 	var got strings.Builder
 	deltas := 0
 	timeout := time.After(5 * time.Second)
@@ -338,8 +340,8 @@ func TestLiveTextDeltasRevealWithoutDuplication(t *testing.T) {
 				if got.String() != want {
 					t.Fatalf("transcript = %q, want the turn exactly once, in order", got.String())
 				}
-				if deltas < 3 {
-					t.Errorf("deltas = %d, want the live reveals, not one dump", deltas)
+				if deltas == 0 {
+					t.Error("the completed answer was never published")
 				}
 				return
 			}
@@ -363,5 +365,75 @@ func TestCommonPrefixLenLandsOnRuneBoundary(t *testing.T) {
 	}
 	if rest != "a\u4e2dx"[skip:] || skip != 1 {
 		t.Errorf("skip = %d tail = %q, want 1 and the whole final rune intact", skip, rest)
+	}
+}
+
+type terminalTestReadTool struct{}
+
+func (terminalTestReadTool) Name() string        { return "read" }
+func (terminalTestReadTool) Description() string { return "read fixture" }
+func (terminalTestReadTool) Parameters() *jsonschema.Schema {
+	return jsonschema.MustCompile([]byte(`{"type":"object"}`))
+}
+func (terminalTestReadTool) Approval() agent.Approval { return agent.Approval{Tier: agent.TierRead} }
+func (terminalTestReadTool) Exclusive(map[string]any) bool {
+	return false
+}
+func (terminalTestReadTool) Execute(agent.Context, map[string]any) agent.Result {
+	return agent.Result{Text: "package fixture"}
+}
+
+// A full answer followed by a tool call is investigation, not a conclusion.
+// The TUI publishes the text only when the turn completes and is publishable,
+// so the abandoned answer never reaches the transcript.
+func TestAbandonedAnswerBeforeToolIsNotPublished(t *testing.T) {
+	responses := []ai.AssistantMessage{
+		{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: "abandoned answer that should not appear"},
+				ai.ToolCall{ID: "read-1", Name: "read", Arguments: map[string]any{"path": "a.go"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+		{
+			Content:    []ai.ContentBlock{ai.TextContent{Text: "final answer"}},
+			StopReason: ai.StopEndTurn,
+		},
+	}
+	index := 0
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			if index >= len(responses) {
+				return ai.NewCompletedStream(responses[len(responses)-1]), nil
+			}
+			response := responses[index]
+			index++
+			return ai.NewCompletedStream(response), nil
+		},
+		Tools: runtimeCaps(terminalTestReadTool{}),
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	p.runTurn("fix the failing test")
+	var got strings.Builder
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-p.events:
+			if delta, ok := event.(AssistantDelta); ok {
+				got.WriteString(delta.Text)
+			}
+			if _, ok := event.(AssistantDone); ok {
+				if got.String() != "final answer" {
+					t.Fatalf("published %q, want only the final answer", got.String())
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("turn did not finish")
+		}
 	}
 }

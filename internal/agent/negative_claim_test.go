@@ -29,20 +29,20 @@ func TestNegativeClaimIsContradictedByAnObservedPath(t *testing.T) {
 		"Notable finding: no portfolio file exists anywhere under app/, so the component file is missing."
 
 	assessment := AssessGrounding(claimContractFor("analyze what this project is about"), turns, answer)
-	var detail string
+	// A correction may name several independent absent subjects. The contract
+	// is that the contradicting observation is reported, not that it is the
+	// only issue.
+	found := false
 	for _, issue := range assessment.Issues {
-		if issue.Code == "unsupported_negative_conclusion" {
-			detail = issue.Detail
+		if issue.Code != "unsupported_negative_conclusion" {
+			continue
+		}
+		if strings.Contains(issue.Detail, "app/portfolio.tsx") && strings.Contains(issue.Detail, "portfolio") {
+			found = true
 		}
 	}
-	if detail == "" {
-		t.Fatalf("issues = %+v, want unsupported_negative_conclusion", assessment.Issues)
-	}
-	if !strings.Contains(detail, "app/portfolio.tsx") {
-		t.Fatalf("detail = %q, want the contradicting observation named", detail)
-	}
-	if !strings.Contains(detail, "portfolio") {
-		t.Fatalf("detail = %q, want the specific subject, not the bare noun", detail)
+	if !found {
+		t.Fatalf("issues = %+v, want the contradicting observation named", assessment.Issues)
 	}
 }
 

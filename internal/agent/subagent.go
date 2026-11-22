@@ -232,17 +232,19 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 	}
 
 	child := Config{
-		Model:           parent.Model,
-		ModelFn:         parent.ModelFn,
-		Stream:          parent.Stream,
-		System:          spec.System,
-		Tools:           tools,
-		MaxTokens:       maxTokens,
-		AnswerRequest:   parent.AnswerRequest,
-		Reasoning:       spec.Reasoning || parent.Reasoning,
-		ReasoningEffort: firstNonEmpty(spec.ReasoningEffort, parent.ReasoningEffort),
-		ToolChoice:      parent.ToolChoice,
-		SessionID:       parent.SessionID,
+		Model:               parent.Model,
+		ModelFn:             parent.ModelFn,
+		Stream:              parent.Stream,
+		System:              spec.System,
+		Tools:               tools,
+		MaxTokens:           maxTokens,
+		AnswerRequest:       parent.AnswerRequest,
+		RepairRequest:       parent.RepairRequest,
+		CorrectionToolCalls: parent.CorrectionToolCalls,
+		Reasoning:           spec.Reasoning || parent.Reasoning,
+		ReasoningEffort:     firstNonEmpty(spec.ReasoningEffort, parent.ReasoningEffort),
+		ToolChoice:          parent.ToolChoice,
+		SessionID:           parent.SessionID,
 		// A child may not rewrite the parent's context, and its own compaction
 		// would need its own summarizer to be correct.
 		TransformContext:    nil,

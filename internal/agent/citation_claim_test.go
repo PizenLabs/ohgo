@@ -107,3 +107,55 @@ func TestBashSourceReadSupportsCitation(t *testing.T) {
 		t.Fatal("a listing was treated as a source observation")
 	}
 }
+
+// A grep hit is a source observation of the matched lines. The model traced an
+// event through `grep -rn "OrderPaid"`, cited the file with the line range the
+// search reported, and was told the file was never opened. When the cited
+// window contains an observed match, the citation is supported; a listing, a
+// match outside the window, or a bare path still is not.
+func TestGrepLineMatchSupportsCitation(t *testing.T) {
+	grep := []Turn{{Results: []ToolOutcome{{
+		ToolName: "bash",
+		Args:     map[string]any{"command": "cd backend && grep -rn \"OrderPaid\" --include=*.go ."},
+		Result: Result{
+			Text: "./fulfillment/app/service.go:490:\t\t\ts.publisher.Publish(ctx, integration.OrderShipped{\n" +
+				"./fulfillment/app/service.go:497:\t\t\ts.publisher.Publish(ctx, integration.OrderDelivered{\n",
+			Executes: true, Finished: true,
+		},
+	}}}}
+	sentence := "Fulfillment publishes OrderShipped and OrderDelivered (`fulfillment/app/service.go:490-502`)."
+	if issue := citationClaimIssue(sentence, grep); issue != nil {
+		t.Fatalf("an observed grep window was treated as an unopened citation: %+v", issue)
+	}
+
+	// A listing names the path but observes no line.
+	listing := []Turn{{Results: []ToolOutcome{{
+		ToolName: "bash",
+		Args:     map[string]any{"command": "find backend -name service.go"},
+		Result:   Result{Text: "backend/fulfillment/app/service.go\n", Executes: true, Finished: true},
+	}}}}
+	if issue := citationClaimIssue(sentence, listing); issue == nil {
+		t.Fatal("a listing was accepted as a source observation")
+	}
+
+	// The observed match is outside the cited window.
+	outside := "Fulfillment publishes events (`fulfillment/app/service.go:600-610`)."
+	if issue := citationClaimIssue(outside, grep); issue == nil {
+		t.Fatal("a match outside the cited line window supported the citation")
+	}
+}
+
+// A path named to say it was not opened is a limitation, not a citation. The
+// corrected deep answer listed the next files to inspect and was reviewed as if
+// it had presented them as evidence.
+func TestUnopenedPathIsNotACitation(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{claimListing("lib", "app.ts\n")}}}
+	limitation := "The orchestrator (`lib/app.ts`) was not opened either."
+	if issue := citationClaimIssue(limitation, turns); issue != nil {
+		t.Fatalf("an explicit limitation was treated as a citation: %+v", issue)
+	}
+	claim := "Search lives in lib/app.ts (lib/app.ts)."
+	if issue := citationClaimIssue(claim, turns); issue == nil {
+		t.Fatal("a real citation of an unopened path was accepted")
+	}
+}

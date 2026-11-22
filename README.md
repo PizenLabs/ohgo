@@ -65,10 +65,13 @@ it is done. ohgo is built around the opposite contract.
 ## Features
 
 - **A focused tool set** — `read`, `write`, `edit`, `delete`, `bash`, `wait`,
-  `verify`, `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`, `structure`,
-  `webfetch`, `todo`, `task`, and `artifact` when a session is attached.
-  `verify` owns a service's start/readiness/checks/cleanup lifecycle instead of
-  making the model poll and kill it turn by turn.
+  `verify`, `check`, `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`,
+  `structure`, `webfetch`, `todo`, `task`, and `artifact` when a session is
+  attached. `verify` owns a service's start/readiness/checks/cleanup lifecycle
+  instead of making the model poll and kill it turn by turn; `check` discovers
+  the repository's own test, static-analysis, and build commands from its
+  manifests, executes only the requested kinds, and returns parsed outcomes
+  plus verification evidence.
 - **Repository intelligence** — `symbols`, `graph`, `refs`, and `structure`
   share one incremental structural snapshot. Go uses the native `go/ast`
   backend; cgo builds add pinned tree-sitter adapters for TypeScript/TSX,
@@ -81,7 +84,9 @@ it is done. ohgo is built around the opposite contract.
   roots, and unsupported source. A nested repository is treated as a project
   boundary even when the enclosing `.gitignore` hides its directory, so a root
   `backend/` rule cannot erase a nested Go project. Test associations stay
-  static rather than being presented as coverage.
+  static rather than being presented as coverage. Intent `drift` compares
+  documented repository paths with the same inventory and reports each missing
+  or unverifiable target with the document line and the inventory evidence.
 - **Sessions that survive** — transcripts are stored in a pure-Go SQLite
   database, and a resumed session restores its own workspace, project, and
   effective model.

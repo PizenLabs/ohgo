@@ -661,3 +661,95 @@ func TestProvenanceSurvivesThePersistedEvidenceLedger(t *testing.T) {
 		t.Fatalf("provenance changed across persistence:\nbefore %+v\nafter  %+v", before, after)
 	}
 }
+
+func shellReadEvidenceForTest(id, command, text string) agent.ToolOutcome {
+	return agent.ToolOutcome{
+		CallID:   id,
+		ToolName: "bash",
+		Args:     map[string]any{"command": command},
+		Result:   agent.Result{Text: text, Executes: true, Finished: true},
+	}
+}
+
+// A source file paged or concatenated through the shell is still source
+// content. The requirement ledger must not keep asking for a read the model
+// already performed; it only needs a second content observation for a survey.
+func TestShellSourceReadSatisfiesRepositorySurvey(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "The platform uses PostgreSQL."),
+		shellReadEvidenceForTest("bash-1", "cat backend/cmd/web/main.go",
+			"package main\n\nfunc main() { http.ListenAndServe(\":8080\", nil) }\n"),
+	)
+	summary := state.Provenance(shape)
+	if !summary.HasImplementation {
+		t.Fatalf("a shell source read was not implementation evidence: %+v", summary)
+	}
+	if !state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("a shell source read did not satisfy repository_survey")
+	}
+}
+
+// A shell read of documentation is content, but it is not implementation
+// evidence: reading README.md twice does not describe what the source does.
+func TestShellDocumentationReadIsNotImplementation(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "The platform uses PostgreSQL."),
+		shellReadEvidenceForTest("bash-1", "cat docs/architecture.md", "# Architecture\n"),
+	)
+	if state.Provenance(shape).HasImplementation {
+		t.Fatal("a shell documentation read was counted as implementation")
+	}
+}
+
+// A large source file has more distinct tokens than the documentation
+// vocabulary output cap. The comparison must scan the whole retained value, or
+// a driver named after line 141 is misclassified as documentation-only and the
+// completion audit vetoes a source-verified claim.
+func TestObservedVocabularyIsNotCappedByTheDocumentationOutputBound(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	var source strings.Builder
+	for index := 0; index < 300; index++ {
+		fmt.Fprintf(&source, "filler%03d ", index)
+	}
+	source.WriteString(`db, err := otelsql.Open("postgres", connString)`)
+	observeReads(state, shape,
+		readEvidenceForTest("read-doc", "README.md", "The application stores its data in Postgres."),
+		readEvidenceForTest("read-src", "main.go", source.String()),
+	)
+	for _, term := range state.Provenance(shape).DocumentationTerms {
+		if term == "postgres" {
+			t.Fatal("a term observed past the documentation output bound was reported as documentation-only")
+		}
+	}
+}
+
+// A second page of a document must not erase the opening definition. The
+// project's own name lives on line 3; when a later read overwrote the item, the
+// name became "documentation-only" and the completion audit vetoed an answer
+// that merely repeated it.
+func TestPagedDocumentKeepsItsOpeningIdentity(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	read := func(id string, offset, limit int, text string) agent.ToolOutcome {
+		return agent.ToolOutcome{
+			CallID: id, ToolName: "read", Args: map[string]any{"path": "README.md"},
+			Result: agent.Result{Text: text, Details: map[string]any{
+				"path": "README.md", "totalLines": 100, "offset": offset, "limit": limit,
+			}},
+		}
+	}
+	observeReads(state, shape,
+		read("read-1", 1, 50, "# go-ecommerce\n\nGoCommerce is an e-commerce application written in Go.\n"),
+		read("read-2", 51, 50, "## Later page\n\nThe rest of the documentation.\n"),
+	)
+	for _, term := range state.Provenance(shape).DocumentationTerms {
+		if term == "gocommerce" {
+			t.Fatal("the paged read lost the document's opening identity")
+		}
+	}
+}

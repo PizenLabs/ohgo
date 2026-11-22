@@ -56,12 +56,18 @@ func (t *StructureTool) analysisView(
 	fmt.Fprintf(&text, "intent: %s\n", analysis.Request.Intent)
 	writePlanText(&text, analysis.Plan)
 	writeArchitectureText(&text, analysis.Architecture)
+	if analysis.Drift != nil {
+		writeDriftText(&text, *analysis.Drift)
+	}
 	modules := structural.Summaries(analysis.Snapshot, hierarchyDisplayLevel(analysis.Snapshot), rows)
 	writeHierarchyText(&text, analysis.Snapshot, modules, rows)
 	writeFocusText(&text, analysis.Focus)
 	writeBoundaryText(&text, analysis.Boundaries)
 	writeCommunityText(&text, analysis.Communities)
 	writeSampleText(&text, analysis.Samples)
+	if analysis.Survey != nil {
+		writeSurveyText(&text, *analysis.Survey)
+	}
 	writeCoverageText(&text, analysis.Coverage)
 	writeIssueText(&text, analysis.Issues)
 	fmt.Fprintf(&text, "cache: %s%s\n", analysis.Cache, cacheReasonSuffix(analysis.CacheReason))
@@ -91,11 +97,26 @@ func (t *StructureTool) analysisView(
 	if analysis.Focus != nil {
 		details["focus_report"] = focusDetail(*analysis.Focus)
 	}
+	if analysis.Drift != nil {
+		details["documentation_drift"] = driftDetail(*analysis.Drift)
+	}
+	if analysis.Survey != nil {
+		details["survey"] = surveyDetail(*analysis.Survey)
+	}
 	if len(analysis.Manifests.Manifests) > 0 || analysis.Manifests.Module != "" {
 		details["manifests"] = manifestDetail(analysis.Manifests)
 	}
 	addStructuralProvenance(details, idx, analysis.Coverage.Complete())
-	details["complete"] = analysis.Coverage.Complete() && status == "ok"
+	complete := analysis.Coverage.Complete() && status == "ok"
+	if analysis.Focus != nil && !analysis.Focus.Evidence.Complete() {
+		// A focus neighbourhood with disclosed static gaps is not a complete
+		// answer: its counts are lower bounds, not exact totals.
+		complete = false
+	}
+	details["complete"] = complete
+	if analysis.Survey != nil {
+		details["survey_complete"] = len(analysis.Survey.Unexplored) == 0 && !analysis.Survey.Truncated
+	}
 	details["coordinates"] = nodeCoordinates(modules)
 	return agent.Result{Text: strings.TrimRight(text.String(), "\n"), Details: details}
 }
@@ -361,11 +382,64 @@ func writeSampleText(text *strings.Builder, samples []structural.Sample) {
 	}
 }
 
+// writeDriftText renders the bounded documentation comparison. A finding is a
+// documentation claim the inventory did not confirm, not proof of a bug.
+func writeDriftText(text *strings.Builder, drift structural.DriftReport) {
+	fmt.Fprintf(text, "documentation_drift: claims=%d resolved=%d findings=%d evidence=%s %s\n",
+		drift.Claims, drift.Resolved, len(drift.Findings), drift.Evidence.State,
+		confidenceLabel(drift.Evidence.Confidence))
+	if len(drift.Documents) > 0 {
+		fmt.Fprintf(text, "  documents: %d (", len(drift.Documents))
+		for i, document := range drift.Documents {
+			if i >= 3 {
+				fmt.Fprintf(text, ", +%d more", len(drift.Documents)-3)
+				break
+			}
+			if i > 0 {
+				text.WriteString(", ")
+			}
+			text.WriteString(document)
+		}
+		text.WriteString(")\n")
+	}
+	for i, finding := range drift.Findings {
+		if i >= 8 {
+			fmt.Fprintf(text, "  - ... %d more findings\n", len(drift.Findings)-8)
+			break
+		}
+		fmt.Fprintf(text, "  - [%s] %s:%d %s — %s\n",
+			finding.Severity, finding.Document, finding.Line, finding.Target, finding.Detail)
+	}
+	if drift.Evidence.Reason != "" {
+		fmt.Fprintf(text, "  limitation: %s\n", drift.Evidence.Reason)
+	}
+}
+
+// writeSurveyText names the modules the analysis did not represent with a
+// source coordinate. It never claims a module was read: a sample is a
+// coordinate the model can open.
+func writeSurveyText(text *strings.Builder, survey structural.SurveyReport) {
+	fmt.Fprintf(text, "survey: level=%s modules=%d explored=%d unexplored=%d evidence=%s\n",
+		survey.Level, len(survey.Modules), survey.Explored, len(survey.Unexplored), survey.Evidence.State)
+	for i, module := range survey.Modules {
+		if module.Explored || i >= 8 {
+			continue
+		}
+		fmt.Fprintf(text, "  - unexplored: %s (%d files)\n", displayPath(module.Path), module.Files)
+	}
+	if len(survey.Unexplored) > 8 {
+		fmt.Fprintf(text, "  - ... %d more unexplored modules\n", len(survey.Unexplored)-8)
+	}
+	if survey.Reason != "" {
+		fmt.Fprintf(text, "  limitation: %s\n", survey.Reason)
+	}
+}
+
 func writeCoverageText(text *strings.Builder, coverage structural.Coverage) {
 	fmt.Fprintf(text, "coverage: state=%s confidence=%.2f level=%s\n",
 		coverage.State, coverage.Confidence, coverage.Level)
-	fmt.Fprintf(text, "  files=%d materialized=%d parsed=%d pending=%d failed=%d\n",
-		coverage.Files, coverage.Materialized, coverage.Parsed, coverage.Pending, coverage.Failed)
+	fmt.Fprintf(text, "  files=%d materialized=%d parsed=%d pending=%d failed=%d stale=%d\n",
+		coverage.Files, coverage.Materialized, coverage.Parsed, coverage.Pending, coverage.Failed, coverage.Stale)
 	if coverage.DependenciesSeen {
 		fmt.Fprintf(text, "  dependencies: nodes=%d edges=%d unresolved=%d\n",
 			coverage.GraphNodes, coverage.GraphEdges, coverage.Unresolved)
@@ -626,6 +700,7 @@ func coverageDetail(coverage structural.Coverage) map[string]any {
 		"parsed_files":       coverage.Parsed,
 		"pending_files":      coverage.Pending,
 		"failed_files":       coverage.Failed,
+		"stale_files":        coverage.Stale,
 		"graph_nodes":        coverage.GraphNodes,
 		"graph_edges":        coverage.GraphEdges,
 		"unresolved":         coverage.Unresolved,
@@ -650,22 +725,77 @@ func issueDetails(issues []structural.Issue) []map[string]any {
 }
 
 func focusDetail(focus structural.FocusReport) map[string]any {
+	calls := make([]map[string]any, 0, len(focus.Calls))
+	for _, call := range focus.Calls {
+		calls = append(calls, map[string]any{
+			"direction": call.Direction, "symbol": call.Symbol,
+			"path": call.Path, "line": call.Line, "test": call.Test,
+		})
+	}
 	return map[string]any{
-		"selector":      focus.Selector,
-		"selector_kind": focus.SelectorKind,
-		"found":         focus.Found,
-		"ambiguous":     focus.Ambiguous,
-		"candidates":    append([]string(nil), focus.Candidates...),
-		"targets":       focus.Targets,
-		"references":    focus.References,
-		"callers":       focus.Callers,
-		"importers":     focus.Importers,
-		"tests":         focus.Tests,
-		"nodes":         focus.Nodes,
-		"edges":         focus.Edges,
-		"truncated":     focus.Truncated,
-		"reason":        focus.Reason,
-		"evidence":      evidenceDetail(focus.Evidence),
+		"selector":       focus.Selector,
+		"selector_kind":  focus.SelectorKind,
+		"found":          focus.Found,
+		"ambiguous":      focus.Ambiguous,
+		"candidates":     append([]string(nil), focus.Candidates...),
+		"targets":        focus.Targets,
+		"references":     focus.References,
+		"callers":        focus.Callers,
+		"callees":        focus.Callees,
+		"calls":          calls,
+		"importers":      focus.Importers,
+		"importer_paths": append([]string(nil), focus.ImporterPaths...),
+		"tests":          focus.Tests,
+		"nodes":          focus.Nodes,
+		"edges":          focus.Edges,
+		"truncated":      focus.Truncated,
+		"reason":         focus.Reason,
+		"evidence":       evidenceDetail(focus.Evidence),
+	}
+}
+
+func surveyDetail(survey structural.SurveyReport) map[string]any {
+	modules := make([]map[string]any, 0, len(survey.Modules))
+	for _, module := range survey.Modules {
+		modules = append(modules, map[string]any{
+			"path": module.Path, "files": module.Files,
+			"sample": module.Sample, "explored": module.Explored,
+		})
+	}
+	return map[string]any{
+		"level":      survey.Level,
+		"modules":    modules,
+		"explored":   survey.Explored,
+		"unexplored": append([]string(nil), survey.Unexplored...),
+		"truncated":  survey.Truncated,
+		"reason":     survey.Reason,
+		"evidence":   evidenceDetail(survey.Evidence),
+	}
+}
+
+func driftDetail(drift structural.DriftReport) map[string]any {
+	findings := make([]map[string]any, 0, len(drift.Findings))
+	for _, finding := range drift.Findings {
+		findings = append(findings, map[string]any{
+			"code":          finding.Code,
+			"severity":      string(finding.Severity),
+			"document":      finding.Document,
+			"line":          finding.Line,
+			"target":        finding.Target,
+			"detail":        finding.Detail,
+			"documentation": evidenceDetail(finding.Documentation),
+			"source":        evidenceDetail(finding.Source),
+		})
+	}
+	return map[string]any{
+		"documents":  append([]string(nil), drift.Documents...),
+		"claims":     drift.Claims,
+		"resolved":   drift.Resolved,
+		"findings":   findings,
+		"unreadable": append([]string(nil), drift.Unreadable...),
+		"truncated":  drift.Truncated,
+		"reason":     drift.Reason,
+		"evidence":   evidenceDetail(drift.Evidence),
 	}
 }
 

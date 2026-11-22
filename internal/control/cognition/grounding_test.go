@@ -276,3 +276,23 @@ func TestRenderStateClaimBoundaryShowsCompleteTestInventory(t *testing.T) {
 		}
 	}
 }
+
+// The generation side names the documentation-only vocabulary before the
+// answer, so the model can attribute it or verify it in source instead of
+// discovering the boundary only from a rejected answer.
+func TestRenderStateNamesDocumentationOnlyTerms(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-doc", "README.md", "# Project\n\nThe frontend uses HTMX."),
+		readEvidenceForTest("read-src", "main.go", "package main\n\nfunc main() {}\n"),
+	)
+	if !state.Provenance(shape).RequireAttribution {
+		t.Fatal("the broad analysis shape did not require attribution")
+	}
+	rendered := RenderState(shape, state, SummarizeExecution(nil),
+		Sufficiency{State: Sufficient, Stage: StageAnswer}, CandidateSet{}, 0, 0)
+	if !strings.Contains(rendered, "Documentation-only terms: htmx") {
+		t.Fatalf("state block does not name the documentation-only term:\n%s", rendered)
+	}
+}

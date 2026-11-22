@@ -846,7 +846,7 @@ requirement:
 
 | Kind | Durable requirement | What `PROVEN` means |
 | --- | --- | --- |
-| `informational` | a non-empty final answer | an answer was produced; its correctness is not verified |
+| `informational` | a non-empty finalized answer that passed the claim/evidence audit | an answer was produced and unsupported claims were removed or bounded; independent semantic correctness is not claimed |
 | `execution` (`ExecutionCommand`) | a current, attributable execution observation, or the contract's required verification | a process or check reached a successful terminal state |
 | `execution` (`ExecutionRuntime`) | a current live-runtime observation: the service reached readiness, a check passed while it was alive, and it did not exit | the project runtime was observed running, not merely a command that finished |
 | `mutation` | an observed definite change **and** a current verification that followed it and covers the contract's declared check kind and scope | the named change was made and checked afterwards |
@@ -954,8 +954,10 @@ introduced.
 - Lineage is derived per call. It does not verify external artifacts or prove
   that a filesystem path still exists.
 - `PROVEN` depends on the evaluator's verdict plus the task's recorded
-  observation. It is not an independent semantic proof, and an informational
-  proof does not establish answer correctness. A proof written before the
+  observation. It is not an independent semantic proof. An informational proof
+  establishes that the published text passed the deterministic claim/evidence
+  audit and that unsupported claims were removed or bounded; it does not
+  establish independent semantic correctness. A proof written before the
   explicit `Answered`/`Executed`/`Observed` flags existed projects as
   `COMPLETED_UNPROVEN`; it is not silently upgraded.
 - The durable boundary re-checks ordering, currentness, the contract kind, and

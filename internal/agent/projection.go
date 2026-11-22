@@ -31,6 +31,18 @@ type ProjectionRequest struct {
 	// progress and the only remaining output is prose. The projector should
 	// close the tool surface and say so; it must not widen authority.
 	ForceAnswer bool
+	// Correcting reports that the previous answer failed the answer-level
+	// review and this request may gather the missing evidence. The loop
+	// reopens the constructed tool set for exactly this turn, so the runtime
+	// block must describe that same surface: a stale "no tool is available"
+	// verdict next to a live tool block tells the model contradictory facts.
+	// It never widens authority; every call still crosses grounding and the
+	// security gate.
+	Correcting bool
+	// CorrectionBudget is the number of tool calls this correction may still
+	// execute. It is a control-plane fact, not a hint: the loop refuses calls
+	// beyond it, and the runtime block states the remaining allowance.
+	CorrectionBudget int
 }
 
 // ProjectionResult is the view of the next request a projector returns.
@@ -121,6 +133,10 @@ type ProjectionReport struct {
 	Terminal bool `json:"terminal,omitempty"`
 	// StopReason explains a terminal verdict in evidence terms.
 	StopReason string `json:"stop_reason,omitempty"`
+	// Missing names the unresolved requirements the projection withheld an
+	// action for. It is audit data and the correction request's vocabulary:
+	// a premature answer must name the evidence frontier it did not close.
+	Missing []string `json:"missing,omitempty"`
 	// Provenance summarizes what kind of evidence the answer may rely on:
 	// observed implementation, documentation, or external content. Completion
 	// uses it to keep documentation claims distinguishable from observed facts.
@@ -186,6 +202,13 @@ func (r ProjectionReport) EvidenceReview() string {
 	}
 	if r.Stage != "" {
 		review += " at stage " + r.Stage
+	}
+	if len(r.Missing) > 0 {
+		missing := r.Missing
+		if len(missing) > 4 {
+			missing = missing[:4]
+		}
+		review += "; missing: " + strings.Join(missing, "; ")
 	}
 	return review
 }

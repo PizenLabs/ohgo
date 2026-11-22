@@ -37,6 +37,8 @@ const (
 	IntentImpact       Intent = "impact"
 	IntentDebug        Intent = "debug"
 	IntentVerify       Intent = "verify"
+	// IntentDrift asks whether documentation still matches the repository.
+	IntentDrift Intent = "drift"
 )
 
 // Availability reports which providers can be used right now. Runtime being
@@ -162,6 +164,9 @@ var intents = map[Intent]struct {
 		{ProviderStructural, "expected-change-shape", "confirm the intended components and dependencies", Cost{4, "medium"}, 0.35, true},
 		{ProviderSemantic, "reference-resolution", "confirm references and interfaces", Cost{3, "medium"}, 0.25, false},
 		{ProviderRetrieval, "test-coverage-candidates", "find relevant tests", Cost{2, "low"}, 0.15, false},
+	}},
+	IntentDrift: {target: 0.80, steps: []candidate{
+		{ProviderStructural, "documentation-drift", "compare documented paths with the indexed inventory", Cost{2, "low"}, 0.55, true},
 	}},
 }
 

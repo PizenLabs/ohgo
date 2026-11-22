@@ -59,6 +59,25 @@ func ConversationMessages(turns []Turn) []Message {
 }
 
 func TranscriptTurn(turn Turn) Turn {
+	// A rejected candidate was shown to the model for repair, not to the
+	// user. Returning an empty projection hides its text from the transcript,
+	// plain output, persistence, and the next request; the accepted answer
+	// remains the only assistant turn.
+	if turn.Suppressed {
+		return Turn{}
+	}
+	// A turn that continued into a tool call published investigation, not a
+	// conclusion. Keep the call and its result; drop the prose.
+	if turn.SuppressText {
+		content := turn.Assistant.Content[:0]
+		for _, block := range turn.Assistant.Content {
+			if _, ok := block.(ai.TextContent); ok {
+				continue
+			}
+			content = append(content, block)
+		}
+		turn.Assistant.Content = content
+	}
 	// The runtime-state boundary applies to every assistant text block a host
 	// may publish, not only the final answer turn. A model that copies the
 	// request briefing before calling a tool must not have that text replayed

@@ -65,7 +65,7 @@ func NewInvestigateTool(root string, engine *investigate.Engine, budget investig
 				},
 				"intent": map[string]any{
 					"type":        "string",
-					"enum":        []string{"auto", "project", "architecture", "locate", "flow", "impact", "debug", "verify"},
+					"enum":        []string{"auto", "project", "architecture", "locate", "flow", "impact", "debug", "verify", "drift"},
 					"description": "Optional task shape. Default auto infers it from the question.",
 				},
 				"focus": map[string]any{

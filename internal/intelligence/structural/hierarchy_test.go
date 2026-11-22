@@ -214,8 +214,8 @@ func TestNestedRepositoryBecomesAWorkspace(t *testing.T) {
 		NestedProjects: []ast.ProjectBoundary{{Path: "backend", Included: true}},
 	}}
 	inventory.Files = []ast.FileInfo{
-		{Path: "main.go", Dir: ".", Language: "go", Kind: ast.FileGoSource, Parsed: true, Symbols: 1},
-		{Path: "backend/svc.go", Dir: "backend", Language: "go", Kind: ast.FileGoSource, Parsed: true, Symbols: 1},
+		{Path: "main.go", Dir: ".", Language: "go", Kind: ast.FileGoSource, State: ast.ParseStateParsed, Symbols: 1},
+		{Path: "backend/svc.go", Dir: "backend", Language: "go", Kind: ast.FileGoSource, State: ast.ParseStateParsed, Symbols: 1},
 	}
 	snapshot := Build(inventory, BuildOptions{Level: LevelFile})
 	root := nodeAt(t, snapshot, ".", LevelWorkspace)

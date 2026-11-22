@@ -86,6 +86,12 @@ func conceptAbsenceIssue(sentence string) *claimIssue {
 		Detail: fmt.Sprintf(
 			"the answer treats %q as absent without a scoped proof; a file inventory or one empty search cannot establish concept absence. Bound the statement to the inspected source or mark it unverified",
 			subject),
+		Claim:       subject,
+		Location:    claimLocation(sentence, subject),
+		Category:    "absence",
+		Requirement: "scoped source evidence covering the concept",
+		Reference:   subject,
+		Action:      "inspect the relevant source, bound the claim to the inspected scope, or mark it unverified",
 	}
 }
 

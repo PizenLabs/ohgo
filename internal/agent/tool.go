@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
@@ -205,6 +206,11 @@ type Context struct {
 	// arguments, or refuse to run. It is derived from the authority in force,
 	// not from a command-text guess.
 	ReadOnly bool
+	// ConclusionMode is the terminal-outcome vocabulary of the active
+	// informational contract. A control tool uses it to reject a verdict the
+	// request did not ask for; the empty mode preserves the legacy unrestricted
+	// vocabulary for embedders that do not install a contract.
+	ConclusionMode contract.ConclusionMode
 	// OnProgress lets a long tool publish partial output.
 	OnProgress func(Result)
 	// Budget is the root-owned grant shared by this execution tree. It is

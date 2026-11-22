@@ -329,6 +329,10 @@ type SnapshotInfo struct {
 	PendingFiles int `json:"pending_files"`
 	// FailedFiles counts source files whose adapter reported a parse failure.
 	FailedFiles int `json:"failed_files"`
+	// StaleFiles counts source files whose last known declarations are
+	// retained because the entry became unreadable. The facts are historical,
+	// not current: they never support a lookup or a completeness claim.
+	StaleFiles int `json:"stale_files"`
 	// Languages reports per-language inventory and parse coverage.
 	Languages []LanguageCoverage `json:"languages,omitempty"`
 	// Unsupported counts observed extensions with no registered adapter.
@@ -409,6 +413,44 @@ type ProjectBoundary struct {
 	Languages       []Language `json:"languages,omitempty"`
 }
 
+// ParseState is the structural parsing state of one inventoried file.
+//
+// It separates three facts that used to collapse into a bool: a file is known
+// to exist, its declarations were parsed at some point, and those declarations
+// still describe what is on disk. Only PARSED and PARTIAL support a current
+// declaration claim.
+type ParseState string
+
+// Per-file parse states.
+const (
+	// ParseStateParsed means the file's declarations and relationships are in
+	// the published snapshot.
+	ParseStateParsed ParseState = "PARSED"
+	// ParseStatePartial means the file parsed with an adapter issue. Its
+	// declarations are published, but the parse is not complete.
+	ParseStatePartial ParseState = "PARTIAL"
+	// ParseStatePending means the file is inventoried and supported, but its
+	// declarations have not been parsed yet.
+	ParseStatePending ParseState = "PENDING"
+	// ParseStateFailed means the adapter rejected the file. Its declarations
+	// are unknown, not empty.
+	ParseStateFailed ParseState = "FAILED"
+	// ParseStateUnsupported means this build has no adapter for the file's
+	// language. It is inventoried, never parsed.
+	ParseStateUnsupported ParseState = "UNSUPPORTED"
+	// ParseStateStale means the file's last parsed facts are retained because
+	// the entry can no longer be observed. They are historical, not current.
+	ParseStateStale ParseState = "STALE"
+	// ParseStateInventory means the file is not source, so no structural parse
+	// applies. Its existence is an inventory fact only.
+	ParseStateInventory ParseState = "INVENTORY"
+)
+
+// Current reports whether the state describes the file as it is now.
+func (s ParseState) Current() bool {
+	return s == ParseStateParsed || s == ParseStatePartial
+}
+
 // FileInfo is one file fact from the structural inventory.
 type FileInfo struct {
 	Path     string   `json:"path"`
@@ -418,15 +460,14 @@ type FileInfo struct {
 	Adapter  string   `json:"adapter,omitempty"`
 	Kind     FileKind `json:"kind"`
 	Test     bool     `json:"test"`
-	// Parsed reports that this file's declarations and relationships are in
-	// the published snapshot. A false value is a pending inventory fact, not
-	// an empty file.
-	Parsed bool `json:"parsed"`
-	// ParseError is the bounded reason a parsed file failed.
-	ParseError string `json:"parse_error,omitempty"`
-	// Unsupported reports a source extension this build has no adapter for.
-	Unsupported bool  `json:"unsupported,omitempty"`
-	Size        int64 `json:"size"`
+	// State is the single structural-parse state. A PENDING or STALE state is
+	// an inventory fact, not an empty file, and it cannot support a negative
+	// declaration claim.
+	State ParseState `json:"parse_state"`
+	// Reason explains a non-PARSED state. It is empty for a clean parse and
+	// for an inventory-only file.
+	Reason string `json:"parse_reason,omitempty"`
+	Size   int64  `json:"size"`
 	// ModUnixNano is the observed modification time, so a consumer that also
 	// keys on size (retrieval) does not have to stat the file a second time.
 	ModUnixNano int64 `json:"mod_unix_nano,omitempty"`
@@ -682,10 +723,54 @@ func dirOf(rel string) string {
 	return dir
 }
 
+// recordInPackage reports whether a file record belongs to the package a
+// selector names.
+//
+// Go has a package clause, so the clause is the identity. Every other language
+// has no repository-wide package identity; the packages projection advertises
+// the directory as the package name, and the selector must accept that same
+// spelling or a consumer that reads the row cannot ask for its files.
+func recordInPackage(rel string, rec fileRecord, name string) bool {
+	if name == "" || rec.packageName == name {
+		return true
+	}
+	if rec.language == string(LanguageGo) || !IsSourcePath(rel) {
+		return false
+	}
+	return dirOf(rel) == name
+}
+
 // pathInside reports whether rel is the directory dir or below it.
 func pathInside(dir, rel string) bool {
 	if dir == "" || dir == "." {
 		return true
 	}
 	return rel == dir || strings.HasPrefix(rel, dir+"/")
+}
+
+// targetInPackage applies the same package identity rule to a resolved
+// declaration. It exists so package-scoped symbol queries cannot accept a Go
+// clause and a directory spelling inconsistently.
+func targetInPackage(target RefTarget, name string) bool {
+	return declarationInPackage(target.Package, target.Path, target.Language, name)
+}
+
+// MatchInPackage applies the package identity rule to one declaration. It is
+// exported because the tool layer filters a package result again, and a second
+// spelling of the rule would make the selector accept a name the index already
+// resolved.
+func MatchInPackage(match Match, name string) bool {
+	return declarationInPackage(match.Package, match.Path, match.Language, name)
+}
+
+// declarationInPackage is the one package identity rule shared by record,
+// declaration, and target filtering.
+func declarationInPackage(pkg, path string, language Language, name string) bool {
+	if name == "" || pkg == name {
+		return true
+	}
+	if language == LanguageGo || path == "" || !IsSourcePath(path) {
+		return false
+	}
+	return dirOf(path) == name
 }

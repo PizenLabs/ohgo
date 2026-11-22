@@ -385,3 +385,114 @@ func TestLegacyPlaceholderConclusionIsNotAdmissible(t *testing.T) {
 		t.Fatal("legacy placeholder conclusion was recorded as terminal")
 	}
 }
+
+// A general project analysis answers a question; it is not a production-safety
+// verdict. The control plane must reject SAFE even when the tool-side check was
+// bypassed by a persisted or embedder-supplied payload.
+func TestAnswerObjectiveRejectsDefectVerdict(t *testing.T) {
+	shape := conclusionShape("Analyze this project and explain what it is about.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "README.md", "# andev0x\nA terminal blog.\n"),
+		conclusionTurn("conclude-safe", "SAFE", "the project is a Next.js blog", ""),
+	})
+	if _, ok := evidence.latestConclusion(); ok {
+		t.Fatal("a general answer was recorded as a terminal safety verdict")
+	}
+	rejected := false
+	for _, item := range evidence.Items {
+		if item.View == "conclusion_rejected" {
+			rejected = true
+		}
+	}
+	if !rejected {
+		t.Fatal("the out-of-mode verdict was not recorded for audit")
+	}
+}
+
+// The same guard works in the other direction: a defect investigation cannot
+// close as ANSWERED just because the model found the answer useful.
+func TestDefectObjectiveRejectsAnswerVerdict(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "checkout.go", "package checkout\n"),
+		conclusionTurn("conclude-answered", "ANSWERED", "the checkout path is now clear", ""),
+	})
+	if _, ok := evidence.latestConclusion(); ok {
+		t.Fatal("a defect investigation was closed by an answer verdict")
+	}
+}
+
+// The positive answer vocabulary is admissible and terminal for a general
+// analysis, so the split does not turn every conclusion into a review.
+func TestAnswerObjectiveAcceptsAnsweredOutcome(t *testing.T) {
+	shape := conclusionShape("Analyze this project and explain what it is about.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "README.md", "# andev0x\nA terminal blog.\n"),
+		conclusionTurn("conclude-answered", "ANSWERED", "the entrypoint loads Markdown posts", ""),
+	})
+	latest, ok := evidence.latestConclusion()
+	if !ok || !latest.Complete {
+		t.Fatalf("latest conclusion = %+v, want a complete answer outcome", latest)
+	}
+}
+
+// Plain project analysis is not a defect investigation. The shape must not
+// manufacture a verdict requirement, or the model is pushed to pick SAFE for a
+// question that only asked what the project is.
+func TestPlainProjectAnalysisDoesNotRequireADefectVerdict(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Investigate this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "fuzz", Intent: "investigate", Facts: RepositoryFacts{Go: true}})
+	for _, need := range shape.RequiredKnowledge {
+		if need.Key == "investigation_conclusion" {
+			t.Fatal("plain project analysis required a defect verdict")
+		}
+	}
+}
+
+// PARTIAL is a terminal answer with declared gaps, not a provisional
+// conclusion. The gaps stay in the audit record but do not become pending
+// observations that make the verdict unusable.
+func TestPartialAnswerKeepsGapsWithoutReopeningTheConclusion(t *testing.T) {
+	shape := conclusionShape("Analyze this project and explain what it is about.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "README.md", "# andev0x\nA terminal blog.\n"),
+		conclusionTurn("conclude-partial", "PARTIAL",
+			"the entrypoint loads Markdown posts", "StockReserver.Reserve was not read"),
+	})
+	latest, ok := evidence.latestConclusion()
+	if !ok || !latest.Complete {
+		t.Fatalf("latest conclusion = %+v, want a complete PARTIAL outcome", latest)
+	}
+	if len(latest.Unresolved) == 0 {
+		t.Fatal("the declared gap was not retained for audit")
+	}
+	if pending := evidence.PendingConclusionTargets(); len(pending) != 0 {
+		t.Fatalf("pending targets = %v, want PARTIAL to keep the answer terminal", pending)
+	}
+}
+
+// ANSWERED with a concrete unobserved coordinate is a contradiction: the model
+// says the question is answered but names a file it did not read. That remains
+// provisional and the coordinate becomes the next bounded observation.
+func TestAnsweredWithNamedGapRemainsProvisional(t *testing.T) {
+	shape := conclusionShape("Analyze this project and explain what it is about.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "README.md", "# andev0x\nA terminal blog.\n"),
+		conclusionTurn("conclude-answered-gap", "ANSWERED",
+			"the entrypoint loads Markdown posts", "StockReserver.Reserve was not read"),
+	})
+	latest, ok := evidence.latestConclusion()
+	if !ok || latest.Complete {
+		t.Fatalf("latest conclusion = %+v, want a provisional ANSWERED result", latest)
+	}
+	if pending := evidence.PendingConclusionTargets(); len(pending) == 0 {
+		t.Fatal("the named gap did not become the next observation")
+	}
+}
