@@ -108,6 +108,13 @@ type Evidence struct {
 	Refs       []EvidenceRef `json:"refs,omitempty"`
 }
 
+// Complete reports that the evidence supports every claim the caller could
+// make. PARTIALLY_OBSERVED and weaker states are explicit gaps, not a rounding
+// error: a consumer must not present a count or an absence as authoritative.
+func (e Evidence) Complete() bool {
+	return e.State == StateObserved || e.State == StateVerified
+}
+
 // Band labels a confidence numerically for display, not for reasoning.
 func (e Evidence) Band() string {
 	switch {

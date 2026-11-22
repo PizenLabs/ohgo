@@ -221,6 +221,24 @@ type driftClaim struct {
 	line   int
 }
 
+// driftCommonRoots are conventional repository directories. A code span whose
+// first segment is one of these is a repository claim even when the directory
+// is empty or missing (that is exactly the drift being reported). The list is a
+// heuristic, not a rule engine: an unknown first segment stays outside the
+// repository unless it is explicitly relative or a single file-like name.
+var driftCommonRoots = map[string]bool{
+	"api": true, "app": true, "apps": true, "assets": true, "backend": true,
+	"bench": true, "build": true, "cmd": true, "components": true,
+	"config": true, "configs": true, "content": true, "db": true,
+	"deploy": true, "doc": true, "docs": true, "examples": true,
+	"frontend": true, "hooks": true, "infra": true, "internal": true,
+	"k8s": true, "lib": true, "libs": true, "migrations": true,
+	"mobile": true, "packages": true, "pkg": true, "public": true,
+	"scripts": true, "server": true, "services": true, "src": true,
+	"static": true, "terraform": true, "test": true, "tests": true,
+	"tools": true, "web": true,
+}
+
 // driftPrefixes are the directory names that make a code span a repository
 // path rather than a package or library name. root contains top-level
 // directories; module contains top-level directories under the owning module
@@ -330,17 +348,23 @@ func driftCandidates(document, raw string, isLink bool, prefixes driftPrefixes, 
 		}
 		add(path.Dir(document))
 	}
-	if !isLink && !driftSourceExtension(path.Ext(clean)) &&
-		!prefixes.root[first] && !prefixes.module[first] {
-		// A code span with an unknown first segment and no source extension is
-		// usually a package or library name (`html/template`, `net/http`). It
-		// is only a path claim when a document-relative target actually exists.
-		for _, candidate := range candidates {
-			if files[candidate] || dirs[candidate] {
-				return []string{candidate}
+	if !isLink && !prefixes.root[first] && !prefixes.module[first] {
+		// A code span with an unknown first segment is usually a package,
+		// library, or machine-local path (`html/template`, `home/hypr/x.conf`).
+		// Only an explicit relative spelling, a single file-like name, or an
+		// actually present target counts as a repository claim; otherwise the
+		// document is describing something outside this tree.
+		explicitRelative := strings.HasPrefix(clean, "./") || strings.HasPrefix(clean, "../")
+		fileLike := !strings.Contains(clean, "/") && driftSourceExtension(path.Ext(clean))
+		conventional := driftCommonRoots[strings.ToLower(first)]
+		if !explicitRelative && !fileLike && !conventional {
+			for _, candidate := range candidates {
+				if files[candidate] || dirs[candidate] {
+					return []string{candidate}
+				}
 			}
+			return nil
 		}
-		return nil
 	}
 	return candidates
 }
@@ -364,6 +388,12 @@ func driftTargetFrom(base, target string) (string, bool) {
 func looksLikeDriftTarget(raw string, isLink bool, prefixes driftPrefixes) bool {
 	target := strings.TrimSpace(raw)
 	if target == "" || target != raw {
+		return false
+	}
+	// A home-relative path names the reader's machine, not the repository.
+	// `~/.tmux.conf` in a tutorial is configuration guidance, not a claim that
+	// the file lives in this tree.
+	if target == "~" || strings.HasPrefix(target, "~/") || strings.HasPrefix(target, `~\`) {
 		return false
 	}
 	if strings.ContainsAny(target, " \t\r\n{}<>$*|\\\"'`") {

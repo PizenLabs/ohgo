@@ -99,3 +99,41 @@ func firstStatusLine(text string) string {
 	}
 	return "?"
 }
+
+// Next.js route handlers, Pages Router modules, and middleware are executable
+// route modules. The convention list used to know only page/layout/index, so a
+// project made entirely of API routes reported zero entrypoints.
+func TestStructureEntrypointsIncludeRouteHandlersAndMiddleware(t *testing.T) {
+	tool := NewStructureTool(NewStructuralSource(structureFixture(t, map[string]string{
+		"package.json": `{"name":"routes","dependencies":{"next":"16.0.0"}}`,
+		"app/api/health/route.ts": `export async function GET() { return Response.json({ ok: true }); }
+`,
+		"pages/api/hello.ts": `export default function handler() { return null; }
+`,
+		"middleware.ts": `export function middleware() { return null; }
+`,
+	})))
+	view := tool.Execute(testContext(), map[string]any{"view": "entrypoints"})
+	if view.IsError {
+		t.Fatalf("entrypoints view: %s", view.Text)
+	}
+	if !strings.Contains(view.Text, "total: 3 (verified: 0, discovered: 3)") {
+		t.Fatalf("route entrypoint totals = %s", view.Text)
+	}
+	for _, path := range []string{"app/api/health/route.ts", "pages/api/hello.ts", "middleware.ts"} {
+		if !strings.Contains(view.Text, path) {
+			t.Fatalf("route module %q missing from entrypoints:\n%s", path, view.Text)
+		}
+	}
+	// A Go-only build discovers the same route modules but cannot parse their
+	// exported handler name; the discovery contract still holds.
+	for _, language := range structuralLanguageNames() {
+		if language != "typescript" {
+			continue
+		}
+		if !strings.Contains(view.Text, "symbol: GET") {
+			t.Fatalf("route handler did not use its exported function name:\n%s", view.Text)
+		}
+		break
+	}
+}

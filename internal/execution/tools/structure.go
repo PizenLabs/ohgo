@@ -104,7 +104,7 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 				"package": map[string]any{
 					"type":        "string",
 					"minLength":   1,
-					"description": "Exact Go package name for files, packages, or tests views.",
+					"description": "Exact package name for files, packages, or tests views: a Go package clause, or the directory-shaped name the packages view reports for other languages.",
 				},
 				"symbol": map[string]any{
 					"type":        "string",
@@ -146,7 +146,7 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 					"enum": []any{
 						"project", "workspace", "module", "package", "file", "symbol", "relationship",
 					},
-					"description": "Deepest structural resolution the analysis may materialise. Defaults to package; a deeper level costs more and is never required just to summarise.",
+					"description": "Deepest structural resolution the analysis may materialise. Defaults to relationship so a target-shaped intent can run the symbol-neighborhood strategy; pass a shallower level only to bound cost explicitly.",
 				},
 				"node": map[string]any{
 					"type":        "string",

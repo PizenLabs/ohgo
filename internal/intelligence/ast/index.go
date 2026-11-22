@@ -1479,15 +1479,11 @@ func (idx *Index) Package(name string) ([]Match, error) {
 	}
 
 	var out []Match
-	for _, rec := range idx.files {
-		if !rec.current() {
+	for rel, rec := range idx.files {
+		if !rec.current() || !recordInPackage(rel, rec, name) {
 			continue
 		}
-		for _, s := range rec.symbols {
-			if s.Package == name {
-				out = append(out, s)
-			}
-		}
+		out = append(out, rec.symbols...)
 	}
 	sortSymbols(out)
 	return out, nil

@@ -70,7 +70,7 @@ func TestDocumentationDriftResolvesModulePathsAndRejectsNonPaths(t *testing.T) {
 	// first and dropping unknown extensionless spans prevents the common false
 	// positives while still reporting a clearly missing module file.
 	root := fixture(t, map[string]string{
-		"README.md":                "# App\n\nRoutes `/products`; packages `adapter/`; import `html/template`.\n",
+		"README.md":                "# App\n\nRoutes `/products`; packages `adapter/`; import `html/template`.\n\nEdit `~/.tmux.conf`, `~/.config/hypr/hyprland.conf`, and `home/hypr/hyprland.conf`.\n",
 		"backend/go.mod":           "module example.com/app/backend\n\ngo 1.21\n",
 		"backend/cart/app/cart.go": "package app\n\nfunc Cart() {}\n",
 		"backend/cart/Readme.md": "# Cart\n\n" +
@@ -84,9 +84,9 @@ func TestDocumentationDriftResolvesModulePathsAndRejectsNonPaths(t *testing.T) {
 	var targets []string
 	for _, finding := range analysis.Drift.Findings {
 		targets = append(targets, finding.Target)
-		for _, falseTarget := range []string{"products", "adapter", "html/template"} {
+		for _, falseTarget := range []string{"products", "adapter", "html/template", "~/.tmux.conf", ".config/hypr/hyprland.conf", "home/hypr/hyprland.conf"} {
 			if finding.Target == falseTarget || strings.Contains(finding.Detail, falseTarget) {
-				t.Fatalf("non-path claim became a finding: %+v", finding)
+				t.Fatalf("non-repository claim became a finding: %+v", finding)
 			}
 		}
 	}

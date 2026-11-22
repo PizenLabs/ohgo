@@ -723,10 +723,54 @@ func dirOf(rel string) string {
 	return dir
 }
 
+// recordInPackage reports whether a file record belongs to the package a
+// selector names.
+//
+// Go has a package clause, so the clause is the identity. Every other language
+// has no repository-wide package identity; the packages projection advertises
+// the directory as the package name, and the selector must accept that same
+// spelling or a consumer that reads the row cannot ask for its files.
+func recordInPackage(rel string, rec fileRecord, name string) bool {
+	if name == "" || rec.packageName == name {
+		return true
+	}
+	if rec.language == string(LanguageGo) || !IsSourcePath(rel) {
+		return false
+	}
+	return dirOf(rel) == name
+}
+
 // pathInside reports whether rel is the directory dir or below it.
 func pathInside(dir, rel string) bool {
 	if dir == "" || dir == "." {
 		return true
 	}
 	return rel == dir || strings.HasPrefix(rel, dir+"/")
+}
+
+// targetInPackage applies the same package identity rule to a resolved
+// declaration. It exists so package-scoped symbol queries cannot accept a Go
+// clause and a directory spelling inconsistently.
+func targetInPackage(target RefTarget, name string) bool {
+	return declarationInPackage(target.Package, target.Path, target.Language, name)
+}
+
+// MatchInPackage applies the package identity rule to one declaration. It is
+// exported because the tool layer filters a package result again, and a second
+// spelling of the rule would make the selector accept a name the index already
+// resolved.
+func MatchInPackage(match Match, name string) bool {
+	return declarationInPackage(match.Package, match.Path, match.Language, name)
+}
+
+// declarationInPackage is the one package identity rule shared by record,
+// declaration, and target filtering.
+func declarationInPackage(pkg, path string, language Language, name string) bool {
+	if name == "" || pkg == name {
+		return true
+	}
+	if language == LanguageGo || path == "" || !IsSourcePath(path) {
+		return false
+	}
+	return dirOf(path) == name
 }

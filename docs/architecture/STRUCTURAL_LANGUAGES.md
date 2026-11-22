@@ -60,6 +60,44 @@ unknown summary. `UNSUPPORTED` is used for a form the adapter cannot resolve
 (e.g. a Go method reference or semantic dispatch). This is syntax-level
 resolution, not compiler/type-checker certainty.
 
+Repeated names are narrowed by evidence the referring file actually provides,
+in this order:
+
+1. A declared member (`Class.method`) or a local qualified name.
+2. A unique declaration in the referring file (local scope wins).
+3. A unique declaration in a resolved import. Named and default imports bind a
+   bare name; namespace and default alias imports bind a qualified name.
+4. Otherwise the global name rule: one declaration resolves, several remain
+   `AMBIGUOUS`, none is `UNRESOLVED`.
+
+A qualified reference is stricter than a bare one: `<ui.Button />` and
+`console.log()` do not prove a global `Button` or `log`. The qualifier must name
+a declared member or an imported namespace/default whose target declares the
+name; an unknown qualifier stays unresolved. This prevents a library namespace
+from manufacturing an edge to an unrelated local declaration.
+
+TypeScript/TSX references cover JSX element usage, type annotations, and
+`typeof X` value queries. A `typeof Button` wrapper is therefore visible to
+`refs` and `impact`, not only direct JSX usage.
+
+## Package identity
+
+Go has a package clause, so the clause is the selector identity. Other
+languages have no repository-wide package identity; the `packages` projection
+reports the containing directory as the package name. `files`, `packages`,
+`tests`, `symbols`, and `structure` all accept that same directory spelling.
+The two representations are one rule, not two selectors that disagree.
+
+## Entrypoint conventions
+
+A Next.js route module is a *discovery*, never proof of execution:
+`Verified=false`. App Router modules are `page`, `layout`, `route`, `template`,
+`default`, `loading`, `error`, `global-error`, and `not-found`; the Pages Router
+treats every source file under `pages/` (including `_app`, `_document`, and
+`pages/api/*`) as a route module; root or `src/` `middleware` is included.
+`internal/intelligence/ast.WebRouteModule` is the single owner of that list, so
+the metadata inventory and the parsed adapter cannot disagree.
+
 ## Snapshot disclosure
 
 Every `structure` result header states three things the model cannot infer from
@@ -93,8 +131,15 @@ The same counts are available as machine fields: `truncated`, `reason`, and the
 
 - Tree-sitter adapters do not perform type resolution, overload resolution,
   macro expansion, or compiler-level interface implementation checks.
-- A non-Go call is materialised only when its target name is unique. Receiver
-  dispatch and dynamic calls remain unknown.
+- A non-Go call is materialised only when its target is unique globally or is
+  proved by the referring file's import. Receiver dispatch, function values,
+  shadowing, and dynamic calls remain unknown. A named import that renames the
+  binding (`import { Post as BlogPost }`) is not mapped back to its original
+  export name.
+- TypeScript/TSX value references are collected for JSX elements, type
+  annotations, and `typeof X` queries. A bare value read in an expression is
+  not collected, so a component used only as a value (`const C = Button`) is
+  outside the reference projection.
 - Test associations are static references/calls, never behavioral coverage.
 - `graph` remains the Go package-import graph; use `structure`/`refs` for
   language-neutral relationships.

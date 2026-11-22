@@ -107,7 +107,13 @@ func (t *StructureTool) analysisView(
 		details["manifests"] = manifestDetail(analysis.Manifests)
 	}
 	addStructuralProvenance(details, idx, analysis.Coverage.Complete())
-	details["complete"] = analysis.Coverage.Complete() && status == "ok"
+	complete := analysis.Coverage.Complete() && status == "ok"
+	if analysis.Focus != nil && !analysis.Focus.Evidence.Complete() {
+		// A focus neighbourhood with disclosed static gaps is not a complete
+		// answer: its counts are lower bounds, not exact totals.
+		complete = false
+	}
+	details["complete"] = complete
 	if analysis.Survey != nil {
 		details["survey_complete"] = len(analysis.Survey.Unexplored) == 0 && !analysis.Survey.Truncated
 	}

@@ -546,7 +546,17 @@ func runSymbolNeighborhood(s *analysisState) error {
 		report.ImporterPaths = append(report.ImporterPaths, dir)
 	}
 	for _, candidate := range result.Candidates {
-		report.Candidates = append(report.Candidates, candidate.QualifiedName)
+		label := candidate.QualifiedName
+		if label == "" {
+			label = candidate.Symbol
+		}
+		if candidate.Path != "" {
+			// An ambiguous selector is only actionable when the candidates
+			// name distinct coordinates. Two identical qualified names gave a
+			// consumer no way to choose.
+			label = fmt.Sprintf("%s (%s:%d)", label, candidate.Path, candidate.Line)
+		}
+		report.Candidates = append(report.Candidates, label)
 	}
 	switch {
 	case result.Ambiguous:

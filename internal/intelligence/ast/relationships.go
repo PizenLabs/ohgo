@@ -1693,6 +1693,9 @@ func (idx *Index) mergeGenericReferencesLocked(result *RefResult, target RefTarg
 	generic := idx.languageGraph.referencesTo(target)
 	if len(generic) == 0 {
 		result.Unknown = mergeUnknown(result.Unknown, idx.languageGraph.stats())
+		if idx.languageGraph.unresolved > 0 || idx.languageGraph.ambiguous > 0 {
+			result.Complete = false
+		}
 		return
 	}
 	start := 0

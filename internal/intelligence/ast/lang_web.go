@@ -156,6 +156,19 @@ func collectTSReferences(p *tsParser, node, parent *sitter.Node, inTypeParameter
 				})
 			}
 		}
+	case "type_query":
+		// `typeof X` names the value X, so a wrapper that derives its props
+		// from a component is a real reference to that component.
+		for _, child := range namedChildren(node) {
+			if child.Type() != "identifier" {
+				continue
+			}
+			if name := p.text(child); name != "" {
+				p.addReference(rawGenericReference{
+					Name: name, Line: p.line(child), Column: p.column(child),
+				})
+			}
+		}
 	case "jsx_opening_element", "jsx_self_closing_element":
 		if nameNode := childField(node, "name"); nameNode != nil {
 			text := p.text(nameNode)
@@ -624,22 +637,8 @@ func tsVisibility(p *tsParser, node *sitter.Node, exported bool) string {
 }
 
 func addTSFileEntrypoint(p *tsParser) {
-	rel := strings.ReplaceAll(p.path, "\\", "/")
-	base := rel[strings.LastIndex(rel, "/")+1:]
-	conventional := false
-	for _, prefix := range []string{"app/", "src/app/", "pages/", "src/pages/"} {
-		if strings.Contains("/"+rel, "/"+prefix) {
-			conventional = true
-			break
-		}
-	}
-	if !conventional {
-		return
-	}
-	switch base {
-	case "page.tsx", "page.ts", "page.jsx", "page.js", "layout.tsx", "layout.ts",
-		"layout.jsx", "layout.js", "index.tsx", "index.ts", "index.jsx", "index.js":
-	default:
+	base, ok := WebRouteModule(p.path)
+	if !ok {
 		return
 	}
 	name := firstExportedSymbolName(p.facts.Symbols)

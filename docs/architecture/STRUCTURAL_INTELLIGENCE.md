@@ -313,7 +313,14 @@ implementation evidence.
   their paths are historical or external by design.
 - Markdown links and inline code spans are extracted outside fenced code
   blocks. A claim must be a relative repository path: URLs, mailto links, shell
-  commands, globs, prose, and domain-shaped first segments are rejected.
+  commands, globs, prose, domain-shaped first segments, and home-relative paths
+  such as `~/.tmux.conf` are rejected. An inline code span whose first segment
+  is not an observed repository or module directory is treated as a claim only
+  when it is explicitly relative (`./`, `../`), is a single file-like name, or
+  starts with a conventional repository directory (`src`, `cmd`, `internal`,
+  `docs`, `pkg`, `app`, and similar); `home/hypr/hyprland.conf` in a tutorial is
+  machine guidance, not a repository claim. The conventional list is disclosed
+  because it is a heuristic, not a filesystem fact.
 - A leading `/` is repository-rooted; every other claim resolves relative to the
   document. A target that escapes the repository is ignored.
 - Existence is checked against the inventory's file and directory sets. A
@@ -455,7 +462,10 @@ above `MaxFiles` (4,000) the model clamps to directory resolution instead.
   architectural assertions, and single-word component names are outside the
   extractor. A missing path is a documentation/source contradiction, not proof
   that the feature was intended or removed. Only current documentation is
-  scanned; archived documents are excluded rather than reported as drift.
+  scanned; archived documents are excluded rather than reported as drift. A
+  single file-like inline code span (for example `hyprland.conf`) and every
+  Markdown link are still treated as claims, so a tutorial that links a
+  machine-local file can appear as a missing target.
 - A module survey proves representation, not understanding. It selects at most
   24 samples; a module with no production source stays explicitly unexplored,
   and a sample still has to be read before any implementation claim is made.
@@ -476,6 +486,13 @@ above `MaxFiles` (4,000) the model clamps to directory resolution instead.
 - `structure` `analysis` gained `module-survey` and the `survey` details
   object. Project and architecture analyses name unexplored modules instead of
   implying every subsystem was inspected.
+- Non-Go resolution is import-aware: a repeated name is resolved through the
+  referring file's resolved imports before the global-name rule, and a
+  qualified reference with an unknown qualifier no longer falls back to a bare
+  global declaration. TypeScript `typeof X` is a collected reference. Package
+  selectors accept the directory-shaped name the `packages` view reports for
+  non-Go languages. Entrypoint conventions are owned by
+  `ast.WebRouteModule` and include the full Next.js App/Pages Router surface.
 - `StructuralSource` gained `NewStructuralSourceWithOptions` and
   `AnalysisCacheDir`; `NewStructuralSource` keeps its signature and behaviour.
 - `ast.Index` gained `Inventory` and `Dependencies`. Both are whole-snapshot,

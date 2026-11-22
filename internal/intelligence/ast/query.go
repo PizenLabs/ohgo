@@ -43,7 +43,7 @@ func (idx *Index) Files(ctx context.Context, query FileQuery) (FileResult, error
 				continue
 			}
 		}
-		if query.Package != "" && rec.packageName != query.Package {
+		if !recordInPackage(rel, rec, query.Package) {
 			continue
 		}
 		if query.Kind != "" && rec.kind != query.Kind {
@@ -515,7 +515,7 @@ func (idx *Index) Tests(ctx context.Context, query TestQuery) (TestResult, error
 	if err != nil {
 		return TestResult{}, err
 	}
-	if found && query.Package != "" && target.Package != query.Package {
+	if found && !targetInPackage(target, query.Package) {
 		found = false
 	}
 	result.Found = found

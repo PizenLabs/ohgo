@@ -130,6 +130,30 @@ immutable.
 
 ### Fixed
 
+- A non-Go reference is resolved through the referring file's imports before
+  the global-name rule. Two modules exporting the same name no longer make
+  every consumer reference `AMBIGUOUS`; the import path proves the target, and
+  a local declaration still wins. Qualified references (`console.log`,
+  `<ui.Button />`) no longer fall back to an unrelated global declaration.
+- TypeScript/TSX `typeof X` type queries are references, so a wrapper that
+  derives its props from a component is visible to `refs` and `impact`.
+- Filtering a call target in place no longer corrupts the shared name index for
+  later queries. `refs` also stops reporting `complete: true` for a zero-result
+  non-Go symbol when the static projection has unresolved sites.
+- The `packages` view's directory-shaped package name for non-Go languages is
+  accepted by `files package=`, `symbols package=`, and `tests package=`. The
+  selector no longer returns not-found for the name the same view reports.
+- Next.js entrypoint discovery covers App Router `route`, `template`,
+  `default`, `loading`, `error`, `global-error`, and `not-found` modules, the
+  whole Pages Router (including `pages/api`), and root/`src` middleware. The
+  metadata inventory and parsed adapter share one convention list.
+- Documentation drift no longer treats home-relative paths (`~/.tmux.conf`) or
+  unknown machine-shaped directories (`home/hypr/...`) as repository path
+  claims. Conventional repository roots, explicit relative paths, single
+  file-like names, and Markdown links remain claims.
+- A targeted structural analysis is not `complete` when its focus report
+  carries a disclosed static gap, and an ambiguous focus names the candidate
+  coordinates instead of repeating the qualified name.
 - A concrete line count inside a parenthetical annotation is bound to the path
   that introduces the parenthesis. "`order_factory.go` (read in full, 97 lines)
   and `order.go` (read, 413 lines)" had the 97 count assigned to order.go by

@@ -208,6 +208,66 @@ func SupportedLanguages() []Language {
 	return out
 }
 
+// WebRouteModule reports whether a path is a framework route module by
+// convention. The returned base is the framework filename (page.tsx,
+// route.ts, middleware.ts, ...).
+//
+// This is the single owner of the Next.js route convention: the metadata
+// entrypoint discovery and the parsed adapter both call it, so a new convention
+// cannot be added to one view and silently omitted from the other. A route
+// module is a discovery, never proof of execution.
+func WebRouteModule(rel string) (string, bool) {
+	normalized := strings.ToLower(strings.ReplaceAll(rel, "\\", "/"))
+	normalized = strings.TrimPrefix(normalized, "./")
+	base := path.Base(normalized)
+	dir := path.Dir(normalized)
+	language, ok := LanguageForPath(normalized)
+	if !ok || IsTestPath(normalized) {
+		return "", false
+	}
+	switch language {
+	case LanguageTypeScript, LanguageTSX, LanguageJavaScript, LanguageJSX:
+	default:
+		return "", false
+	}
+	switch base {
+	case "middleware.ts", "middleware.tsx", "middleware.js", "middleware.jsx":
+		if dir == "." || dir == "src" {
+			return base, true
+		}
+		return "", false
+	}
+	if underDirectory(normalized, "app") {
+		switch base {
+		case "page.tsx", "page.ts", "page.jsx", "page.js",
+			"layout.tsx", "layout.ts", "layout.jsx", "layout.js",
+			"route.ts", "route.tsx", "route.js", "route.jsx",
+			"template.tsx", "template.ts", "template.jsx", "template.js",
+			"default.tsx", "default.ts", "default.jsx", "default.js",
+			"loading.tsx", "loading.ts", "loading.jsx", "loading.js",
+			"error.tsx", "error.ts", "error.jsx", "error.js",
+			"global-error.tsx", "global-error.ts", "global-error.jsx", "global-error.js",
+			"not-found.tsx", "not-found.ts", "not-found.jsx", "not-found.js":
+			return base, true
+		}
+		return "", false
+	}
+	if underDirectory(normalized, "pages") {
+		// The Pages Router treats every source file under pages as a route,
+		// including _app, _document, and pages/api/*.
+		return base, true
+	}
+	return "", false
+}
+
+// underDirectory reports whether rel lives inside a router directory,
+// including the src/ spelling and a workspace prefix such as apps/web/app.
+func underDirectory(rel, directory string) bool {
+	wrapped := "/" + rel
+	return strings.Contains(wrapped, "/"+directory+"/") ||
+		strings.Contains(wrapped, "/src/"+directory+"/")
+}
+
 // IsTestPath applies the adapter's file-level test convention. Declarations
 // can still prove tests inside a non-conventional file; this is only the
 // cheap inventory signal.
