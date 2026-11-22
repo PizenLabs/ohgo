@@ -14,7 +14,7 @@ import (
 func TestStructureOverviewSeparatesAdapterGapsFromAccessGaps(t *testing.T) {
 	root := structureFixture(t, map[string]string{
 		".gitignore":      "generated.pb.go\n",
-		"app/main.py":     "def handler():\n    return 1\n",
+		"app/main.swift":  "func handler() {}\n",
 		"generated.pb.go": "package app\n",
 	})
 	tool := NewStructureTool(NewStructuralSource(root))

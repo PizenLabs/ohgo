@@ -11,45 +11,14 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
-// builtInExcludes are the directories a scan always prunes, whether or not a
-// .gitignore mentions them.
-//
-// The original exposes this as the "ignore" list its glob operations always
-// apply. Walking into node_modules or .git is the single largest cost in a
-// file search, and their contents are never what the model is looking for.
-var builtInExcludes = []string{
-	".git",
-	"node_modules",
-	".venv",
-	"venv",
-	"__pycache__",
-	".mypy_cache",
-	".pytest_cache",
-	".ruff_cache",
-	".tox",
-	"target",
-	"dist",
-	".next",
-	".nuxt",
-	".svelte-kit",
-	".turbo",
-	".cache",
-	".parcel-cache",
-	"coverage",
-	".nyc_output",
-	".terraform",
-}
-
-// isBuiltInExclude reports whether a directory name is always pruned.
+// isBuiltInExclude reports whether a directory name is always pruned. The
+// list is owned by the structural scope so discovery and parsing cannot
+// disagree about what belongs to the repository.
 func isBuiltInExclude(name string) bool {
-	for _, candidate := range builtInExcludes {
-		if name == candidate {
-			return true
-		}
-	}
-	return false
+	return ast.BuiltinExcludedDir(name)
 }
 
 // GlobTool limits, matching the original tool's published contract.

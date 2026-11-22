@@ -35,6 +35,7 @@ var (
 // request for workspace/applyEdit receives an error response and the edit is
 // discarded.
 type Client struct {
+	name   string
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
@@ -106,6 +107,14 @@ func (c *Client) Capabilities() Capabilities {
 	return c.caps
 }
 
+// Name returns the configured server identity.
+func (c *Client) Name() string {
+	if c == nil {
+		return ""
+	}
+	return c.name
+}
+
 // Supports reports whether method was advertised.
 func (c *Client) Supports(method string) bool { return c.Capabilities().Supports(method) }
 
@@ -139,6 +148,7 @@ func StartClient(ctx context.Context, root string, spec Spec) (*Client, error) {
 		return nil, fmt.Errorf("semantic: start %q: %w", spec.Name, err)
 	}
 	client := &Client{
+		name:        spec.Name,
 		cmd:         command,
 		stdin:       stdin,
 		stdout:      stdout,

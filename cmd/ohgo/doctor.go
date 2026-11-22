@@ -119,6 +119,7 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 	// fact. Without it a portable and a multi-language install diagnose
 	// identically, and a user cannot tell why TypeScript symbols are absent.
 	reports = append(reports, structuralReport())
+	reports = append(reports, semanticReport(cwd, nil), runtimeReport())
 
 	if warnings := registerEndpoints(registry, settings); len(warnings) > 0 {
 		add("endpoints", false, strings.Join(warnings, "; "))
@@ -209,6 +210,38 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 	return reports
 }
 
+// semanticReport names the language servers this machine can launch. A missing
+// server is not a structural failure: AST evidence remains available, and the
+// report says so instead of making the provider look broken.
+func semanticReport(root string, lookPath lookPathFunc) doctorReport {
+	specs := languageServerSpecs(root, lookPath)
+	if len(specs) == 0 {
+		return doctorReport{
+			Name: "semantic", OK: true,
+			Detail: "no language server found; AST evidence remains available (install gopls, typescript-language-server, pyright, rust-analyzer, jdtls, clangd, ruby-lsp, csharp-ls, or kotlin-language-server for semantic evidence)",
+		}
+	}
+	rows := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		rows = append(rows, spec.Name+"["+strings.Join(spec.Languages, ",")+"]")
+	}
+	return doctorReport{
+		Name: "semantic", OK: true,
+		Detail: fmt.Sprintf("%d language server(s) available (%s); started lazily on first request",
+			len(specs), strings.Join(rows, ", ")),
+	}
+}
+
+// runtimeReport states the DAP boundary explicitly. No debug adapter is
+// launched without an authorized session, so absence here is not an AST
+// failure and must not be reported as one.
+func runtimeReport() doctorReport {
+	return doctorReport{
+		Name: "runtime", OK: true,
+		Detail: "DAP not composed; runtime evidence requires an authorized debug session (unavailable, not a structural failure)",
+	}
+}
+
 // structuralReport names the syntax adapters compiled into this binary.
 //
 // The portable and multi-language builds are otherwise indistinguishable from
@@ -230,7 +263,7 @@ func structuralReport() doctorReport {
 	if len(names) <= 1 {
 		return doctorReport{
 			Name: "structural", OK: true,
-			Detail: "1 adapter (go); portable build: TypeScript/TSX/JavaScript, Java, C#, Rust, Kotlin, Ruby, C, and C++ are not compiled in; rebuild with `make build` (needs a C toolchain)",
+			Detail: "1 adapter (go); portable build: TypeScript/TSX/JavaScript, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++ are not compiled in; rebuild with `make build` (needs a C toolchain)",
 		}
 	}
 	return doctorReport{

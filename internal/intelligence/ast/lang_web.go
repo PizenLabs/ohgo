@@ -65,6 +65,12 @@ func treeSitterAdapters() []Adapter {
 			extract: extractRuby,
 		},
 		&tsAdapter{
+			name: "tree-sitter-python", language: LanguagePython,
+			extensions: []string{".py", ".pyi"}, grammar: pythonGrammar,
+			version: "smacker-20240827", capabilities: tsPythonCapabilities(),
+			extract: extractPython,
+		},
+		&tsAdapter{
 			name: "tree-sitter-c", language: LanguageC,
 			extensions: []string{".c", ".h"}, grammar: cGrammar,
 			version: "smacker-20240827", capabilities: tsCCapabilities(),

@@ -50,6 +50,7 @@ appear covered.
 | Rust | `.rs` | yes | yes | name-resolved | trait impl | `#[test]` and `tests/` | `main` |
 | Kotlin | `.kt`, `.kts` | yes | yes | name-resolved | delegation clauses | `@Test` and test paths | `main` |
 | Ruby | `.rb` | yes | require/load | name-resolved | superclass/mixins | RSpec/Minitest conventions | script guard |
+| Python | `.py`, `.pyi` | yes | import/from | name-resolved | base classes | `test_*` and test paths | `__main__` guard |
 | C | `.c`, `.h` | yes | include | name-resolved | unsupported | common test macros | `main` |
 | C++ | `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx` | yes | include | name-resolved | base clauses | common test macros | `main` |
 
@@ -145,8 +146,15 @@ The same counts are available as machine fields: `truncated`, `reason`, and the
 - Test associations are static references/calls, never behavioral coverage.
 - `graph` remains the Go package-import graph; use `structure`/`refs` for
   language-neutral relationships.
-- The semantic activation level is reserved and fails explicitly. No language
-  server, compiler, or network parser is launched.
+- The semantic activation level is optional. `investigate` starts the language
+  server discovered for the request's language (or the workspace's dominant
+  supported language), bounded by the investigation budget; a missing server is
+  `UNAVAILABLE`, not proof of absence. AST remains the baseline provider.
+- Python `from package import name` resolves the package module. When the name
+  is also a submodule (`package/name.py`) and the package itself exists, the
+  package edge is kept; the submodule is not guessed from the name alone.
+- Python annotations are references, but type resolution, overloads, and
+  metaclass effects are outside the syntax model.
 - The generated grammar for C# is upstream-marked incomplete; partial syntax
   errors are reported in `facts.Issues` and keep the snapshot structurally
   incomplete.

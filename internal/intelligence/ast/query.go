@@ -1017,7 +1017,7 @@ func (idx *Index) packageImportersLocked(targets []RefTarget) []string {
 // enclosing test declaration. A reference from a test helper is not attributed
 // to a test: the static association would be false.
 func (idx *Index) testAssociationsLocked(ctx context.Context, targets []RefTarget) ([]TestAssociation, bool, error) {
-	if idx.symbolGraph == nil {
+	if idx.symbolGraph == nil && idx.languageGraph == nil {
 		return nil, false, nil
 	}
 	refKeys := map[string]bool{}
@@ -1025,6 +1025,9 @@ func (idx *Index) testAssociationsLocked(ctx context.Context, targets []RefTarge
 	for _, target := range targets {
 		refKeys[refTargetKey(target)] = true
 		callKeys[callKey(target.Path, target.Line, target.Symbol)] = true
+		// Generic-language edges are keyed by the language-neutral target
+		// identity, not the Go call key.
+		callKeys[refTargetKey(target)] = true
 	}
 
 	var out []TestAssociation
@@ -1049,39 +1052,79 @@ func (idx *Index) testAssociationsLocked(ctx context.Context, targets []RefTarge
 		})
 	}
 	work := 0
-	for _, ref := range idx.symbolGraph.refs {
-		work++
-		if work%refCancelCheckInterval == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, false, err
+	if idx.symbolGraph != nil {
+		for _, ref := range idx.symbolGraph.refs {
+			work++
+			if work%refCancelCheckInterval == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, false, err
+				}
 			}
+			if work > RefWorkLimit {
+				return out, true, nil
+			}
+			if !refKeys[ref.targetKey] || !ref.Test {
+				continue
+			}
+			relation := "references"
+			if ref.Call {
+				relation = "calls"
+			}
+			appendSite(ref.Path, ref.Line, ref.Column, relation, ref.Call)
 		}
-		if work > RefWorkLimit {
-			return out, true, nil
+		for _, edge := range idx.symbolGraph.calls {
+			work++
+			if work%refCancelCheckInterval == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, false, err
+				}
+			}
+			if work > RefWorkLimit {
+				return out, true, nil
+			}
+			if !callKeys[edge.calleeKey] || !edge.Test {
+				continue
+			}
+			appendSite(edge.CallPath, edge.CallLine, edge.Column, "calls", true)
 		}
-		if !refKeys[ref.targetKey] || !ref.Test {
-			continue
-		}
-		relation := "references"
-		if ref.Call {
-			relation = "calls"
-		}
-		appendSite(ref.Path, ref.Line, ref.Column, relation, ref.Call)
 	}
-	for _, edge := range idx.symbolGraph.calls {
-		work++
-		if work%refCancelCheckInterval == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, false, err
+	if idx.languageGraph != nil {
+		for _, ref := range idx.languageGraph.references {
+			work++
+			if work%refCancelCheckInterval == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, false, err
+				}
 			}
+			if work > RefWorkLimit {
+				return out, true, nil
+			}
+			if ref.resolution != ResolutionResolved || !ref.test {
+				continue
+			}
+			if !refKeys[refTargetKey(refTarget(ref.target))] {
+				continue
+			}
+			appendSite(ref.file, ref.ref.Line, ref.ref.Column, "references", false)
 		}
-		if work > RefWorkLimit {
-			return out, true, nil
+		for _, call := range idx.languageGraph.calls {
+			work++
+			if work%refCancelCheckInterval == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, false, err
+				}
+			}
+			if work > RefWorkLimit {
+				return out, true, nil
+			}
+			if call.resolution != ResolutionResolved || !call.caller.Test {
+				continue
+			}
+			if !callKeys[refTargetKey(refTarget(call.callee))] {
+				continue
+			}
+			appendSite(call.caller.Path, call.call.Line, call.call.Column, "calls", true)
 		}
-		if !callKeys[edge.calleeKey] || !edge.Test {
-			continue
-		}
-		appendSite(edge.CallPath, edge.CallLine, edge.Column, "calls", true)
 	}
 	return out, false, nil
 }

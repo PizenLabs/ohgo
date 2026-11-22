@@ -877,6 +877,8 @@ func resolveImportTarget(from string, language Language, imported Import, files 
 			return resolveRelativeSource(from, spec, []string{".rb"}, files)
 		}
 		return resolveRubyRequire(spec, files)
+	case LanguagePython:
+		return resolvePythonImport(from, spec, imported.Names, files)
 	case LanguageC, LanguageCpp:
 		if imported.Kind == "include" && strings.HasPrefix(imported.Path, "\"") {
 			spec = strings.Trim(imported.Path, "\"")
@@ -886,6 +888,60 @@ func resolveImportTarget(from string, language Language, imported Import, files 
 	default:
 		return "", ResolutionUnsupported
 	}
+}
+
+func resolvePythonImport(from, spec string, names []string, files map[string]fileRecord) (string, Resolution) {
+	if spec == "" {
+		return "", ResolutionUnresolved
+	}
+	base := path.Dir(from)
+	var candidates []string
+	if strings.HasPrefix(spec, ".") {
+		dots := 0
+		for dots < len(spec) && spec[dots] == '.' {
+			dots++
+		}
+		rest := spec[dots:]
+		for i := 1; i < dots; i++ {
+			base = path.Dir(base)
+		}
+		if rest != "" {
+			candidates = append(candidates, path.Join(base, strings.ReplaceAll(rest, ".", "/")))
+		}
+		for _, name := range names {
+			if name == "" || name == "*" {
+				continue
+			}
+			candidates = append(candidates, path.Join(base, name))
+		}
+		if rest == "" && len(candidates) == 0 {
+			candidates = append(candidates, base)
+		}
+	} else {
+		module := strings.ReplaceAll(spec, ".", "/")
+		candidates = append(candidates, module, path.Join("src", module), path.Join(base, module))
+		for _, name := range names {
+			if name == "" || name == "*" {
+				continue
+			}
+			candidates = append(candidates, path.Join(module, name), path.Join("src", module, name))
+		}
+	}
+	for _, candidate := range candidates {
+		candidate = path.Clean(candidate)
+		if candidate == "." || candidate == "" {
+			continue
+		}
+		for _, suffix := range []string{".py", ".pyi", "/__init__.py", "/__init__.pyi"} {
+			if _, ok := files[candidate+suffix]; ok {
+				return candidate + suffix, ResolutionResolved
+			}
+		}
+		if _, ok := files[candidate]; ok {
+			return candidate, ResolutionResolved
+		}
+	}
+	return "", ResolutionUnresolved
 }
 
 func resolveRelativeSource(from, spec string, extensions []string, files map[string]fileRecord) (string, Resolution) {

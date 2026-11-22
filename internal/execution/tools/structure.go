@@ -87,8 +87,8 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"node's direct children. Intent drift compares documented paths with "+
 			"the indexed inventory and reports missing or unverifiable targets; "+
 			"it never treats a README claim as proof of implementation. "+
-			"Semantic activation is unsupported and "+
-			"fails explicitly.",
+			"Semantic activation is outside this tool: it uses AST facts, and "+
+			"language-server evidence is requested through investigate.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -335,7 +335,7 @@ func (t *StructureTool) execute(ctx agent.Context, args map[string]any) agent.Re
 	}
 	if activation == ast.ActivationSemantic {
 		return requestError(agent.ToolFailureUnsupported,
-			"semantic structural activation is unsupported: no semantic resolver is configured; nothing executed. Use activation \"overview\", \"targeted\", or \"impact\".")
+			"semantic activation is outside the structure tool: it reports AST facts only; use investigate for language-server evidence. Nothing executed.")
 	}
 	switch view {
 	case "overview", "scope", "entrypoints", "configs":

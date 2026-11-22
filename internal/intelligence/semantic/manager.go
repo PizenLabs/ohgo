@@ -32,6 +32,11 @@ type Spec struct {
 	Languages []string
 	// Command is the executable and arguments.
 	Command []string
+	// Root overrides the manager's workspace root for this server. Empty uses
+	// the manager root. A language server must load the project that owns its
+	// language; in a monorepo the Go module and the TypeScript workspace can
+	// have different roots.
+	Root string
 	// Env is appended to the process environment.
 	Env []string
 	// InitializationOptions is passed through to the server.
@@ -123,7 +128,7 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	if len(m.entries) >= m.maxServers {
 		return nil, fmt.Errorf("%w: %d already running", ErrServerLimit, len(m.entries))
 	}
-	client, err := StartClient(ctx, m.root, spec)
+	client, err := StartClient(ctx, m.serverRoot(spec), spec)
 	if err != nil {
 		restarts++
 		m.failures[name] = restarts
@@ -135,6 +140,14 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	delete(m.failures, name)
 	m.entries[name] = &managed{client: client, restarts: restarts}
 	return client, nil
+}
+
+// serverRoot returns the workspace root this server should load.
+func (m *Manager) serverRoot(spec Spec) string {
+	if spec.Root != "" {
+		return spec.Root
+	}
+	return m.root
 }
 
 // ForLanguage returns the first server configured for language.

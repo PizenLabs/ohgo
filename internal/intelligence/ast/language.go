@@ -28,6 +28,7 @@ const (
 	LanguageRuby       Language = "ruby"
 	LanguageC          Language = "c"
 	LanguageCpp        Language = "cpp"
+	LanguagePython     Language = "python"
 )
 
 // Activation is the structural depth one query requested.
@@ -168,6 +169,8 @@ var languageByExtension = map[string]Language{
 	".kt":   LanguageKotlin,
 	".kts":  LanguageKotlin,
 	".rb":   LanguageRuby,
+	".py":   LanguagePython,
+	".pyi":  LanguagePython,
 	".c":    LanguageC,
 	".h":    LanguageC,
 	".cc":   LanguageCpp,
@@ -306,6 +309,11 @@ func IsTestPath(pathArg string) bool {
 			(strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".rb")) ||
 			strings.Contains(rel, "/spec/") ||
 			strings.Contains(rel, "/test/")
+	case LanguagePython:
+		return (strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py")) ||
+			(strings.HasSuffix(base, "_test.py")) ||
+			strings.Contains(rel, "/tests/") ||
+			strings.Contains(rel, "/test/")
 	case LanguageC, LanguageCpp:
 		return strings.Contains(base, "_test.") ||
 			strings.HasPrefix(base, "test_") ||
@@ -342,6 +350,8 @@ func languageDisplayName(language Language) string {
 		return "Kotlin"
 	case LanguageRuby:
 		return "Ruby"
+	case LanguagePython:
+		return "Python"
 	case LanguageC:
 		return "C"
 	case LanguageCpp:

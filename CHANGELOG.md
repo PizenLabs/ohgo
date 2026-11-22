@@ -7,6 +7,27 @@ immutable.
 
 ### Added
 
+- Python structural coverage. The multi-language build registers
+  `tree-sitter-python` over `.py`/`.pyi`: classes (including base classes),
+  functions/methods, module variables, `import`/`from` resolution,
+  `self.method()` call qualifiers, annotations, `test_*` declarations, and the
+  `if __name__ == "__main__"` entrypoint guard. The portable build reports
+  Python as unsupported, never as an empty file.
+- Cross-language semantic discovery. `doctor` reports the language servers
+  found on `PATH` (gopls, typescript-language-server, pyright/pylsp,
+  rust-analyzer, jdtls, clangd, ruby-lsp, csharp-ls, kotlin-language-server).
+  `investigate` selects the server for the request's language, or the
+  workspace's dominant supported language, starts only that server, and reports
+  a missing server as `UNAVAILABLE` with AST evidence still available. Each
+  server loads its own project root (Go module, TypeScript workspace, Python
+  project) instead of an unrelated monorepo root.
+- Missing unnamed syntax tokens now mark a parse partial. Tree-sitter reports
+  missing punctuation as an unnamed `MISSING` node; the previous named-only
+  walk could report a malformed Python file as a clean parse.
+- Test associations now include non-Go calls and references. A Python
+  `test_*` function calling a helper is a static association, not an empty
+  result caused by the Go-only association scan.
+
 - Claim-level answer repair. `GroundingIssue` now carries the rejected claim,
   its sentence location, category, required evidence class, reference, and
   permitted action; the grounding, provenance, citation, entity, line-count,
@@ -132,9 +153,13 @@ immutable.
 
 - `make build` now uses the host toolchain. With a C compiler it compiles the
   pinned tree-sitter grammars, so TypeScript, TSX, JavaScript, Java, C#, Rust,
-  Kotlin, Ruby, C, and C++ are structurally observable. `make build-portable`
+  Kotlin, Ruby, Python, C, and C++ are structurally observable. `make build-portable`
   is the explicit `CGO_ENABLED=0` variant; `make build-multilang` is the
   explicit cgo variant.
+- File discovery and the structural index now share one built-in exclusion
+  list (`vendor`, `.venv`, `__pycache__`, `target`, `dist`, `.next`, caches,
+  and other dependency/build output), so a path pruned by `glob`/`grep`/`ls`
+  cannot be parsed into the graph and reported as repository structure.
 - The `structure` header's `adapters:` line now lists adapter identities
   (`tree-sitter-javascript`) instead of language aliases (`javascript`, `jsx`),
   matching `ohgo doctor`.

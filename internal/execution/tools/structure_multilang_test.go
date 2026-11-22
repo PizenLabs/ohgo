@@ -35,6 +35,9 @@ export default function Page() { return <Widget />; }
 `,
 		"scripts/build.mjs": `export async function build() { return 1; }
 `,
+		"tools/report.py": `def report(value):
+    return value
+`,
 		// Not a supported source extension: inventory metadata only. It must
 		// not turn a parsed project into an unsupported one.
 		"components/legacy.vue": `<template><div /></template>
@@ -58,7 +61,9 @@ func TestStructureToolParsesMixedLanguageProject(t *testing.T) {
 	}
 	for _, want := range []string{
 		"tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-javascript",
+		"tree-sitter-python",
 		"TypeScript=UNPARSED/", "TypeScript JSX=UNPARSED/", "JavaScript=UNPARSED/",
+		"Python=UNPARSED/",
 	} {
 		if !strings.Contains(overview.Text, want) {
 			t.Fatalf("overview omitted %q:\n%s", want, overview.Text)
@@ -79,9 +84,10 @@ func TestStructureToolParsesMixedLanguageProject(t *testing.T) {
 	// parsed facts.
 	for _, want := range []string{
 		"structural: PARTIAL",
-		"parsed_files: 6 pending_files: 0 failed_files: 0",
+		"parsed_files: 7 pending_files: 0 failed_files: 0",
 		"unsupported_source: .vue(1)",
-		"language: TypeScript JSX", "language: TypeScript", "language: JavaScript", "language: Go",
+		"language: TypeScript JSX", "language: TypeScript", "language: JavaScript",
+		"language: Python", "language: Go",
 	} {
 		if !strings.Contains(packages.Text, want) {
 			t.Fatalf("packages view omitted %q:\n%s", want, packages.Text)
@@ -130,12 +136,52 @@ func TestStructureToolParsesMixedLanguageProject(t *testing.T) {
 	if info.SnapshotID == "" || info.Generation == 0 {
 		t.Fatalf("snapshot identity missing: %+v", info)
 	}
-	if info.ParsedFiles != 6 || info.PendingFiles != 0 || info.StructuralComplete {
+	if info.ParsedFiles != 7 || info.PendingFiles != 0 || info.StructuralComplete {
 		t.Fatalf("snapshot coverage = parsed:%d pending:%d complete:%v",
 			info.ParsedFiles, info.PendingFiles, info.StructuralComplete)
 	}
 	if len(info.Unsupported) != 1 || info.Unsupported[0].Extension != ".vue" {
 		t.Fatalf("unknown extension was not disclosed as unsupported source: %+v", info.Unsupported)
+	}
+}
+
+func TestStructureToolScopesPythonFileAndDirectory(t *testing.T) {
+	root := structureFixture(t, map[string]string{
+		"backend/app.py": "def run():\n    return helper()\n\ndef helper():\n    return 1\n",
+		"backend/lib.py": "def lib():\n    return 2\n",
+		"web/app.ts":     "export function web() { return 1; }\n",
+	})
+	tool := NewStructureTool(NewStructuralSource(root))
+	ctx := testContext()
+
+	file := tool.Execute(ctx, map[string]any{
+		"view": "files", "path": "backend/app.py", "activation": "targeted",
+	})
+	if file.IsError {
+		t.Fatalf("file target: %s", file.Text)
+	}
+	for _, want := range []string{"path: backend/app.py", "language: python"} {
+		if !strings.Contains(file.Text, want) {
+			t.Fatalf("file target omitted %q:\n%s", want, file.Text)
+		}
+	}
+	if strings.Contains(file.Text, "web/app.ts") {
+		t.Fatalf("file target leaked an out-of-scope path:\n%s", file.Text)
+	}
+
+	dir := tool.Execute(ctx, map[string]any{
+		"view": "files", "path": "backend", "activation": "targeted",
+	})
+	if dir.IsError {
+		t.Fatalf("directory target: %s", dir.Text)
+	}
+	for _, want := range []string{"path: backend/app.py", "path: backend/lib.py", "language: python"} {
+		if !strings.Contains(dir.Text, want) {
+			t.Fatalf("directory target omitted %q:\n%s", want, dir.Text)
+		}
+	}
+	if strings.Contains(dir.Text, "web/app.ts") {
+		t.Fatalf("directory target leaked an out-of-scope path:\n%s", dir.Text)
 	}
 }
 

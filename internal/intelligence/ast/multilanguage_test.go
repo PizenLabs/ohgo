@@ -64,6 +64,22 @@ fun main() { Square().area() }
   end
 end
 `,
+		"python/service.py": `class Base:
+    pass
+
+class Service(Base):
+    def run(self):
+        return helper(1)
+
+def helper(value):
+    return value
+
+def test_run():
+    assert helper(1)
+
+if __name__ == "__main__":
+    helper(1)
+`,
 		"cpp/service.cpp": `#include "service.hpp"
 namespace app {
 class Base {};
@@ -217,13 +233,13 @@ func TestResolvedImportsAppearAsCanonicalEdges(t *testing.T) {
 
 func TestUnsupportedSourceIsDisclosedAndBlocksCompleteness(t *testing.T) {
 	root := graphFixture(t, map[string]string{
-		"main.go": "package main\n\nfunc main() {}\n",
-		"tool.py": "def main():\n    pass\n",
+		"main.go":    "package main\n\nfunc main() {}\n",
+		"tool.swift": "func main() {}\n",
 	})
 	idx := openAdaptive(t, root)
 	info := idx.Info()
-	if len(info.Unsupported) != 1 || info.Unsupported[0].Extension != ".py" {
-		t.Fatalf("unsupported = %+v, want .py", info.Unsupported)
+	if len(info.Unsupported) != 1 || info.Unsupported[0].Extension != ".swift" {
+		t.Fatalf("unsupported = %+v, want .swift", info.Unsupported)
 	}
 	if info.StructuralComplete || !info.Partial {
 		t.Fatalf("unsupported source did not make the snapshot partial: %+v", info)
