@@ -160,6 +160,15 @@ immutable.
   list (`vendor`, `.venv`, `__pycache__`, `target`, `dist`, `.next`, caches,
   and other dependency/build output), so a path pruned by `glob`/`grep`/`ls`
   cannot be parsed into the graph and reported as repository structure.
+- Relationship questions now acquire control-plane evidence facets before an
+  answer boundary: target, structural relationship, interface boundary,
+  implementation, and flow. The facets are derived from the task shape, force
+  structural activation, reject lexical co-occurrence as relationship proof,
+  and are reported as satisfied/total coverage in the runtime state block and
+  projection audit. Broad architecture overviews remain overviews.
+- `investigate` reports its provider-local confidence target as
+  `provider_sufficient`; the control plane's evidence facets still decide task
+  completion.
 - The `structure` header's `adapters:` line now lists adapter identities
   (`tree-sitter-javascript`) instead of language aliases (`javascript`, `jsx`),
   matching `ohgo doctor`.

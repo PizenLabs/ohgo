@@ -51,6 +51,10 @@ func TestInvestigateToolRunsOrchestratorAndBoundsOutput(t *testing.T) {
 	if !strings.Contains(result.Text, "investigation:") || !strings.Contains(result.Text, "auth.go") {
 		t.Fatalf("text does not describe the investigation: %s", result.Text)
 	}
+	if !strings.Contains(result.Text, "investigation: provider_sufficient") ||
+		!strings.Contains(result.Text, "control plane's evidence facets") {
+		t.Fatalf("provider-local sufficiency was not disclosed: %s", result.Text)
+	}
 	if len(result.Text) > InvestigateMaxOutput {
 		t.Fatalf("output is not bounded: %d bytes", len(result.Text))
 	}

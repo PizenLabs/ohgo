@@ -246,7 +246,9 @@ type Status string
 
 // Statuses.
 const (
-	// StatusSufficient means the plan reached its confidence target.
+	// StatusSufficient means the provider plan reached its own confidence
+	// target. It is not task sufficiency: the control plane's required evidence
+	// facets still decide whether the task may answer.
 	StatusSufficient Status = "sufficient"
 	// StatusPartial means work stopped before the target, with explicit issues.
 	StatusPartial Status = "partial"

@@ -55,7 +55,10 @@ it is done. ohgo is built around the opposite contract.
 - **Budgets are finite.** Turns, model calls, tool calls, delegated children,
   background jobs, external I/O, and wall-clock time are all bounded.
 - **Completion is evidence-based.** A run ends with a verdict derived from
-  observed results, never from the model's claim of success.
+  observed results, never from the model's claim of success. Relationship
+  questions declare required evidence facets up front (target, structural
+  edge, interface boundary, implementation, and/or flow); lexical co-occurrence
+  and a provider's confidence target cannot satisfy them.
 - **The transport is a seam.** The agent loop never touches HTTP, so every
   layer can be tested against a real request body instead of a mock.
 - **The default build can see non-Go source.** `make build` uses the host C

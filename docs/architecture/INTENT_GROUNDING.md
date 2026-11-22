@@ -517,6 +517,53 @@ source that carries them before the correction boundary. The observed-term
 comparison scans the full retained observation; it is not capped by the bounded
 output vocabulary, because a term past the output cap is still observed source.
 
+### 4.6.1 Investigation requirements (evidence facets)
+
+A claim class says what an answer sentence may assert. An **evidence facet** says
+what the control plane requires before the task may reach an answer boundary.
+Facets are derived from the task shape, not from a model turn and not from the
+presence of a tool. They are the deterministic answer to "does this task need
+Structure Core?".
+
+The policy is deliberately narrow. A broad account ("inspect the architecture",
+"what is this project") remains an overview. A relationship claim is explicit by
+vocabulary or named target: dependency/depends, caller/callee/call graph,
+import, reference, implement/interface/adapter, impact, request/data flow, or a
+"who calls" question. Only then does the shape acquire facets and force the
+structural impact depth.
+
+| facet | required observation | not enough |
+| --- | --- | --- |
+| target | a current structural coordinate identifying the entity or module | a file name or a lexical hit |
+| relationship | a structural edge/reference binding two endpoints | source text that mentions both names |
+| interface boundary | an observed IMPLEMENTS/EXTENDS edge or named boundary | an interface word in prose |
+| implementation | observed source content or a concrete IMPLEMENTS/OVERRIDES edge | a manifest, README, or declaration |
+| flow | an observed call/reference chain from the target | a documentation statement about flow |
+
+Facet requirements are added to `TaskShape.RequiredKnowledge` before supporting
+repository requirements. That ordering is the repair policy: mandatory intent
+facets first, then direct claims, then supporting/enrichment claims. An
+observation is tagged with the facets it actually establishes from structured
+result fields; `EvidenceState` derives the status from those tags, with bounded
+fallbacks for older checkpoints. Every facet status carries the observation ids
+and snapshot provenance that satisfy it.
+
+Sufficiency is therefore:
+
+```text
+required facets satisfied
+AND no unresolved mandatory requirement
+AND capability availability accounted for
+```
+
+Confidence remains a provider-local estimate of trust. It is not a completion
+predicate. The `investigate` tool's own result is labelled
+`provider_sufficient` when its planner reaches its confidence target, with an
+explicit note that the control plane's facets still gate task completion.
+
+The model can propose a structural query or a symbol. It cannot decide that a
+relationship task does not need structural evidence.
+
 ### 4.7 Completion integrity
 
 `AssessGrounding` runs at the end of `agent.EvaluateTaskCompletion`, after

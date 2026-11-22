@@ -105,9 +105,10 @@ const (
 	// project-scope completeness; version 5 adds bounded structural counts
 	// for claim support; version 6 adds inventory completeness, scope gaps,
 	// and the producing structural view; version 7 adds a conclusion's
-	// explicit unresolved code coordinates. Older records stay readable because
-	// every new field is optional and additive.
-	EvidenceVersion = 7
+	// explicit unresolved code coordinates; version 8 adds structural evidence
+	// facets. Older records stay readable because every new field is optional
+	// and additive.
+	EvidenceVersion = 8
 )
 
 // Source records where one observation came from.
@@ -214,6 +215,11 @@ type EvidenceItem struct {
 	// when one applies. It lets the claim projection distinguish an inventory
 	// from a targeted source observation without parsing the rendered line.
 	View string `json:"view,omitempty"`
+	// Facets names the evidence facets this observation establishes. It is
+	// written from structured result fields at ingestion, never inferred from
+	// the model's prose. Additive and optional: a legacy item without it uses
+	// the facet fallbacks in facets.go.
+	Facets []EvidenceFacet `json:"facets,omitempty"`
 	// Unresolved names the concrete code coordinates a conclusion still
 	// depends on. A conclusion is recorded for audit even when one of these is
 	// unresolved, but it is not admissible until the runtime observes the
@@ -493,6 +499,9 @@ func (s *EvidenceState) Clone() *EvidenceState {
 		}
 		out.Items[i].Counts = counts
 	}
+	for i := range out.Items {
+		out.Items[i].Facets = append([]EvidenceFacet(nil), out.Items[i].Facets...)
+	}
 	out.Requirements = append([]Requirement(nil), s.Requirements...)
 	out.ObservedCalls = make(map[string]bool, len(s.ObservedCalls))
 	for key, value := range s.ObservedCalls {
@@ -643,6 +652,9 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 	case key == "execution_result":
 		return execution.Executed
 	default:
+		if strings.HasPrefix(key, "facet:") {
+			return s.facetSatisfied(EvidenceFacet(strings.TrimPrefix(key, "facet:")))
+		}
 		for _, item := range s.Items {
 			if item.ID == key && item.Status != StatusRequired && item.Status != StatusUnknown {
 				return true
@@ -703,6 +715,13 @@ func (s *EvidenceState) hasRepositoryOverview() bool {
 			// A search that returned no payload or a structural query with no
 			// coordinates observed nothing content-bearing.
 			if strings.TrimSpace(item.Value) != "" {
+				return true
+			}
+		case strings.HasPrefix(item.ID, "structure:"), strings.HasPrefix(item.ID, "graph:"),
+			strings.HasPrefix(item.ID, "refs:"):
+			// A structural edge binds two code endpoints and carries content;
+			// an inventory alone does not.
+			if itemHasFacet(item, FacetRelationship) || relationshipTextEvidence(item) {
 				return true
 			}
 		}
@@ -1662,6 +1681,7 @@ func (s *EvidenceState) addInvestigation(outcome agent.ToolOutcome, details map[
 		Digest:     digest(value),
 		Complete:   status == "sufficient",
 		View:       "investigate",
+		Facets:     investigationFacets(details),
 		Source:     Source{Tool: "investigate", CallID: outcome.CallID},
 		Seq:        seq,
 	})
@@ -1695,6 +1715,7 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 		Counts:     structuralCounts(details),
 		Complete:   complete,
 		View:       detailString(details, "view"),
+		Facets:     structuralFacets(details),
 		Source:     structuralSource(details, outcome.ToolName, outcome.CallID, "", 0, 0),
 		Seq:        seq,
 	})
@@ -1719,6 +1740,7 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 			Provenance: classifyPathProvenance(path),
 			Summary:    bound(symbol+" at "+path+":"+itoa(line), MaxEvidenceSummaryBytes),
 			Complete:   !detailBool(details, "partial") && !detailBool(details, "truncated"),
+			Facets:     coordinateFacets(kind, symbol),
 			Source: structuralSourceWithCoordinate(details, coord, outcome.ToolName, outcome.CallID, path,
 				line, endLine),
 			Seq: seq,
@@ -1736,6 +1758,7 @@ func structuralCounts(details map[string]any) map[string]int {
 	keys := []string{
 		"test_files", "total", "returned", "files", "packages", "symbols",
 		"references", "calls", "entrypoints", "configs", "directories",
+		"total_edges", "total_references",
 	}
 	var counts map[string]int
 	for _, key := range keys {

@@ -342,6 +342,12 @@ type Sufficiency struct {
 	Missing []string
 	// Next names the highest-value evidence to acquire next, when insufficient.
 	Next []string
+	// Facets is the facet-level verdict for a relationship-shaped intent.
+	// Empty for a task with no facet requirements.
+	Facets []FacetStatus
+	// RequiredFacets and SatisfiedFacets are the bounded coverage counts.
+	RequiredFacets  int
+	SatisfiedFacets int
 }
 
 // EvaluateSufficiency decides whether the current evidence supports progress.
@@ -367,6 +373,8 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 	// an empty state looked "sufficient" and the candidate layer withheld every
 	// tool from a repository question that had read nothing.
 	evidence.ensureRequirements(shape)
+	result.Facets = facetStatuses(shape, evidence)
+	result.SatisfiedFacets, result.RequiredFacets = facetCoverage(result.Facets)
 	if conflicts := evidence.Conflicts(); len(conflicts) > 0 {
 		result.State = Conflicting
 		result.Stage = StageExplore
@@ -648,6 +656,24 @@ func ReconcileAcquisition(evidence *EvidenceState, tools []agent.Tool, suff Suff
 	return suff
 }
 
+// nextFacetEvidence names the concrete acquisition for a missing facet.
+func nextFacetEvidence(facet EvidenceFacet) string {
+	switch facet {
+	case FacetTarget:
+		return "query structure files, packages, symbols, relations, or analysis to identify the target"
+	case FacetRelationship:
+		return "query structure with view=relations or view=analysis on the target; a source read or lexical search that merely mentions both endpoints is not an edge"
+	case FacetInterfaceBoundary:
+		return "query structure relations or analysis for IMPLEMENTS/EXTENDS edges or a named module boundary"
+	case FacetImplementation:
+		return "read the implementation source or query an IMPLEMENTS/OVERRIDES relation for the named component"
+	case FacetFlow:
+		return "query structure relations or analysis with the target and a call depth to observe the call/reference chain"
+	default:
+		return "acquire the required structural evidence"
+	}
+}
+
 // acquisitionProviders returns the offered tools that can satisfy one
 // requirement. It maps a semantic requirement to capability classes, never to
 // a vendor or a fixed tool name: read, ls, glob, and structure all provide
@@ -655,13 +681,17 @@ func ReconcileAcquisition(evidence *EvidenceState, tools []agent.Tool, suff Suff
 // keep their own class.
 func acquisitionProviders(key string, tools []agent.Tool, blocked map[string]bool) []string {
 	var needed []agent.ActionClass
-	switch key {
-	case "external_observation":
+	switch {
+	case key == "external_observation":
 		needed = []agent.ActionClass{agent.ActionExternal}
-	case "verification", "execution_result", "runtime_observation":
+	case key == "verification" || key == "execution_result" || key == "runtime_observation":
 		needed = []agent.ActionClass{agent.ActionExecute}
-	case "test_inventory":
+	case key == "test_inventory":
 		needed = []agent.ActionClass{agent.ActionStructure, agent.ActionObserve}
+	case key == FacetKey(FacetImplementation):
+		needed = []agent.ActionClass{agent.ActionStructure, agent.ActionObserve}
+	case strings.HasPrefix(key, "facet:"):
+		needed = []agent.ActionClass{agent.ActionStructure}
 	default:
 		needed = []agent.ActionClass{agent.ActionObserve, agent.ActionStructure}
 	}
@@ -780,6 +810,8 @@ func nextEvidence(key string) string {
 			", the evidence that supports it, and any remaining uncertainty"
 	case strings.HasPrefix(key, "investigation_target:"):
 		return "inspect " + strings.TrimPrefix(key, "investigation_target:") + " and determine the named uncertainty; do not repeat the same conclusion until this observation exists"
+	case strings.HasPrefix(key, "facet:"):
+		return nextFacetEvidence(EvidenceFacet(strings.TrimPrefix(key, "facet:")))
 	case key == "test_inventory":
 		return "query the structure tool with view=tests, unscoped, and inspect scope, inventory, and structural completeness; an overview test_files count is not a filtered inventory"
 	case key == "external_observation":

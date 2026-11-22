@@ -141,6 +141,7 @@ func (t *InvestigateTool) Execute(ctx agent.Context, args map[string]any) agent.
 	}
 	details := map[string]any{
 		"status":            string(result.Status),
+		"status_scope":      "provider-local; control-plane evidence facets gate task completion",
 		"intent":            string(result.Intent),
 		"confidence":        result.Confidence,
 		"coverage":          result.Coverage,
@@ -165,12 +166,15 @@ func (t *InvestigateTool) Execute(ctx agent.Context, args map[string]any) agent.
 
 func formatInvestigation(result investigate.Result) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "investigation: %s", result.Status)
+	fmt.Fprintf(&builder, "investigation: %s", investigationStatus(result.Status))
 	if sources := stepSources(result.Steps); sources != "" {
 		fmt.Fprintf(&builder, " · %s", sources)
 	}
 	fmt.Fprintf(&builder, " · intent %s · confidence %.2f · coverage %.2f · %s\n",
 		result.Intent, result.Confidence, result.Coverage, result.StopReason)
+	if result.Status == investigate.StatusSufficient {
+		builder.WriteString("scope: provider-local; the control plane's evidence facets still gate task completion\n")
+	}
 	if len(result.Steps) > 0 {
 		parts := make([]string, 0, len(result.Steps))
 		for _, step := range result.Steps {
@@ -225,6 +229,15 @@ func formatInvestigation(result investigate.Result) string {
 		fmt.Fprintf(&builder, "evidence: %d records retained; confidence is correlation, not proof of implementation.\n", result.Records)
 	}
 	return capInvestigationOutput(builder.String())
+}
+
+// investigationStatus distinguishes a provider-local confidence target from a
+// task-level evidence verdict. The control plane owns the latter.
+func investigationStatus(status investigate.Status) string {
+	if status == investigate.StatusSufficient {
+		return "provider_sufficient"
+	}
+	return string(status)
 }
 
 // stepSources renders the mechanisms that answered the steps, deduplicated

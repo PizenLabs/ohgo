@@ -40,7 +40,8 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	// workspace root cannot be enumerated, the block is the only place that
 	// says so. Returning "" there left the model with no tools, no evidence,
 	// and no explanation of why its surface was empty.
-	if len(evidence.Items) == 0 && execution.ToolCalls == 0 && shape.RepositoryFacts.RootError == "" {
+	if len(evidence.Items) == 0 && execution.ToolCalls == 0 && shape.RepositoryFacts.RootError == "" &&
+		len(suff.Facets) == 0 {
 		return ""
 	}
 	if maxBytes <= 0 {
@@ -124,6 +125,13 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 
 	var verdictLine strings.Builder
 	fmt.Fprintf(&verdictLine, "Sufficiency: %s (%s)\n", suff.State, suff.Stage)
+	if suff.RequiredFacets > 0 {
+		fmt.Fprintf(&verdictLine, "Evidence facets: %d/%d", suff.SatisfiedFacets, suff.RequiredFacets)
+		if missing := missingFacetLabels(suff.Facets); len(missing) > 0 {
+			fmt.Fprintf(&verdictLine, " (missing: %s)", bound(strings.Join(missing, ", "), 160))
+		}
+		verdictLine.WriteString("\n")
+	}
 	if len(suff.Missing) > 0 {
 		fmt.Fprintf(&verdictLine, "Missing: %s\n", bound(strings.Join(uniqueStrings(suff.Missing), ", "), 220))
 	}

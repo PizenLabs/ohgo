@@ -432,6 +432,10 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	}
 	report.Terminal = suff.Kind == BlockCapabilityFailure || suff.Kind == BlockProgressStalled
 	report.Missing = append([]string(nil), suff.Missing...)
+	report.Facets = facetReportRows(suff.Facets)
+	if suff.RequiredFacets > 0 {
+		report.FacetCoverage = fmt.Sprintf("%d/%d", suff.SatisfiedFacets, suff.RequiredFacets)
+	}
 	switch {
 	case len(gaps) > 0:
 		// The capability verdict is the actual reason this request cannot
