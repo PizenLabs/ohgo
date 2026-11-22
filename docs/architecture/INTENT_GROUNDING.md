@@ -575,7 +575,7 @@ project. The merged value is bounded and is not completeness evidence.
 | --- | --- |
 | Low-risk ambiguity (actionless context, observation only) | Continue; no interruption; completion checks the answer |
 | Material ambiguity that affects mutation (invented mutation, unresolved scope) | Block the mutation before the security boundary |
-| Unsupported conclusion in the final answer | `NEEDS_REVIEW`, with the reason recorded |
+| Unsupported conclusion in the final answer | the claim is withheld and a bounded limitation is published; an unresolved required claim still ends as `NEEDS_REVIEW` |
 | Authority violation | Existing security gate: `DENY` |
 
 The runtime does not ask the user to approve every interpretation. It blocks

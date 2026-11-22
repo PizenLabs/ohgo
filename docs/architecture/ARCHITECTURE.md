@@ -665,8 +665,11 @@ user's request before execution and the evidence the runtime observed.
   `Runtime` evidence a successful `verify` plan reports: the service reached
   readiness, at least one check passed against it while it was alive, and it
   did not exit mid-verification. An informational objective needs
-  non-empty visible assistant text in the final turn. Empty or whitespace text
-  is `NEEDS_REVIEW`. A request that explicitly required external knowledge also
+  non-empty visible assistant text in the final turn, and that text must pass
+  the claim/evidence audit before publication. The audit withholds a rejected
+  sentence and publishes a bounded limitation instead; a draft is never the
+  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A request
+  that explicitly required external knowledge also
   needs a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from
   observed implementation facts: a term that appears only in README/docs, never
