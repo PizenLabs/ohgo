@@ -570,7 +570,11 @@ Recognition is an incremental, bounded state machine:
   bounded recovery request asking for the actual call. If the next turn still
   has no call, it reports `EXECUTION_INTENT_WITHOUT_TOOL`; the prose is never
   interpreted as a command. A turn with neither text nor a call reports
-  `NO_MODEL_OUTPUT`. Both are review verdicts, never execution evidence.
+  `NO_MODEL_OUTPUT`. A turn the provider stopped at the output ceiling before
+  any call or visible text reports `OUTPUT_TRUNCATED`: the model was still
+  writing when the budget ran out, so the one recovery raises the completion
+  budget to the model's own ceiling instead of repeating the truncated request.
+  All are review verdicts, never execution evidence.
 
 ### Outbound message contract
 
@@ -1245,7 +1249,10 @@ start cannot leave an orphaned server.
 HTTP targets are loopback-only. The browser check is optional: it discovers a
 headless Chromium/Chrome binary (`OHGO_CHROMIUM`/`OHGO_BROWSER` may override),
 runs it against the already-ready local URL, and reports unsupported when none
-is available. The core plan never requires Chromium.
+is available. Its `contains` assertions inspect extracted page text rather than
+serialized markup, normalize whitespace, and treat adjacent element text as
+separated words; attributes and head/script/style content cannot satisfy them.
+The core plan never requires Chromium.
 
 Plan arguments accept the equivalent shapes models routinely emit: a service
 `cwd` may be workspace-relative or an absolute path inside the workspace (an
@@ -1331,12 +1338,15 @@ observation. Discovery reports `TierRead`; execution reports `TierExec`.
 | Spent budget | `nil` error, turns returned | wall-clock deadline expiry |
 
 Protocol/lifecycle failures are classified before a generic verdict:
-`NO_MODEL_OUTPUT`, `EXECUTION_INTENT_WITHOUT_TOOL`, and
+`NO_MODEL_OUTPUT`, `OUTPUT_TRUNCATED`, `EXECUTION_INTENT_WITHOUT_TOOL`, and
 `TOOL_NORMALIZATION_FAILED` stop a run in which no requested action executed and
 are reported as review (non-terminal), preserving the task identity. A turn that
 contains only hidden reasoning is the `NO_MODEL_OUTPUT` shape: one bounded
 recovery request asks for a concrete call or answer, and a second reasoning-only
-turn is a recoverable review, never a silent finish with no result. Tool
+turn is a recoverable review, never a silent finish with no result. A turn the
+provider cut off at the completion ceiling is `OUTPUT_TRUNCATED`: the recovery
+raises the per-run budget to the model's own ceiling because the configured cap
+demonstrably produced no action, and a second truncation is truthful review. Tool
 outcomes carry a provider-agnostic `FailureClass` such as `tool_start_failed`,
 `tool_runtime_failed`, `command_failed`, `tool_timeout`, `tool_cancelled`,
 `tool_authorization_denied`, `tool_capability_unavailable`,

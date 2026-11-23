@@ -255,6 +255,10 @@ immutable.
 
 ### Fixed
 
+- Browser verification now checks extracted page text instead of serialized
+  HTML. Styled text split across adjacent elements and whitespace/layout
+  boundaries no longer produce false failures, while markup-only content such
+  as scripts and document metadata cannot produce false passes.
 - A shell command that ran to completion and returned a non-zero status is now
   a negative observation (`command_failed`), not `tool_runtime_failed`. The
   process started, produced output, and reported a result; treating a benign
@@ -269,6 +273,16 @@ immutable.
   asking for a concrete call or answer, and a second reasoning-only turn becomes
   a recoverable `NO_MODEL_OUTPUT` review. The reasoning-only turn still never
   enters provider conversation history.
+- A turn the provider cut off at the completion output ceiling is now
+  `OUTPUT_TRUNCATED`, distinct from a model that produced nothing. The loop no
+  longer substitutes a flat 8192-token budget when the caller resolved "use the
+  model ceiling" (zero): a reasoning model could spend that entire budget on
+  hidden reasoning and stop before emitting any action. When a turn truncates
+  with no call and no visible text, the loop raises the per-run completion
+  budget to the model's own ceiling for the one recovery, because repeating the
+  identical request at the exhausted budget truncates identically. A second
+  truncation is a non-terminal review that names the ceiling instead of
+  blaming the model.
 - Every stream consumer now drains `Events` with a context-aware, inactivity-
   bounded loop. The context summarizer previously called `Stream.Result()`
   without draining, so a summary longer than the event buffer deadlocked the
