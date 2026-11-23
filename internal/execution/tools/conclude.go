@@ -131,13 +131,16 @@ func (t *ConcludeTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	if status == "FINAL" && contract.IsProvisionalConclusion(evidence, uncertainty) {
 		status = "IN_PROGRESS"
 	}
-	label := "conclusion"
-	if mode == contract.ConclusionAnswer {
-		label = "answer"
-	}
-	text := fmt.Sprintf("%s: %s\n%s", label, verdict, evidence)
+	// ANSWERED is a verdict about the evidence, not the user's answer. The
+	// result must not be labelled "answer": a model that reads its own
+	// conclusion as the deliverable then produces a one-line acknowledgement
+	// instead of the synthesis the request asked for.
+	text := fmt.Sprintf("conclusion: %s\nstatus: %s\n%s", verdict, status, evidence)
 	if status == "IN_PROGRESS" {
 		text = "progress: investigation remains open; this observation alone does not close the action surface or satisfy the conclusion"
+	} else {
+		text += "\n\nThe terminal observation is recorded. Answer synthesis is a separate step: " +
+			"produce the final answer from the evidence unless the runtime reports an unresolved investigation target."
 	}
 	return agent.Result{
 		Text: text,

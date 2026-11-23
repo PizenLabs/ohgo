@@ -9,9 +9,10 @@ import (
 // AnswerAudit is the machine-readable record of the answer gate.
 //
 // It is audit data, never authority: completion still evaluates the same text
-// and the durable observations. A non-zero UnsupportedClaims count does not
-// hide the model's prose; it says the runtime refused to certify it and the
-// host must surface a review boundary.
+// and the durable observations. A non-zero UnsupportedClaims count says the
+// runtime refused to certify the text, so a host must not publish it as the
+// final answer; the raw turn remains in the completion input so the review can
+// name the exact claims.
 type AnswerAudit struct {
 	// Finalized reports that the gate ran for an accepted answer.
 	Finalized bool `json:"finalized"`
@@ -28,6 +29,17 @@ type AnswerAudit struct {
 	EvidenceGap string `json:"evidence_gap,omitempty"`
 	// Issues are the claim-level audit findings.
 	Issues []contract.GroundingIssue `json:"issues,omitempty"`
+}
+
+// Approved reports whether the gate accepted the answer for publication.
+//
+// An unresolved facet is a completion gap the answer may honestly state; it is
+// not a false factual claim, so it does not block publication. An uncertified
+// claim does: publishing it as the final answer is exactly the contradiction
+// between the response transaction and the completion verdict this gate
+// exists to prevent.
+func (a AnswerAudit) Approved() bool {
+	return a.UnsupportedClaims == 0
 }
 
 // FinalizedAnswer is the answer text a host may commit for one run, with the
@@ -52,9 +64,9 @@ type FinalizedAnswer struct {
 // produces a competing conclusion the user never asked for.
 //
 // The completion authority still refuses to certify an answer with uncertified
-// claims, so the audit remains a real boundary. The published text is the
-// model's one answer, and the review surfaces name exactly what was not
-// established.
+// claims, so the audit remains a real boundary. Approved reports whether the
+// text may be published; a refused answer stays in the turn for completion to
+// name what was not established.
 //
 // The function is idempotent. It cannot authorize an action, add a capability,
 // or mark a task complete.

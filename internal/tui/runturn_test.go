@@ -185,6 +185,11 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 			}
 			message := script[index]
 			index++
+			if len(message.ToolCalls()) == 0 {
+				// Live providers stream answer text; the provisional preview
+				// is what the user sees before the review decides.
+				return ai.NewTextStream(message.Text()), nil
+			}
 			return ai.NewCompletedStream(message), nil
 		},
 		Tools:                   []agent.Tool{read},
@@ -254,6 +259,18 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 			if read.calls != 1 {
 				t.Fatalf("correction read calls = %d, want 1", read.calls)
 			}
+			if got := p.state.AssistantText(); got != "This project is a Go coding agent." {
+				t.Fatalf("answer projection = %q, want only the committed answer", got)
+			}
+			withdrawn := ""
+			for _, entry := range p.state.Entries {
+				if entry.Kind == EntryAssistant && entry.Discarded {
+					withdrawn = entry.WithdrawnText
+				}
+			}
+			if !strings.Contains(withdrawn, "no database") {
+				t.Fatalf("rejected candidate was not preserved as a withdrawn draft: %q", withdrawn)
+			}
 			return
 		case <-timeout:
 			t.Fatal("runTurn hung")
@@ -317,5 +334,71 @@ func TestRunTurnPersistsExactlyOneAssistantAnswer(t *testing.T) {
 	}
 	if answers[0] != "This project is a Go coding agent." {
 		t.Fatalf("persisted answer = %q, want the committed answer", answers[0])
+	}
+}
+
+// A candidate the publication audit refuses must not survive as the answer on
+// screen. The provisional preview is withdrawn; the terminal footer carries
+// the review boundary instead of a competing answer.
+func TestRunTurnDoesNotPublishUnapprovedAnswer(t *testing.T) {
+	var requests int
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			requests++
+			return ai.NewTextStream("There is no database anywhere in the repository."), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	done := make(chan struct{})
+	go func() { defer close(done); p.runTurn("analyze this project") }()
+
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-p.events:
+			p.state.Apply(event)
+		case <-done:
+			for {
+				select {
+				case event := <-p.events:
+					p.state.Apply(event)
+					continue
+				default:
+				}
+				break
+			}
+			if got := p.state.AssistantText(); got != "" {
+				t.Fatalf("an unapproved answer reached the transcript: %q", got)
+			}
+			withdrawn := ""
+			for _, entry := range p.state.Entries {
+				if entry.Kind == EntryAssistant && entry.Discarded {
+					withdrawn = entry.WithdrawnText
+				}
+			}
+			if !strings.Contains(withdrawn, "no database") {
+				t.Fatalf("unapproved candidate vanished without a trace: %q", withdrawn)
+			}
+			var rendered strings.Builder
+			for _, entry := range p.state.Entries {
+				if entry.Kind == EntryAssistant && entry.Discarded {
+					renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
+				}
+			}
+			if !strings.Contains(rendered.String(), "draft withdrawn") {
+				t.Fatalf("unapproved candidate has no withdrawn label:\n%s", rendered.String())
+			}
+			if audit := loop.LastResponseAudit(); audit.State != agent.ResponseReview {
+				t.Fatalf("response state = %s after %d request(s), want REVIEW", audit.State, requests)
+			}
+			return
+		case <-timeout:
+			t.Fatal("runTurn hung")
+		}
 	}
 }

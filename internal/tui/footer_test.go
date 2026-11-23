@@ -386,3 +386,29 @@ func TestFooterIsNotPartOfBlockCopy(t *testing.T) {
 		t.Fatalf("footer copy = %q, want empty metadata", got)
 	}
 }
+
+// The structured check and verify tools are checks. The footer previously
+// counted only shell commands whose text looked like a check, so a passing
+// `check` run still printed "no checks run" beside it.
+func TestVerifiedFooterCountsStructuredChecks(t *testing.T) {
+	turns := []agent.Turn{{Results: []agent.ToolOutcome{
+		{
+			ToolName: "check",
+			Args:     map[string]any{"mode": "run"},
+			Result:   agent.Result{Details: map[string]any{"mode": "run", "status": "PASS"}},
+		},
+		{
+			ToolName: "check",
+			Args:     map[string]any{"mode": "discover"},
+			Result:   agent.Result{Details: map[string]any{"mode": "discover", "status": "DISCOVERED"}},
+		},
+		{
+			ToolName: "verify",
+			Result:   agent.Result{Text: "ready, checks passed", Verifies: true},
+		},
+	}}}
+	footer := footerText(verifiedFooter(turns, "build"))
+	if !strings.Contains(footer, "all checks clean") || strings.Contains(footer, "no checks run") {
+		t.Fatalf("footer = %q, want structured checks counted", footer)
+	}
+}

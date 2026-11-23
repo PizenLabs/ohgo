@@ -669,7 +669,11 @@ user's request before execution and the evidence the runtime observed.
   non-empty visible assistant text in the final turn, and that text must pass
   the claim/evidence audit before publication. The audit withholds a rejected
   sentence and publishes a bounded limitation instead; a draft is never the
-  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A request
+  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A streamed
+  candidate is labelled provisional until the response transaction commits it.
+  A rejected candidate is removed from the answer projection but may remain in
+  the transcript as a labelled withdrawn draft, so a streamed answer cannot
+  vanish without a trace. Committed text is never withdrawn. A request
   that explicitly required external knowledge also
   needs a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from
@@ -888,16 +892,26 @@ the model said. Two properties keep the loop honest and small:
   proposals cannot consume turns but a valid correction is never mistaken for a
   repeated outage.
 - **An answer correction reopens the permitted surface.** When the answer-level
-  review rejects a candidate answer, the next request may gather the evidence
-  the review named. The loop reopens the surface for that turn
-  (`ProjectionRequest.Correcting`; the constructed set when no projector is
-  installed), and the projection reports the same surface: the answer-boundary
-  closure is removed, while mutation authority,
-  scope, language, external, and budget exclusions still apply. The request is
-  not answer-eligible, so a call during it is evidence gathering rather than
+  review rejects a candidate answer, the next requests may gather the evidence
+  the review named. The loop reopens the surface for the whole correction
+  window (`ProjectionRequest.Correcting`; the constructed set when no projector
+  is installed), and the projection reports the same surface: the
+  answer-boundary closure is removed, while mutation authority, scope,
+  language, external, and budget exclusions still apply. The request is not
+  answer-eligible, so a call during it is evidence gathering rather than
   continuation after a finished answer. Without this synchronisation the model
   reads a stale "no tool is available" verdict next to a live tool block and
-  spends the correction turn reconciling the contradiction.
+  spends the correction turn reconciling the contradiction. The claim-level
+  repair directive is re-appended to every request in the window: the window
+  can span several model turns, and a later turn that no longer sees the named
+  claims follows an unrelated state-block frontier instead.
+  When the allowance is spent (`ProjectionRequest.CorrectionBudget` is zero),
+  the projection closes the surface again and states that the repair allowance
+  is exhausted, so the next visible text is the candidate answer rather than a
+  call the loop would refuse. A correction also withholds the generic evidence
+  frontier: the review's named claims are the actionable list, and an unrelated
+  component list spends a bounded repair on work the answer audit did not
+  request.
 - **A correction is proportional to its rejected claims.** The answer audit
   projects each repairable issue into the shared `GroundingIssue` contract
   (claim, location, category, required evidence, reference, permitted action).

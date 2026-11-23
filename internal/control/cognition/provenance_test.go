@@ -856,3 +856,72 @@ func TestSurveyExemptsASingleSourceFileProject(t *testing.T) {
 		t.Fatal("a single-source-file project was required to read a second file")
 	}
 }
+
+// A repository-wide grep is source evidence for the files it matched, not for
+// the directory it searched. The old classification used the search scope, so
+// an unscoped grep left every documented term in the "documentation-only"
+// vocabulary and the answer review demanded another search that could never
+// change the verdict.
+func TestRepositoryGrepCorroboratesDocumentedTerms(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "1\t# go-ecommerce\n2\tGoCommerce uses HTMX and RabbitMQ.\n"),
+		readEvidenceForTest("read-2", "backend/cmd/web/main.go", "package main\n\nfunc main() {}\n"),
+	)
+	before := state.Provenance(shape)
+	for _, term := range []string{"htmx", "rabbitmq"} {
+		found := false
+		for _, documented := range before.DocumentationTerms {
+			if documented == term {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("before the grep: %q was not documentation-only: %v", term, before.DocumentationTerms)
+		}
+	}
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "grep-1", ToolName: "grep",
+		Args: map[string]any{"pattern": "HTMX|RabbitMQ"},
+		Result: agent.Result{
+			Text: "README.md:\n  2: GoCommerce uses HTMX and RabbitMQ.\n\n" +
+				"backend/layout/http.go:\n  119: // htmx posts reach this handler.\n\n" +
+				"2 file(s) matched\n",
+			Details: map[string]any{"pattern": "HTMX|RabbitMQ", "files": 2},
+		},
+	})
+	after := state.Provenance(shape)
+	joined := strings.Join(after.DocumentationTerms, "\x00")
+	if strings.Contains(joined, "htmx") {
+		t.Fatalf("a source-matched term remained documentation-only: %v", after.DocumentationTerms)
+	}
+	if !strings.Contains(joined, "rabbitmq") {
+		t.Fatalf("a documentation-only term was cleared by an unrelated source section: %v", after.DocumentationTerms)
+	}
+}
+
+// A grep that matched only documentation is not implementation evidence. Its
+// rendered file sections must not be treated as source content.
+func TestDocumentationGrepIsNotImplementationEvidence(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "1\t# go-ecommerce\n2\tGoCommerce uses HTMX.\n"),
+		readEvidenceForTest("read-2", "backend/cmd/web/main.go", "package main\n\nfunc main() {}\n"),
+	)
+	before := state.Provenance(shape)
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "grep-1", ToolName: "grep",
+		Args: map[string]any{"pattern": "HTMX"},
+		Result: agent.Result{
+			Text:    "README.md:\n  2: GoCommerce uses HTMX.\n\ndocs/stack.md:\n  9: HTMX renders the storefront.\n\n2 file(s) matched\n",
+			Details: map[string]any{"pattern": "HTMX", "files": 2},
+		},
+	})
+	after := state.Provenance(shape)
+	if !reflect.DeepEqual(before.DocumentationTerms, after.DocumentationTerms) {
+		t.Fatalf("a documentation-only grep changed the provenance vocabulary: %v -> %v",
+			before.DocumentationTerms, after.DocumentationTerms)
+	}
+}

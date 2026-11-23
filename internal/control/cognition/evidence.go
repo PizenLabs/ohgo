@@ -1765,16 +1765,41 @@ func (s *EvidenceState) dropPreReadPathTargets(targets []string) []string {
 			continue
 		}
 		item, ok := s.Find("file:" + path)
+		if !ok && !strings.Contains(path, "/") {
+			// A persisted conclusion may predate the path rule and name only a
+			// basename. If any complete pre-read has that basename, the model
+			// already observed the file it meant; an ambiguous name cannot be
+			// turned into an unsatisfiable obligation.
+			item, ok = s.preReadByBasename(path)
+		}
 		if !ok || !item.Complete || item.Status == StatusConflicting {
 			out = append(out, target)
 			continue
 		}
-		if mutationSeq, mutated := s.LastMutationSeq[path]; mutated && mutationSeq > item.Seq {
+		if mutationSeq, mutated := s.LastMutationSeq[cleanPath(item.Source.Path)]; mutated && mutationSeq > item.Seq {
 			out = append(out, target)
 			continue
 		}
 	}
 	return out
+}
+
+// preReadByBasename finds a complete file observation whose basename equals
+// name. It is used only for legacy conclusions that named a bare file name.
+func (s *EvidenceState) preReadByBasename(name string) (EvidenceItem, bool) {
+	if s == nil || name == "" {
+		return EvidenceItem{}, false
+	}
+	for _, item := range s.Items {
+		if !strings.HasPrefix(item.ID, "file:") || !item.Complete ||
+			item.Status == StatusConflicting || item.Status == StatusUnknown {
+			continue
+		}
+		if filepath.Base(filepath.ToSlash(item.Source.Path)) == name {
+			return item, true
+		}
+	}
+	return EvidenceItem{}, false
 }
 
 // addInvestigation records one bounded investigation as structural evidence.
@@ -2668,19 +2693,102 @@ func isImplementationObservation(item EvidenceItem) bool {
 			// notice, not an implementation observation.
 			return false
 		}
-		path := strings.TrimSpace(item.Source.Path)
-		if path == "" || path == "." || path == "./" {
-			return false
+		// The coordinate of a grep is the file it matched, not the scope it
+		// searched. A repository-wide grep has an empty or "." scope yet can
+		// return source lines; classifying by the scope made that evidence
+		// invisible, so a term the model had just verified in source remained
+		// "documentation-only" and the answer review demanded another search.
+		if source, matched := grepSourceText(item.Value); matched {
+			return source != ""
 		}
-		switch agent.ClassifyPath(path) {
-		case agent.PathDocumentation, agent.PathManifest, agent.PathConfiguration, agent.PathGenerated:
-			return false
-		default:
-			return true
-		}
+		// A legacy or single-file result without rendered file headers keeps
+		// the scope fallback. The scope is only admissible when it names a
+		// concrete source file; a directory cannot prove its own contents.
+		return agent.ClassifyPath(item.Source.Path) == agent.PathSource
 	default:
 		return false
 	}
+}
+
+// grepSourceText returns the portion of a rendered grep result that belongs to
+// source files, and whether the result rendered any file coordinate at all.
+//
+// The producer groups matches under a "path:" header, and a single-file match
+// may render as "path:line: text". Both forms are parsed here so the evidence
+// model can attribute a match to the file that produced it. Documentation,
+// manifest, configuration, and generated sections are excluded: a README hit
+// must not corroborate an implementation claim merely because it arrived in
+// the same search as a source hit.
+func grepSourceText(text string) (source string, matched bool) {
+	var out strings.Builder
+	inSource := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			if inSource {
+				out.WriteString(line)
+				out.WriteByte('\n')
+			}
+			continue
+		}
+		if path := grepGroupHeader(trimmed); path != "" {
+			matched = true
+			inSource = sourcePathIsImplementation(path)
+			if inSource {
+				out.WriteString(line)
+				out.WriteByte('\n')
+			}
+			continue
+		}
+		if path := grepInlineMatchPath(trimmed); path != "" {
+			matched = true
+			inSource = false
+			if sourcePathIsImplementation(path) {
+				out.WriteString(line)
+				out.WriteByte('\n')
+			}
+			continue
+		}
+		// A summary or note ends the last file section.
+		inSource = false
+	}
+	return strings.TrimSpace(out.String()), matched
+}
+
+// grepGroupHeader returns the path of a "path:" group header, or "".
+func grepGroupHeader(line string) string {
+	if !strings.HasSuffix(line, ":") || strings.Contains(line, ": ") {
+		return ""
+	}
+	path := strings.TrimSuffix(line, ":")
+	if strings.ContainsAny(path, " \t") {
+		return ""
+	}
+	return path
+}
+
+// grepInlineMatchPath returns the path of a "path:line: text" match, or "".
+func grepInlineMatchPath(line string) string {
+	sep := strings.IndexByte(line, ':')
+	if sep <= 0 {
+		return ""
+	}
+	rest := line[sep+1:]
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits >= len(rest) || rest[digits] != ':' {
+		return ""
+	}
+	path := strings.TrimSpace(line[:sep])
+	if path == "" || strings.ContainsAny(path, " \t") {
+		return ""
+	}
+	return path
 }
 
 func firstLine(text string) string {

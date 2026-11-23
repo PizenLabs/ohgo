@@ -516,6 +516,9 @@ observed source does not — so the answer can attribute them or inspect the
 source that carries them before the correction boundary. The observed-term
 comparison scans the full retained observation; it is not capped by the bounded
 output vocabulary, because a term past the output cap is still observed source.
+A repository-wide grep is attributed by the files it matched, not by the
+directory it searched: documentation sections in the same result do not
+corroborate an implementation term, and matched source sections do.
 
 ### 4.6.1 Investigation requirements (evidence facets)
 
@@ -602,10 +605,24 @@ investigation. Each repairable audit issue carries the claim, its location, its
 category, the evidence class it needs, a reference, and the permitted action.
 The correction names at most `MaxRepairInstructions` claims and tells the model
 to keep every other sentence, reuse the observations already in the
-conversation, and stay within a small per-correction tool allowance
-(`CorrectionToolCalls`, default 4). Calls beyond the allowance fail closed
-before execution; a reused observation does not consume it. The allowance is
-per correction, not per run, so the initial investigation's budget is unchanged.
+conversation, and stay within the answer lifecycle's tool allowance
+(`CorrectionToolCalls`, default 4). The directive is re-rendered on every
+request in the correction window, not only the first: a window can span several
+model turns, and a later turn without the named claims follows an unrelated
+evidence frontier. Calls beyond the allowance fail closed before execution; a
+reused observation does not consume it. The allowance is
+per answer lifecycle, not per correction request, so a second repair pass cannot
+reopen the investigation the initial budget already paid for. When the
+allowance is spent, the projection closes the tool surface and states the
+exhausted budget instead of advertising a call the loop will refuse.
+
+A correction also withholds the generic evidence frontier carried by the
+informational state block. The review already named the claims to repair; a
+component frontier derived from unrelated structural inventory competes with
+that bounded instruction and can spend the remaining allowance on the wrong
+coordinate. The claim classes and documentation-only vocabulary remain visible,
+because those are the repair's evidence boundary.
+
 The pre-answer review also runs the documentation-only provenance audit when the
 host supplies the last projection's provenance, so a documented claim is
 repaired before completion instead of surfacing as a terminal review. The
@@ -615,13 +632,29 @@ specific claim. When the evidence still cannot be obtained, the model qualifies
 or removes only that sentence; the runtime never accepts the claim to finish
 the task.
 
-When the bounded correction is exhausted, the answer is not rewritten by the
-runtime. The published answer is the model's one answer, and the uncertified
-claims are carried as `ReviewIssues` into `NEEDS_REVIEW`. Deleting sentences and
-appending a runtime-authored "Evidence limitations" section produced a second,
-competing conclusion; it also removed supported detail the user asked for. The
-completion authority still refuses to certify an answer with uncertified
-claims, so the boundary remains real without mangling the answer.
+The corrected answer is reviewed by the same audit before publication. A repair
+can introduce a new unsupported claim, so a second correction pass is admitted
+only when the review names a different claim set (`answerRepairKey`); repeating
+the same rejection terminates at `NEEDS_REVIEW`. `MaxAnswerCorrections` bounds
+the passes. This is a convergence rule, not a retry loop: an unchanged claim set
+earns no further turn.
+
+When correction is exhausted, the candidate is not published. The response
+transaction records `REVIEW` and the host removes the provisional stream from
+the answer projection; it may keep the text as a labelled withdrawn draft so a
+streamed candidate does not vanish without a trace. The uncertified claims are
+carried as `ReviewIssues` into `NEEDS_REVIEW`. A
+facet-only rejection is the exception: the answer may honestly state the
+missing deliverable, so the finalizer publishes it and completion records the
+facet gap. Deleting sentences and appending a runtime-authored "Evidence
+limitations" section
+produced a second, competing conclusion; it also removed supported detail the
+user asked for. The model's raw candidate remains in the completion input so the
+review can name exactly what was not established, but no host may display it as
+the final answer. The answer-finalization gate (`AnswerAudit.Approved`) and the
+completion authority use the same claim audits, so the transcript, the response
+transaction, and the completion verdict cannot disagree about whether the
+published text was approved.
 
 Coverage is presentation, not a claim. The turn footer reports measured
 structural coverage, but an answer is never rejected merely because it does not

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -11,11 +12,12 @@ import (
 // ReviewInformationalAnswer is the answer-level gate a host installs on the
 // loop for an informational or investigative turn.
 //
-// It is deliberately narrower than completion: it can ask for one corrected
-// answer, but it cannot prove a mutation, grant authority, or publish a result.
-// The final verdict still comes from EvaluateTaskCompletion after the loop
-// stops. A mutation objective is not reviewed here because its correction is a
-// real change plus a check, not a rewritten sentence.
+// It is deliberately narrower than completion: it can ask for a bounded,
+// claim-level corrected answer, but it cannot prove a mutation, grant
+// authority, or publish a result. The final verdict still comes from
+// EvaluateTaskCompletion after the loop stops. A mutation objective is not
+// reviewed here because its correction is a real change plus a check, not a
+// rewritten sentence.
 func ReviewInformationalAnswer(intent contract.IntentContract, turns []Turn, answer string) string {
 	if intent.Kind != contract.ObjectiveInformational {
 		return ""
@@ -158,6 +160,47 @@ func boundRepair(text string, limit int) string {
 // handful is a rewritten answer, not a bounded repair, and a long list invites
 // another full investigation.
 const MaxRepairInstructions = 5
+
+// MaxAnswerCorrections bounds the correction requests for one answer
+// lifecycle. A repair can introduce a new unsupported claim; the next review
+// must be allowed to repair it or the one correction silently publishes
+// nothing. The bound stays small, and a correction is admitted only when the
+// review names a different claim set (answerRepairKey), so this cannot become a
+// retry loop.
+const MaxAnswerCorrections = 2
+
+// blocksPublication reports whether a review's issues are factual claims that
+// must not be published. A review with no claim list is a prose rejection (a
+// plan or an empty answer), which is also not publishable. A facet gap is a
+// completion gap the answer may honestly state, so it does not block
+// publication; the finalizer's Approved gate still runs.
+func blocksPublication(issues []contract.GroundingIssue) bool {
+	if len(issues) == 0 {
+		return true
+	}
+	for _, issue := range issues {
+		if !isFacetIssue(issue) {
+			return true
+		}
+	}
+	return false
+}
+
+// answerRepairKey identifies the claims a review rejected. It is the progress
+// signal for correction admission: a different set may earn the next pass,
+// while the same set terminates at review.
+func answerRepairKey(issues []contract.GroundingIssue, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if len(issues) == 0 {
+		return reason
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		parts = append(parts, strings.TrimSpace(issue.Code)+"\x00"+strings.TrimSpace(issue.Claim))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x01")
+}
 
 // completionRepairDirective renders the claim-level correction. It falls back
 // to the prose directive when the run has no structured repairs or the host did

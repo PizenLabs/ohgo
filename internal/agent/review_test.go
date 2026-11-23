@@ -299,6 +299,18 @@ func TestCorrectionSurfaceSpansMultipleRequests(t *testing.T) {
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "Tests: 4") {
 		t.Fatalf("final answer = %q", got)
 	}
+	// The repair instruction must follow every request in the correction
+	// window. Withholding it after the first read leaves the next turn with
+	// only the generic state block, so it follows an unrelated frontier.
+	directives := 0
+	for _, request := range stream.requests {
+		if strings.Contains(strings.Join(messageTexts(request.Messages), "\n"), "Runtime completion review:") {
+			directives++
+		}
+	}
+	if directives != 3 {
+		t.Fatalf("correction directive carried by %d request(s), want every request in the correction window", directives)
+	}
 }
 
 // Three model texts — a rejected candidate, an answer abandoned for another

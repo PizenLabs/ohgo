@@ -660,3 +660,43 @@ func TestPreReadPathTargetIsDroppedForAnyLanguage(t *testing.T) {
 		}
 	}
 }
+
+// A conclusion that mentions a basename it already read completely is not a
+// new obligation. The runtime must resolve "main.go" against the file the run
+// actually inspected; otherwise the exact observed file can never satisfy the
+// target and the model is forced to conclude again.
+func TestPreReadBasenameSatisfiesConclusionTarget(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "backend/cmd/web/main.go", "package main\n\nfunc main() {}\n"),
+	})
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED",
+			"the web entrypoint wires the contexts",
+			"the composition root was verified partially via main.go wiring"),
+	})
+	if pending := evidence.PendingConclusionTargets(); len(pending) != 0 {
+		t.Fatalf("pending targets = %v, want the already-read basename resolved", pending)
+	}
+	if !evidence.Satisfied("investigation_conclusion", ExecutionState{}) {
+		t.Fatal("a conclusion naming an already-read file stayed provisional")
+	}
+}
+
+// A path target is canonicalised before it becomes an obligation. "./x.go"
+// and "x.go" are the same coordinate, so a pre-read of either satisfies both.
+func TestConclusionPathTargetIsCanonical(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "backend/checkout/app/checkout.go", "package app\n"),
+	})
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED", "checkout",
+			"the body of ./backend/checkout/app/checkout.go remains unknown"),
+	})
+	if pending := evidence.PendingConclusionTargets(); len(pending) != 0 {
+		t.Fatalf("pending targets = %v, want the canonical pre-read path", pending)
+	}
+}

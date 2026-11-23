@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
@@ -22,6 +23,10 @@ const (
 	ResponseInvestigating ResponseState = "INVESTIGATING"
 	// ResponseFinalizing means the accepted draft is passing the claim audit.
 	ResponseFinalizing ResponseState = "FINALIZING"
+	// ResponseReview means a candidate was produced but the publication audit
+	// refused it. The raw turn remains available to the completion evaluator,
+	// but no host may publish it as the final answer.
+	ResponseReview ResponseState = "REVIEW"
 	// ResponseCommitted means exactly one answer was accepted for publication.
 	ResponseCommitted ResponseState = "COMMITTED"
 	// ResponseAborted means the run ended without an accepted answer.
@@ -83,12 +88,13 @@ func (l *Loop) noteDraft() {
 	l.responseMu.Unlock()
 }
 
-// noteRejected records a candidate the answer review suppressed.
+// noteRejected records a candidate the answer review suppressed. It does not
+// change the transaction state: a candidate rejected during correction leaves
+// the run investigating, while one rejected by the publication gate keeps the
+// REVIEW state that gate recorded.
 func (l *Loop) noteRejected() {
 	l.responseMu.Lock()
-	l.response.Drafts++
 	l.response.Rejected++
-	l.response.State = ResponseInvestigating
 	l.responseMu.Unlock()
 }
 
@@ -96,7 +102,8 @@ func (l *Loop) noteRejected() {
 // once. A second call is a no-op: the first committed answer is the only one
 // the run may publish.
 func (l *Loop) finalizeResponse(turns []Turn, live *[]Message, evidenceGap string) bool {
-	if len(turns) == 0 || l.responseState() == ResponseCommitted {
+	state := l.responseState()
+	if len(turns) == 0 || state == ResponseCommitted || state == ResponseReview {
 		return false
 	}
 	l.responseMu.Lock()
@@ -104,12 +111,22 @@ func (l *Loop) finalizeResponse(turns []Turn, live *[]Message, evidenceGap strin
 	l.responseMu.Unlock()
 
 	answer := turns[len(turns)-1].Assistant.Text()
-	finalized := FinalizedAnswer{Text: answer}
+	finalized := FinalizedAnswer{Text: answer, Audit: AnswerAudit{Finalized: true}}
 	if l.cfg.FinalizeAnswer != nil {
 		finalized = l.cfg.FinalizeAnswer(turns, answer, evidenceGap)
 		// An empty result is deliberate: the gate removed text that must not
 		// be published (for example a copied runtime-state block). Restoring
 		// the raw draft here would leak exactly what the gate withheld.
+	}
+	if !finalized.Audit.Approved() {
+		// The gate's own verdict is authoritative. A host must never publish a
+		// candidate the same audit refuses to certify: the completion boundary
+		// would immediately contradict the answer the user just saw.
+		l.responseMu.Lock()
+		l.response.State = ResponseReview
+		l.response.Answer = finalized.Audit
+		l.responseMu.Unlock()
+		return false
 	}
 	if finalized.Text != answer {
 		turns[len(turns)-1].Assistant = replaceAssistantText(turns[len(turns)-1].Assistant, finalized.Text)
@@ -174,11 +191,29 @@ func toolOutcomeSignature(outcome ToolOutcome) string {
 	return outcome.ToolName + "\x00" + string(raw)
 }
 
+// markResponseReview records a candidate the pre-publication review rejected.
+// It is not a failure of the run: the completion evaluator still reads the
+// candidate and produces the review verdict and its claim list.
+func (l *Loop) markResponseReview(issues []contract.GroundingIssue) {
+	l.responseMu.Lock()
+	defer l.responseMu.Unlock()
+	audit := AnswerAudit{Finalized: true, Issues: append([]contract.GroundingIssue(nil), issues...)}
+	for _, issue := range issues {
+		if isFacetIssue(issue) {
+			audit.UnresolvedFacets++
+			continue
+		}
+		audit.UnsupportedClaims++
+	}
+	l.response.State = ResponseReview
+	l.response.Answer = audit
+}
+
 // abortResponse records a run that ended without a committed answer.
 func (l *Loop) abortResponse(runErr error) {
 	l.responseMu.Lock()
 	defer l.responseMu.Unlock()
-	if l.response.State == ResponseCommitted {
+	if l.response.State == ResponseCommitted || l.response.State == ResponseReview {
 		return
 	}
 	switch {

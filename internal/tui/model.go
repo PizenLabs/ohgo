@@ -83,10 +83,18 @@ type Entry struct {
 	// committed value.
 	Provisional bool
 	// Discarded marks a provisional assistant block the runtime withdrew.
-	// The entry remains as a zero-text tombstone so entry indexes (and the
-	// output-first painter's progress) stay stable; every renderer already
-	// treats empty assistant text as no rows.
+	// The entry remains as a tombstone so entry indexes (and the output-first
+	// painter's progress) stay stable. A rejected answer keeps its text in
+	// WithdrawnText for display only; AssistantText stays empty so no copy,
+	// persistence, or answer projection can treat it as a result.
 	Discarded bool
+	// WithdrawnText is the text of a rejected answer candidate. It is shown
+	// under a "draft withdrawn" label so a streaming candidate cannot vanish
+	// without a trace. It is never copied or treated as the answer.
+	WithdrawnText string
+	// WithdrawnReason names the runtime review boundary that withdrew the
+	// draft, e.g. "answer review requested changes".
+	WithdrawnReason string
 	// Reasoning is set when Kind is EntryReasoning: the model's own thinking
 	// trace, represented as a block rather than inferred from prose.
 	Reasoning *ReasoningEntry
@@ -1183,7 +1191,7 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		if e.Discard {
-			s.discardProvisionalAssistant(e.At)
+			s.discardProvisionalAssistant(e.At, e.Withdrawn)
 			return
 		}
 		s.settleAssistant(e.Text, e.At)
@@ -3532,7 +3540,7 @@ func (s *State) settleAssistant(text string, at time.Time) {
 	index := s.lastProvisionalAssistant()
 	if strings.TrimSpace(text) == "" {
 		if index >= 0 {
-			s.discardProvisionalAssistant(at)
+			s.discardProvisionalAssistant(at, "")
 		}
 		return
 	}
@@ -3556,14 +3564,22 @@ func (s *State) settleAssistant(text string, at time.Time) {
 }
 
 // discardProvisionalAssistant withdraws a streamed block the runtime did not
-// accept. The tombstone keeps later entry indexes stable; the text is gone so
-// no renderer, copy command, or persistence pass can treat it as an answer.
-func (s *State) discardProvisionalAssistant(at time.Time) {
+// accept. The tombstone keeps later entry indexes stable.
+//
+// A non-empty withdrawn reason preserves the text as a labelled draft: an
+// answer that streamed as a normal block must not vanish silently when the
+// review rejects it. The displayed text moves to WithdrawnText, so it is never
+// copied, persisted, or projected as the answer.
+func (s *State) discardProvisionalAssistant(at time.Time, withdrawn string) {
 	index := s.lastProvisionalAssistant()
 	if index < 0 {
 		return
 	}
 	entry := &s.Entries[index]
+	if reason := strings.TrimSpace(withdrawn); reason != "" {
+		entry.WithdrawnText = entry.AssistantText
+		entry.WithdrawnReason = reason
+	}
 	entry.AssistantText = ""
 	entry.Provisional = false
 	entry.Discarded = true
@@ -3762,6 +3778,10 @@ func (AssistantDelta) eventKind() string { return "assistant_delta" }
 type AssistantReconcile struct {
 	Text    string
 	Discard bool
+	// Withdrawn, when Discard is set, keeps the discarded provisional text as
+	// a labelled draft instead of deleting it. It is used for an answer the
+	// review rejected; tool narration still discards outright.
+	Withdrawn string
 	// At is when the turn settled. Zero means unknown.
 	At time.Time
 	// Seq identifies the turn. Zero accepts any turn for legacy callers.

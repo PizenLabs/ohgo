@@ -188,7 +188,7 @@ func TestCorrectionRequestReopensOnlyThePermittedSurface(t *testing.T) {
 	}
 
 	corrected := NewProjector(shape, state.Clone(), RepositoryFacts{Go: true}).Project(agent.ProjectionRequest{
-		Tools: tools, ForceAnswer: true, Correcting: true,
+		Tools: tools, ForceAnswer: true, Correcting: true, CorrectionBudget: 4,
 	})
 	var names []string
 	for _, tool := range corrected.Tools {
@@ -206,5 +206,78 @@ func TestCorrectionRequestReopensOnlyThePermittedSurface(t *testing.T) {
 	}
 	if !strings.Contains(runtime, "Available actions: read") {
 		t.Fatalf("correction runtime does not name the reopened surface:\n%s", runtime)
+	}
+}
+
+// A spent correction window must close the action surface. The loop refuses
+// every non-terminal call after the allowance is spent, so offering the same
+// tools advertises a capability the next call cannot use and costs a turn on a
+// refusal instead of the correction.
+func TestSpentCorrectionClosesTheSurface(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "# Project\n\nA coding agent."),
+	)
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "grep", tier: agent.TierRead},
+	}
+	projected := NewProjector(shape, state, RepositoryFacts{Go: true}).Project(agent.ProjectionRequest{
+		Tools: tools, Correcting: true, CorrectionBudget: 0,
+	})
+	if len(projected.Tools) != 0 {
+		t.Fatalf("spent correction offered %d tool(s): %v", len(projected.Tools), projected.Report.ToolNames)
+	}
+	if !projected.Report.AnswerEligible {
+		t.Fatal("spent correction left the answer ineligible despite closing every tool")
+	}
+	runtime := strings.Join(projected.Runtime, "\n")
+	if !strings.Contains(runtime, "Correction budget exhausted") {
+		t.Fatalf("spent correction did not state the exhausted allowance:\n%s", runtime)
+	}
+	if strings.Contains(runtime, "tool call(s) remaining") {
+		t.Fatalf("spent correction still advertised a remaining allowance:\n%s", runtime)
+	}
+	if len(projected.Report.Excluded) == 0 {
+		t.Fatal("spent correction withheld the tools without a reason")
+	}
+}
+
+// During a bounded repair the review's claims are the actionable list. The
+// generic component frontier names unrelated work, and following it spends the
+// correction allowance on a component the answer was not asked about.
+func TestCorrectionSuppressesTheGenericEvidenceFrontier(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "# Project\n\nA coding agent."),
+		readEvidenceForTest("read-2", "backend/main.go", "package main\n"),
+	)
+	state.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "backend"},
+		Result: agent.Result{
+			Text:    "backend\nauth/\ncart/\n",
+			Details: map[string]any{"path": "backend", "entries": 2},
+		},
+	}}}})
+	tools := []agent.Tool{testTool{name: "read", tier: agent.TierRead}}
+
+	ordinary := NewProjector(shape, state.Clone(), RepositoryFacts{Go: true}).Project(agent.ProjectionRequest{
+		Tools: tools,
+	})
+	if !strings.Contains(strings.Join(ordinary.Runtime, "\n"), "Evidence frontier:") {
+		t.Fatalf("ordinary projection lost the evidence frontier:\n%s", strings.Join(ordinary.Runtime, "\n"))
+	}
+
+	repair := NewProjector(shape, state.Clone(), RepositoryFacts{Go: true}).Project(agent.ProjectionRequest{
+		Tools: tools, Correcting: true, CorrectionBudget: 4,
+	})
+	runtime := strings.Join(repair.Runtime, "\n")
+	if strings.Contains(runtime, "Evidence frontier:") {
+		t.Fatalf("correction kept the unrelated component frontier:\n%s", runtime)
+	}
+	if !strings.Contains(runtime, "Correction budget: 4") {
+		t.Fatalf("correction lost its bounded allowance:\n%s", runtime)
 	}
 }

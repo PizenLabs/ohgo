@@ -92,6 +92,20 @@ func collectTurnFacts(turns []agent.Turn) turnFacts {
 				if path := footerPathArg(outcome.Args); path != "" {
 					facts.read = appendUnique(facts.read, path)
 				}
+			case "check":
+				// Discovery is not a check. A successful run of the
+				// repository's own command plan is.
+				if strings.EqualFold(footerDetailString(outcome.Result.Details, "mode"), "run") &&
+					strings.EqualFold(footerDetailString(outcome.Result.Details, "status"), "pass") {
+					facts.checks++
+				}
+			case "verify":
+				// The structured verifier sets Verifies only when the plan
+				// reached readiness, its checks passed while the service was
+				// alive, and cleanup completed.
+				if outcome.Result.Verifies {
+					facts.checks++
+				}
 			}
 		}
 	}
@@ -213,6 +227,21 @@ func footerPathArg(args map[string]any) string {
 func footerStringArg(args map[string]any, key string) string {
 	value, _ := args[key].(string)
 	return strings.TrimSpace(value)
+}
+
+// footerDetailString returns one trimmed detail field. Producers use string
+// aliases for status and mode, so the conversion goes through fmt rather than
+// a string assertion that would silently miss them.
+func footerDetailString(details any, key string) string {
+	fields, ok := details.(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, ok := fields[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // appendUnique appends value when it is not already present.

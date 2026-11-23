@@ -475,3 +475,101 @@ func TestAssistantReconcileRepairsADroppedDeltaWithoutDuplication(t *testing.T) 
 		t.Fatalf("the preview prefix was duplicated: %q", state.AssistantText())
 	}
 }
+
+// A rejected answer already streamed as a normal block. It must not vanish
+// without a trace when the review asks for a correction: the text moves to a
+// labelled display-only draft, while AssistantText stays empty so copy and
+// persistence never treat it as the answer.
+func TestAssistantReconcileKeepsRejectedAnswerAsWithdrawnDraft(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "There is no database."})
+	state.Apply(AssistantReconcile{Discard: true, Withdrawn: "answer review requested changes"})
+	if got := state.AssistantText(); got != "" {
+		t.Fatalf("AssistantText = %q, want the withdrawn draft excluded", got)
+	}
+	entry := state.Entries[len(state.Entries)-1]
+	if !entry.Discarded || entry.Provisional {
+		t.Fatalf("withdrawn entry state = discarded=%v provisional=%v", entry.Discarded, entry.Provisional)
+	}
+	if entry.WithdrawnText != "There is no database." {
+		t.Fatalf("WithdrawnText = %q", entry.WithdrawnText)
+	}
+	if entry.WithdrawnReason != "answer review requested changes" {
+		t.Fatalf("WithdrawnReason = %q", entry.WithdrawnReason)
+	}
+	var rendered strings.Builder
+	renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
+	if !strings.Contains(rendered.String(), "draft withdrawn") ||
+		!strings.Contains(rendered.String(), "There is no database.") {
+		t.Fatalf("withdrawn draft is not visible:\n%s", rendered.String())
+	}
+
+	// The corrected answer is a new block; the withdrawn text never leaks into
+	// the answer projection.
+	state.Apply(AssistantDelta{Text: "This project is a Go service."})
+	if got := state.AssistantText(); got != "This project is a Go service." {
+		t.Fatalf("new candidate AssistantText = %q", got)
+	}
+	state.Apply(AssistantReconcile{Text: "This project is a Go service."})
+	if got := state.AssistantText(); got != "This project is a Go service." {
+		t.Fatalf("committed AssistantText = %q", got)
+	}
+}
+
+// A provisional block is visibly a draft before the review decides. Without the
+// label it is indistinguishable from a committed answer that later disappears.
+func TestProvisionalAnswerCarriesDraftLabel(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "candidate answer"})
+	entry := state.Entries[len(state.Entries)-1]
+	if !entry.Provisional {
+		t.Fatal("streamed answer is not provisional")
+	}
+	var rendered strings.Builder
+	renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
+	if !strings.Contains(rendered.String(), "draft · answer review pending") {
+		t.Fatalf("provisional answer has no draft label:\n%s", rendered.String())
+	}
+	state.Apply(AssistantReconcile{Text: "candidate answer"})
+	entry = state.Entries[len(state.Entries)-1]
+	if entry.Provisional {
+		t.Fatal("committed answer is still provisional")
+	}
+	rendered.Reset()
+	renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
+	if strings.Contains(rendered.String(), "draft ·") {
+		t.Fatalf("committed answer kept the draft label:\n%s", rendered.String())
+	}
+}
+
+// A committed answer is never withdrawn by a later reconcile. Only provisional
+// text participates in the accept/discard decision, so a late event from a
+// correction or a stream close cannot erase what the runtime published.
+func TestCommittedAnswerIsNeverRetracted(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "the committed answer"})
+	state.Apply(AssistantReconcile{Text: "the committed answer"})
+	state.Apply(AssistantReconcile{Discard: true, Withdrawn: "late correction"})
+	if got := state.AssistantText(); got != "the committed answer" {
+		t.Fatalf("committed answer was retracted: %q", got)
+	}
+	entry := state.Entries[len(state.Entries)-1]
+	if entry.Discarded || entry.WithdrawnText != "" {
+		t.Fatalf("committed entry was marked withdrawn: %+v", entry)
+	}
+}
+
+// A withdrawn draft is display-only: copy sees an empty answer, not the text a
+// review rejected.
+func TestWithdrawnDraftIsNotCopyableAsAnswer(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "There is no database."})
+	state.Apply(AssistantReconcile{Discard: true, Withdrawn: "answer review requested changes"})
+	entry := state.Entries[len(state.Entries)-1]
+	if got := BlockCopyText(entry); strings.TrimSpace(got) != "" {
+		t.Fatalf("withdrawn draft copied as an answer: %q", got)
+	}
+	if got := state.AssistantText(); strings.TrimSpace(got) != "" {
+		t.Fatalf("withdrawn draft projected as an answer: %q", got)
+	}
+}

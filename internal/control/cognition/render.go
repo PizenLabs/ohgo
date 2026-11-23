@@ -33,6 +33,15 @@ const (
 // derived, required, and external evidence, and it carries provenance for each
 // line. External evidence is never presented as instruction.
 func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionState, suff Sufficiency, candidates CandidateSet, maxBytes, maxItems int) string {
+	return renderState(shape, evidence, execution, suff, candidates, maxBytes, maxItems, true)
+}
+
+// renderState is the projection seam. includeFrontier is false while a bounded
+// answer correction is active: the generic frontier names every component that
+// could be read next, and that list competes with the repair claims the review
+// actually named. A correction is about those claims, so the frontier is
+// withheld until the answer lifecycle returns to ordinary investigation.
+func renderState(shape TaskShape, evidence *EvidenceState, execution ExecutionState, suff Sufficiency, candidates CandidateSet, maxBytes, maxItems int, includeFrontier bool) string {
 	if evidence == nil {
 		evidence = NewEvidenceState()
 	}
@@ -78,7 +87,7 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	// target and verification evidence instead, so it does not spend the block
 	// on this distinction.
 	if shape.Kind == contract.ObjectiveInformational {
-		sections = append(sections, claimEvidenceBlock(shape, evidence))
+		sections = append(sections, claimEvidenceBlock(shape, evidence, includeFrontier))
 	}
 	var contractLine strings.Builder
 	fmt.Fprintf(&contractLine, "Task shape: %s\n", shape.Summary())
@@ -295,7 +304,7 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 // informational answer. It is the generation-side half of the completion
 // claim audit: the model is told which observations support which class before
 // it writes, instead of learning the boundary only from a review.
-func claimEvidenceBlock(shape TaskShape, evidence *EvidenceState) string {
+func claimEvidenceBlock(shape TaskShape, evidence *EvidenceState, includeFrontier bool) string {
 	summary := evidence.ClaimSummary()
 	var line strings.Builder
 	line.WriteString("Claim evidence: implementation=")
@@ -367,19 +376,21 @@ func claimEvidenceBlock(shape TaskShape, evidence *EvidenceState) string {
 		line.WriteString(bound(strings.Join(terms, ", "), 220))
 		line.WriteString(" — attribute each to the documentation or verify it in source before presenting it as an implementation fact.\n")
 	}
-	frontier := summary.EvidenceFrontier()
-	if len(frontier) == 0 && !summary.HasImplementation {
-		frontier = []string{"implementation -> SOURCE_CONTENT missing; next: inspect the component entrypoint or implementation files"}
-	}
-	if len(frontier) > 0 {
-		line.WriteString("Evidence frontier:\n")
-		for i, entry := range frontier {
-			if i >= 2 {
-				break
+	if includeFrontier {
+		frontier := summary.EvidenceFrontier()
+		if len(frontier) == 0 && !summary.HasImplementation {
+			frontier = []string{"implementation -> SOURCE_CONTENT missing; next: inspect the component entrypoint or implementation files"}
+		}
+		if len(frontier) > 0 {
+			line.WriteString("Evidence frontier:\n")
+			for i, entry := range frontier {
+				if i >= 2 {
+					break
+				}
+				line.WriteString("- ")
+				line.WriteString(bound(entry, 112))
+				line.WriteByte('\n')
 			}
-			line.WriteString("- ")
-			line.WriteString(bound(entry, 112))
-			line.WriteByte('\n')
 		}
 	}
 	return line.String()

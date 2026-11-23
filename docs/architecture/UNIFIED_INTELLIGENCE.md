@@ -516,11 +516,15 @@ the projection's no-progress bound closes that shape instead.
 ### 12.7 Response transaction
 
 Internal iterations are not user-visible turns. One task has one answer
-transaction: `INVESTIGATING → FINALIZING → COMMITTED`, with `ABORTED` when no
-answer was accepted. Drafts may be rejected and replaced; only the committed
-text reaches the host transcript. `Loop.LastResponseAudit` records the drafts,
-rejections, tool calls, reused observations, retries, redundant identical calls,
-and the final claim audit; a second commit for the same run is a no-op.
+transaction: `INVESTIGATING → FINALIZING → COMMITTED`, with `REVIEW` when the
+publication audit refuses the candidate and `ABORTED` when no answer was
+accepted. Drafts may be rejected and replaced; only the committed text reaches
+the host transcript as an answer. A rejected candidate may remain as a labelled
+withdrawn draft, and a streamed candidate is labelled provisional, so the
+display never passes a draft off as committed text. `Loop.LastResponseAudit`
+records the drafts, rejections,
+tool calls, reused observations, retries, redundant identical calls, and the
+final claim audit; a second commit for the same run is a no-op.
 `UnsupportedClaims` counts material claims the deterministic audit could not
 certify, while `UnresolvedFacets` counts requested deliverables the answer
 honestly reports as unverified. The second is still a completion gap; it is not
@@ -529,13 +533,16 @@ counted as an uncertified factual claim.
 Before commit, `FinalizeAnswer` runs the same deterministic grounding and
 provenance audits completion uses. It sanitizes copied runtime state but does
 not delete substantive sentences and does not append a runtime-authored
-limitation report. The model's one answer is published; uncertified claims are
-carried as review issues, and completion returns `NEEDS_REVIEW` for them. A
-sentence-level editor could mangle tables, lists, and fenced examples, and the
-appended report was a second, competing conclusion. This is why an accepted
-answer can be useful while the task is still `NEEDS_REVIEW`: the user sees the
-model's answer and the explicit claim boundary instead of a silently shortened
-replacement.
+limitation report. `AnswerAudit.Approved` decides publication: a candidate with
+uncertified claims is recorded as `REVIEW`, suppressed from the host transcript,
+and reused by completion for the exact `NEEDS_REVIEW` claim list. The model's
+raw candidate remains in the turn, so the review can name what was not
+established without showing it as a final answer. A sentence-level editor could
+mangle tables, lists, and fenced examples, and the appended report was a second,
+competing conclusion. An answer may still be published while the task is
+`NEEDS_REVIEW` for a non-claim gap (a requested facet or a bounded evidence
+gap); the published answer and the completion verdict then describe the same
+text.
 
 Once the conclusion is the only missing requirement, a bounded ten-turn
 conclusion window still allows concrete closing reads, but further surveying

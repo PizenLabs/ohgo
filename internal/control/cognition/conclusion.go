@@ -35,7 +35,12 @@ func unresolvedConclusionTargets(text string) []string {
 		out = append(out, target)
 	}
 	for _, match := range conclusionPathPattern.FindAllString(text, -1) {
-		add(match)
+		// Canonicalise the path once, here, so the obligation and the evidence
+		// ledger use the same coordinate. "./backend/x.go" and "backend/x.go"
+		// are one file, not two unsatisfied obligations.
+		if cleaned := cleanPath(match); cleaned != "" {
+			add(cleaned)
+		}
 	}
 	for _, match := range conclusionSymbolPattern.FindAllString(text, -1) {
 		parts := strings.Split(match, ".")
