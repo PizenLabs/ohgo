@@ -34,13 +34,36 @@ immutable.
   absence, and facet audits populate them. `ReviewInformationalRepairs` is a
   projection of the same audit, `ClaimRepairRequest` names at most five claims,
   and the loop renders only those instead of a full-answer correction reason.
-- A per-correction tool budget (`CorrectionToolCalls`, default 4). The loop
-  enforces it before tool execution across concurrent batches, reports the
+- A per-answer-lifecycle tool budget (`CorrectionToolCalls`, default 4). The
+  loop enforces it before tool execution across concurrent batches, reports the
   remaining allowance in the correction runtime block, and fails closed with
-  `ToolFailureCorrectionBudget`; reused observations do not consume it.
+  `ToolFailureCorrectionBudget`; reused observations do not consume it. A
+  second repair pass does not reset the allowance.
 - The pre-answer review now runs the documentation-only provenance audit when
   the host supplies the last projection summary, so a documented claim is
   attributed or verified before completion rather than after it.
+- A repository-wide grep is implementation evidence for the files it matched.
+  The evidence model classifies a grep by its matched file sections, not by the
+  search root: an unscoped source hit now corroborates the term it matched,
+  while a README-only section in the same result does not. This is what lets an
+  evidence-first repair actually clear a documentation-only term instead of
+  demanding the same search forever.
+- The corrected answer is reviewed again before publication. A second repair
+  pass is admitted only when the review names a different claim set; repeating
+  the same claims terminates at `NEEDS_REVIEW`. The passes are bounded by
+  `MaxAnswerCorrections`, so this is a convergence rule, not a retry loop.
+- An answer the publication audit refuses is not committed. The response
+  transaction records `REVIEW`, the turn is suppressed, and the host withdraws
+  the provisional stream; completion still carries the exact claims into
+  `NEEDS_REVIEW`. A committed answer and the displayed answer must be the same
+  text.
+- A conclusion verdict is labelled `conclusion:`, never `answer:`. ANSWERED is
+  a judgement about the evidence, not the user's answer, and the result now
+  names `status` and says that answer synthesis is a separate step.
+- A conclusion target that names a basename the run already read completely
+  ("main.go" after reading `backend/cmd/web/main.go`) is resolved against that
+  observation instead of forcing an impossible reread. Path targets are
+  canonicalised before they become obligations.
 - A bounded negative report is not widened by the intensifier "at all".
   "No tests were found in the inspected scope" stays a report about the
   inspected evidence even when another clause says "at all".
@@ -60,10 +83,11 @@ immutable.
   before the tool card opens. The call and its result remain; the prose was
   investigation the model replaced.
 - A rejected answer candidate is suppressed, not published. The loop keeps it
-  in the provider context so the correction request can see the claim, marks
-  it `Suppressed`, and the transcript, plain output, persistence, and next
-  request project it away. A plan-only message ("let me inspect…") is withheld
-  from the transcript and spends the one correction window on the answer.
+  in the provider context so the correction request can see the claim, withholds
+  its text from the transcript (`Suppressed`, or `SuppressText` when the same
+  turn also produced real tool results), and the plain output, persistence, and
+  next request project it away. A plan-only message ("let me inspect…") is withheld
+  from the transcript and spends a correction pass on the answer.
 - Answer finalization no longer deletes sentences or appends a runtime-authored
   "Evidence limitations" section. The model's one answer is preserved exactly;
   uncertified claims are carried as review issues, and completion still refuses
@@ -206,6 +230,24 @@ immutable.
 
 ### Fixed
 
+- A rejected answer no longer disappears from the TUI. A streamed candidate is
+  labelled `draft · answer review pending`; a candidate the review or
+  publication audit refuses keeps its text under `draft withdrawn · <reason>`
+  as display-only history. The withdrawn text is excluded from the answer
+  projection, copy, and persistence, and committed answers are never retracted.
+- The verified footer counts successful `check` and `verify` outcomes as
+  checks. A passing `check` run no longer sits beside "no checks run", which
+  made a verified turn contradict its own evidence.
+- The claim-level repair directive now follows every request in the correction
+  window, not only the first. A window can span several model turns; a later
+  turn without the named claims followed an unrelated evidence frontier and
+  spent the remaining allowance on the wrong coordinate.
+- A spent answer-correction window now closes the tool surface and says the
+  allowance is exhausted, instead of offering tools the loop will refuse. A
+  correction also withholds the generic component frontier from the runtime
+  state block: the review's named claims are the actionable list, and an
+  unrelated inventory gap was spending the remaining repair on the wrong
+  coordinate.
 - A non-Go reference is resolved through the referring file's imports before
   the global-name rule. Two modules exporting the same name no longer make
   every consumer reference `AMBIGUOUS`; the import path proves the target, and
