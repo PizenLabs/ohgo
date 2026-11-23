@@ -126,11 +126,12 @@ const ProtocolRecoveryRequest = `Runtime protocol recovery: your previous messag
 const ToolArgumentRecoveryRequest = `Runtime protocol recovery: your previous tool call was not executed because its argument JSON was incomplete or could not be decoded. Re-emit the action with complete, valid arguments. If the payload is large, do not repeat the same oversized call: create a complete file first and make the remaining changes with smaller edits, or reduce the scope of this call. Nothing from the incomplete call changed the workspace.`
 
 // OutputRecoveryRequest is the one bounded correction the loop appends when a
-// mid-run turn contained only hidden reasoning and produced neither a tool call
-// nor visible answer text. The turn could not act or answer, so the directive
-// asks for the next concrete output without spending another response on
+// mid-run turn produced neither a tool call nor visible answer text — either it
+// contained only hidden reasoning or the provider cut it off at the completion
+// ceiling. The turn could not act or answer, so the directive asks for the next
+// concrete output without spending another response on
 // planning. It is runtime-authored and never persisted.
-const OutputRecoveryRequest = `Runtime recovery: your previous response produced no tool call and no answer, so nothing was executed and the user received no result. Produce the next concrete output now: either emit the actual tool call with complete arguments, or, if the evidence is sufficient, write the final answer. Do not restate the plan.`
+const OutputRecoveryRequest = `Runtime recovery: your previous response produced no tool call and no answer, so nothing was executed and the user received no result. Produce the next concrete output immediately with minimal planning: either emit the actual tool call with complete arguments, or, if the evidence is sufficient, write the final answer. Do not restate the plan or repeat the analysis.`
 
 // CompletionReviewRequest is the one bounded correction the loop appends when a
 // candidate answer fails the answer-level completion review. The placeholder is
