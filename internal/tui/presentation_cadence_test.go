@@ -31,6 +31,9 @@ func completedToolStream(summaries ...string) State {
 func TestConsecutiveToolsRenderAsOneCompactStream(t *testing.T) {
 	s := completedToolStream("ls backend", "ls .", "read backend/go.mod")
 	s.Apply(AssistantDelta{Text: "The project is a Go service."})
+	// This fixture is about tool grouping, so settle the answer; a provisional
+	// block carries its own draft label by design.
+	s.Apply(AssistantReconcile{Text: "The project is a Go service."})
 	// The batch becomes eligible for its footer only after every member has
 	// cleared the minimum dwell floor.
 	s.Apply(FrameTick{At: time.Now().Add(toolMinDwell)})
