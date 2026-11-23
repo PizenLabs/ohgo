@@ -2026,7 +2026,7 @@ type entryRenderContext struct {
 func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, ctx entryRenderContext) {
 	if entryFading(entry, ctx.now) {
 		age := ctx.now.Sub(entry.AppearedAt)
-		if age < fadeFinalAt {
+		if age < fadeDuration {
 			var inner strings.Builder
 			renderEntryContent(&inner, entry, pal, layout, ctx)
 			sb.WriteString(fadeRenderedBlock(inner.String(), age, ctx.theme))
@@ -2096,7 +2096,7 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		// never inflates the budget. Never re-wrap styled output here.
 		rendered := RenderMarkdownWrapped(text, pal, textWidth(layout))
 		if !entryFading(entry, ctx.now) {
-			if age, ok := assistantFinalLineAge(entry, ctx.now); ok && age < fadeFinalAt {
+			if age, ok := assistantFinalLineAge(entry, ctx.now); ok && age < fadeDuration {
 				rendered = fadeRenderedTail(rendered, age, ctx.theme)
 			}
 		}
@@ -2506,9 +2506,6 @@ func toolStatusStyle(tool *ToolEntry, status ToolStatus, pal *Palette, theme str
 	if age, ok := tool.statusSettleAge(now); ok && fadeSupported() {
 		if hex, tweening := statusTweenColor(status, age, theme); tweening {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(hex))
-			if age < fadeVaporEnd {
-				style = style.Faint(true)
-			}
 			return style
 		}
 	}
