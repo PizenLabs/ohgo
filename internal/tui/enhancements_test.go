@@ -264,29 +264,52 @@ func TestSplitAssistantChunksRoundTrip(t *testing.T) {
 }
 
 func TestLongTurnReachesTranscriptInOrder(t *testing.T) {
-	want := strings.Repeat("streaming chunk reveal keeps long answers readable. ", 100)
-	p := NewProgram(scriptedLoop(t, want), "test", 0)
+	want := strings.Repeat("streaming chunk reveal keeps long answers readable. ", 99) +
+		"streaming chunk reveal keeps long answers readable."
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			return ai.NewTextStream(want), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
 	p.runTurn("go")
-	got := ""
+	var preview, committed string
+	deltas := 0
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
 		case event := <-p.events:
+			p.state.Apply(event)
 			switch e := event.(type) {
 			case AssistantDelta:
-				t.Fatalf("answer prose was published before commit: %q", e.Text)
+				preview += e.Text
+				deltas++
+				if index := p.state.lastProvisionalAssistant(); index < 0 || !p.state.Entries[index].Provisional {
+					t.Fatal("streamed text did not remain a provisional preview")
+				}
+				if !strings.Contains(ansi.Strip(Render(p.state)), "draft · answer review pending") {
+					t.Fatal("streamed answer was not visibly labelled as provisional")
+				}
 			case AssistantReconcile:
 				if e.Answer != agent.AnswerCommitted {
 					continue
 				}
-				// The committed value is the first and only answer artifact.
-				got = e.Text
-				if got != want {
-					t.Fatalf("transcript holds %d runes, want the %d-rune turn in order", len([]rune(got)), len([]rune(want)))
+				committed = e.Text
+				if committed != want {
+					t.Fatalf("committed text holds %d runes, want the %d-rune turn in order", len([]rune(committed)), len([]rune(want)))
+				}
+				if got := p.state.AssistantText(); got != committed {
+					t.Fatalf("settled transcript = %q, want the committed text", got)
 				}
 			case AssistantDone:
-				if got != want {
-					t.Fatalf("transcript holds %d runes, want the %d-rune turn in order", len([]rune(got)), len([]rune(want)))
+				if deltas < 2 || preview != committed || committed != want {
+					t.Fatalf("preview chunks=%d preview=%d runes committed=%d runes; want multiple ordered chunks settling to %d runes",
+						deltas, len([]rune(preview)), len([]rune(committed)), len([]rune(want)))
 				}
 				return
 			}
@@ -296,10 +319,9 @@ func TestLongTurnReachesTranscriptInOrder(t *testing.T) {
 	}
 }
 
-// A provider token stream is not a public answer stream. The transcript must
-// receive one committed artifact after the answer gate, never the candidate
-// prose while it can still be rejected or superseded.
-func TestRunTurnWithholdsAnswerDeltasUntilCommit(t *testing.T) {
+// Streamed prose appears as a labelled draft before the answer gate, then the
+// exact committed value replaces it without duplication.
+func TestRunTurnStreamsProvisionalAnswerUntilCommit(t *testing.T) {
 	deltas := []string{"# Project\n\n", "The project is a ", "Go agent runtime.\n"}
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
@@ -313,24 +335,32 @@ func TestRunTurnWithholdsAnswerDeltasUntilCommit(t *testing.T) {
 	}
 	p := NewProgram(loop, "test", 0)
 	p.runTurn("what is this project")
-	committed := ""
+	var preview, committed string
 	artifactCount := 0
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
 		case event := <-p.events:
+			p.state.Apply(event)
 			switch e := event.(type) {
 			case AssistantDelta:
-				t.Fatalf("candidate prose was streamed before commit: %q", e.Text)
+				preview += e.Text
+				index := p.state.lastProvisionalAssistant()
+				if index < 0 || !p.state.Entries[index].Provisional {
+					t.Fatal("candidate delta was not retained as a provisional entry")
+				}
 			case AssistantReconcile:
 				if e.Answer == agent.AnswerCommitted {
 					artifactCount++
 					committed = e.Text
+					if index := p.state.lastProvisionalAssistant(); index >= 0 {
+						t.Fatal("committed answer still has a provisional entry")
+					}
 				}
 			case AssistantDone:
 				want := strings.TrimSpace(strings.Join(deltas, ""))
-				if committed != want || artifactCount != 1 {
-					t.Fatalf("committed=%q count=%d want=%q count=1", committed, artifactCount, want)
+				if strings.TrimSpace(preview) != want || committed != want || artifactCount != 1 {
+					t.Fatalf("preview=%q committed=%q count=%d want=%q count=1", preview, committed, artifactCount, want)
 				}
 				return
 			}
@@ -360,9 +390,8 @@ func TestFencedCodeBodyFillsTheBlockWidth(t *testing.T) {
 	}
 }
 
-// The completed turn publishes the answer exactly once. Text is not streamed
-// while the request is open because the model can abandon it for a tool call
-// or the answer review can reject it.
+// The completed turn can preview streamed text, but only the exact committed
+// answer survives reconciliation.
 func TestLiveTextDeltasRevealWithoutDuplication(t *testing.T) {
 	want := "live streaming answer that reveals as it is generated"
 	loop, err := agent.New(agent.Config{
@@ -376,10 +405,11 @@ func TestLiveTextDeltasRevealWithoutDuplication(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	p := NewProgram(loop, "test", 0)
-	// Answer prose is published only after the publication gate, for every
-	// objective kind. The committed text appears exactly once.
+	// The stream is visible as a provisional preview; the committed text
+	// replaces it exactly once after the publication gate.
 	p.runTurn("fix the failing test")
-	got := ""
+	var preview, got string
+	deltas := 0
 	committed := 0
 	timeout := time.After(5 * time.Second)
 	for {
@@ -387,15 +417,16 @@ func TestLiveTextDeltasRevealWithoutDuplication(t *testing.T) {
 		case event := <-p.events:
 			switch e := event.(type) {
 			case AssistantDelta:
-				t.Fatalf("candidate prose was published before commit: %q", e.Text)
+				preview += e.Text
+				deltas++
 			case AssistantReconcile:
 				if e.Answer == agent.AnswerCommitted {
 					got = e.Text
 					committed++
 				}
 			case AssistantDone:
-				if got != want || committed != 1 {
-					t.Fatalf("transcript = %q committed=%d, want the turn exactly once", got, committed)
+				if strings.TrimSpace(preview) != want || got != want || committed != 1 || deltas == 0 {
+					t.Fatalf("preview=%q transcript=%q committed=%d deltas=%d, want the turn once", preview, got, committed, deltas)
 				}
 				return
 			}
