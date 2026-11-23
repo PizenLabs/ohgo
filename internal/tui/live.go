@@ -234,7 +234,7 @@ func (v *livePainter) streamTail(s State, index int, e Entry, pal *Palette, layo
 	lines := liveMarkdownLines(string(rest), pal, layout)
 	now := s.presentationAt()
 	if !entryFading(e, now) {
-		if age, ok := assistantFinalLineAge(e, now); ok && age < fadeFinalAt && len(lines) > 0 {
+		if age, ok := assistantFinalLineAge(e, now); ok && age < fadeDuration && len(lines) > 0 {
 			lines = splitLines(fadeRenderedTail(strings.Join(lines, "\n"), age, s.Theme))
 		}
 	}
@@ -578,7 +578,7 @@ func toolRunSealable(s State, run *toolRun, now time.Time) bool {
 // therefore stays compact even when each one was sealed on a different frame.
 func liveEntryLines(s State, index int, e Entry, pal *Palette, layout Layout) []string {
 	lines := liveEntryLinesRaw(s, index, e, pal, layout)
-	if age := s.presentationAt().Sub(e.AppearedAt); len(lines) > 0 && entryFading(e, s.presentationAt()) && age < fadeFinalAt {
+	if age := s.presentationAt().Sub(e.AppearedAt); len(lines) > 0 && entryFading(e, s.presentationAt()) && age < fadeDuration {
 		lines = splitLines(fadeRenderedBlock(strings.Join(lines, "\n"), age, s.Theme))
 	}
 	if len(lines) > 0 && index > 0 && index <= len(s.Entries) &&
@@ -604,7 +604,7 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		}
 		now := s.presentationAt()
 		if !entryFading(e, now) {
-			if age, ok := assistantFinalLineAge(e, now); ok && age < fadeFinalAt && len(lines) > 0 {
+			if age, ok := assistantFinalLineAge(e, now); ok && age < fadeDuration && len(lines) > 0 {
 				lines = splitLines(fadeRenderedTail(strings.Join(lines, "\n"), age, s.Theme))
 			}
 		}
