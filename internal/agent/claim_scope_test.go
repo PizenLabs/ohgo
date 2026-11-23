@@ -820,3 +820,24 @@ func TestTerminalAnswerConclusionCannotOverrideGroundingVeto(t *testing.T) {
 		t.Fatalf("reason = %q, want the grounding boundary", verdict.Reason)
 	}
 }
+
+// A `wc -l <path>` measurement is an observed line count for that path. A
+// directory listing's byte size is not; neither is another file's count.
+func TestCommandLineCountForNamedPath(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{{
+		ToolName: "bash",
+		Args:     map[string]any{"command": "wc -l backend/layout/bounded_context.go"},
+		Result:   Result{Text: "314 backend/layout/bounded_context.go\n", Executes: true},
+	}}}}
+	if issue := lineCountClaimIssue("layout: backend/layout/bounded_context.go (314 lines)", turns); issue != nil {
+		t.Fatalf("a measured line count was reviewed: %+v", issue)
+	}
+	mismatch := "layout: backend/layout/bounded_context.go (40 lines)"
+	if issue := lineCountClaimIssue(mismatch, turns); issue == nil || !strings.Contains(issue.Detail, "314") {
+		t.Fatalf("a contradicted count = %+v, want the observed 314", issue)
+	}
+	other := "cart: backend/cart/bounded_context.go (314 lines)"
+	if issue := lineCountClaimIssue(other, turns); issue == nil {
+		t.Fatal("another file's measurement satisfied the count")
+	}
+}

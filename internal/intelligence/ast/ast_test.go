@@ -194,7 +194,7 @@ func TestSupportedOnlyClaimsGoFiles(t *testing.T) {
 	if !backend.Supported("File.GO") {
 		t.Error("extension matching should be case-insensitive")
 	}
-	for _, path := range []string{"a.rb", "a.py", "a.ts", "Makefile", ""} {
+	for _, path := range []string{"a.rb", "a.swift", "a.ts", "Makefile", ""} {
 		if backend.Supported(path) {
 			t.Errorf("%q was claimed by the Go backend", path)
 		}

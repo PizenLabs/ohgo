@@ -46,7 +46,7 @@ func TestMissingCapabilityStopsBeforeTheModelTurn(t *testing.T) {
 		t.Fatalf("provider requests = %d, want 0", got)
 	}
 
-	verdict, reason := ClassifyRun(err, CompletionInput{}, false)
+	verdict, reason, _ := ClassifyRun(err, CompletionInput{}, false)
 	if verdict != RunBlocked {
 		t.Fatalf("verdict = %v, want RunBlocked", verdict)
 	}

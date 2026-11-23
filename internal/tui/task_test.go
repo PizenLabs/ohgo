@@ -461,7 +461,7 @@ func TestRunTurnAppendsReviewReasonAtTheEnd(t *testing.T) {
 		Begin: func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection {
 			return TaskProjection{ID: "t1", Status: "RUNNING", Objective: "check this project"}
 		},
-		NeedsReview: func(reason string) TaskProjection {
+		NeedsReview: func(reason string, _ []contract.GroundingIssue) TaskProjection {
 			return TaskProjection{ID: "t1", Status: "NEEDS_REVIEW", Objective: "check this project", ReviewReason: reason}
 		},
 	})
@@ -555,7 +555,7 @@ func TestResumedReviewUsesPersistedContract(t *testing.T) {
 			mu.Unlock()
 			return TaskProjection{ID: "t1", Status: "COMPLETED"}
 		},
-		NeedsReview: func(reason string) TaskProjection {
+		NeedsReview: func(reason string, _ []contract.GroundingIssue) TaskProjection {
 			mu.Lock()
 			reviewed = reason
 			mu.Unlock()
@@ -627,7 +627,7 @@ func TestResumedReviewRefusesDifferentObjective(t *testing.T) {
 		Pause: func(string) TaskProjection {
 			return TaskProjection{ID: "t1", Status: "PAUSED"}
 		},
-		NeedsReview: func(string) TaskProjection {
+		NeedsReview: func(string, []contract.GroundingIssue) TaskProjection {
 			return TaskProjection{ID: "t2", Status: "NEEDS_REVIEW"}
 		},
 	})
@@ -844,5 +844,48 @@ func TestNewSessionKeepsTaskWhenDetachFails(t *testing.T) {
 	p.detachTaskForNewSession()
 	if p.state.task == nil || p.state.task.ID != "task-1" {
 		t.Fatalf("task = %+v, want the still-attached task", p.state.task)
+	}
+}
+
+// A review card names the claims the answer audit rejected, one row per
+// claim, using the same repair-line format the model's correction directive
+// receives. A lifecycle review without claims keeps the flat reason only.
+func TestTaskReviewCardRendersClaimRows(t *testing.T) {
+	projection := &TaskProjection{
+		ID:           "t1",
+		Status:       "NEEDS_REVIEW",
+		Objective:    "explain the parser",
+		ReviewReason: "intent grounding: unsupported claim",
+		ReviewIssues: []contract.GroundingIssue{{
+			Code:        "unsupported_code_entity",
+			Category:    "entity",
+			Claim:       "`PaymentReconciler` harmonizes ledgers",
+			Requirement: "an observed code entity",
+			Action:      "inspect the coordinate or remove the identifier",
+		}},
+	}
+	joined := ansi.Strip(strings.Join(taskLines(projection, DarkPalette(), Layout{ContentWidth: 100}), "\n"))
+	for _, want := range []string{
+		"needs_review",
+		"intent grounding: unsupported claim",
+		"[entity]",
+		"PaymentReconciler",
+		"required: an observed code entity",
+		"action: inspect the coordinate",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("review card is missing %q:\n%s", want, joined)
+		}
+	}
+
+	lifecycle := &TaskProjection{
+		ID:           "t2",
+		Status:       "NEEDS_REVIEW",
+		Objective:    "explain the parser",
+		ReviewReason: "the context could not be reduced to fit the model window",
+	}
+	lifecycleLines := ansi.Strip(strings.Join(taskLines(lifecycle, DarkPalette(), Layout{ContentWidth: 100}), "\n"))
+	if strings.Contains(lifecycleLines, "[") {
+		t.Fatalf("a lifecycle review rendered a claim row:\n%s", lifecycleLines)
 	}
 }

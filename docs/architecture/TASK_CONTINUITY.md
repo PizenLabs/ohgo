@@ -75,6 +75,7 @@ them.
 | explicit continuation (`continue`, `carry on`) on a non-terminal live task | the same task and objective continue; its persisted authority is restored (2.1) and its evidence, budget, and timeline are reused |
 | verification wording on an execution or mutation task (`check whether the fix worked`) | the same task continues at its verification boundary; an informational task does not acquire a result it never had |
 | a short follow-up to the task's own object (`fix it`, `implement the fix`) | the same task continues; the follow-up does not replace the task's completion contract with a targetless one |
+| a bare depth request on an open informational task (`more info`, `tell me more`, `go deeper`) | the same task continues with its evidence and subject; the request adds depth instead of archiving the task and starting an empty one that repeats the investigation. A request that names a subject (`more info about the auth flow`) is a new objective |
 | the same objective submitted again while the task is open | the same task continues only when the prompt states the objective or the role changed; otherwise it is routed as a new request |
 | the same objective submitted again after the task finished | a new invocation: the terminal task is archived with its proof and a new task identity starts |
 | continuation wording with no live task | it is an ordinary request, not a silent resurrection of archived work; detached work needs `/task resume` |
@@ -322,6 +323,15 @@ discovery. A review reason is included only while the change it describes is
 still unverified; a resolved review is history, not current orientation. The
 same directive is why a continuation cannot silently become a fresh planning
 cycle merely because the model starts a new run.
+
+The review boundary also persists a bounded claim list. When a review came from
+the deterministic answer audits, `NeedsReview` stores the machine-readable
+issues (code, category, claim, requirement, action — at most
+`MaxReviewIssues`) beside the flat reason. General answer-level issues have no
+category and stay in the reason. The task context projects the list as one
+repair line per claim through the same formatter the model's correction
+directive uses, so a resumed turn repairs the named claims instead of
+re-auditing the answer from scratch. The newest review owns the list.
 
 Role context never includes another role's plan, scope, strategy, or notes.
 
@@ -861,6 +871,16 @@ semantic correctness.
 Specific rules:
 
 - an answer alone never proves an execution objective;
+- an informational answer with an uncertified claim stays the one published
+  answer; completion returns `NEEDS_REVIEW` with the exact claim and required
+  evidence instead of deleting sentences or appending a runtime-authored
+  limitation section. `PROVEN` for an informational task therefore means every
+  material claim was certified by the run's observations, not that a file-count
+  proxy was met. The turn footer may report measured structural coverage, but
+  the absence of a disclaimer is not itself a defect. A broad account of a
+  source project still needs its entry point plus one implementation file that
+  entry leads to; a structural inventory is not a substitute for the source
+  read;
 - a successful command exit establishes execution only when its observation was
   projected into the task and associated with it;
 - a malformed call never executed, so it is not an observation that can
@@ -916,11 +936,12 @@ bounded check summaries, the evidence ids, and the timestamp. It never stores
 the assistant's answer or a tool payload.
 
 Completion also resolves the current review boundary: the durable
-`ReviewReason` is cleared, and an older completed checkpoint is normalized on
-load. The historical reason remains in the bounded timeline and in the review
-event, so it can still be audited without being projected as current
-uncertainty. While a task is `RUNNING`, `PAUSED`, or terminal, the reason is not
-rendered as a live warning; only `NEEDS_REVIEW` owns that projection.
+`ReviewReason` and its `ReviewIssues` repair list are cleared, and an older
+completed checkpoint is normalized on load. The historical reason remains in
+the bounded timeline and in the review event, so it can still be audited
+without being projected as current uncertainty. While a task is `RUNNING`,
+`PAUSED`, or terminal, the reason is not rendered as a live warning; only
+`NEEDS_REVIEW` owns that projection.
 
 A later invalidation, supersession, or eviction of the proof's evidence does not
 rewrite the lifecycle record; it downgrades the projection to

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,8 +87,8 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"node's direct children. Intent drift compares documented paths with "+
 			"the indexed inventory and reports missing or unverifiable targets; "+
 			"it never treats a README claim as proof of implementation. "+
-			"Semantic activation is unsupported and "+
-			"fails explicitly.",
+			"Semantic activation is outside this tool: it uses AST facts, and "+
+			"language-server evidence is requested through investigate.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -334,7 +335,7 @@ func (t *StructureTool) execute(ctx agent.Context, args map[string]any) agent.Re
 	}
 	if activation == ast.ActivationSemantic {
 		return requestError(agent.ToolFailureUnsupported,
-			"semantic structural activation is unsupported: no semantic resolver is configured; nothing executed. Use activation \"overview\", \"targeted\", or \"impact\".")
+			"semantic activation is outside the structure tool: it reports AST facts only; use investigate for language-server evidence. Nothing executed.")
 	}
 	switch view {
 	case "overview", "scope", "entrypoints", "configs":
@@ -1440,8 +1441,22 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 // adapterSummary names the syntax adapters compiled into this binary. Without
 // it a symbol-free snapshot is unattributable: "no symbols" and "no adapter"
 // would render identically.
+//
+// The identities are adapter names, matching `ohgo doctor`. Listing language
+// aliases here made one adapter (tree-sitter-javascript) look like two and
+// disagreed with the diagnostic that tells a user which build they have.
 func adapterSummary() string {
-	names := structuralLanguageNames()
+	names := make([]string, 0)
+	seen := map[string]bool{}
+	for _, adapter := range ast.DefaultAdapters() {
+		name := adapter.Name()
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	if len(names) == 0 {
 		return "none"
 	}

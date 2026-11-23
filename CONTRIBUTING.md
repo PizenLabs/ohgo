@@ -34,7 +34,8 @@ Requirements:
 - Go **1.27+**
 - `git`
 - `golangci-lint` (optional, for `make lint`)
-- No C toolchain — the build is `CGO_ENABLED=0`
+- A C toolchain for the default multi-language build; `make build-portable`
+  needs none
 
 ```sh
 git clone https://github.com/PizenLabs/ohgo.git
@@ -219,12 +220,14 @@ that only restates the code is noise; a missing invariant is a bug.
 
 ## Releases
 
-Releases are cut from `main` with a `v*` tag. The release workflow builds
-static tarballs for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and
-`darwin/arm64` on `ubuntu-latest`, using Go's native `GOOS`/`GOARCH`
-cross-compilation with `CGO_ENABLED=0`. It writes `sha256sums.txt` and
-publishes a GitHub release with generated notes. `CHANGELOG.md` is the
-human-authored record; released sections are immutable.
+Releases are cut from `main` with a `v*` tag. The release workflow builds two
+artifact sets for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and
+`darwin/arm64`: the portable static tarballs cross-compiled on `ubuntu-latest`
+with `CGO_ENABLED=0`, and the multi-language tarballs built with cgo on a
+native runner per platform (linux arm64 uses the distro cross toolchain). Both
+sets share one `sha256sums.txt`, and `install.sh` prefers the multi-language
+artifact. `CHANGELOG.md` is the human-authored record; released sections are
+immutable.
 
 A release also updates `internal/update/changelog.json`, the release notes embedded in
 the binary for the one-shot What's New card. It is local content, never fetched

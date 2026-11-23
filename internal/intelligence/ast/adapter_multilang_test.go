@@ -123,6 +123,29 @@ int main(void) { return helper(1); }
 			wantSymbols: []string{"Point", "helper", "main"}, wantImports: true, wantEntry: true,
 		},
 		{
+			path: "sample.py", language: LanguagePython,
+			body: `from .models import Post
+
+class Base:
+    pass
+
+class PostView(Base):
+    def render(self):
+        return helper(self.title)
+
+def helper(value):
+    return value
+
+def test_render():
+    assert helper(1)
+
+if __name__ == "__main__":
+    helper(1)
+`,
+			wantSymbols: []string{"Base", "PostView", "render", "helper", "test_render"},
+			wantImports: true, wantTests: true, wantEntry: true,
+		},
+		{
 			path: "sample.cpp", language: LanguageCpp,
 			body: `#include "local.hpp"
 namespace app {

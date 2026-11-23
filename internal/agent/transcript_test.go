@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
@@ -109,6 +110,35 @@ func TestTranscriptTurnHidesSuppressedCandidate(t *testing.T) {
 	}
 }
 
+// A candidate superseded by a bounded correction is internal repair context,
+// not an answer a host may display or persist. Its tool outcomes are still
+// real work and stay in the transcript.
+func TestTranscriptTurnHidesSupersededCandidateButKeepsItsWork(t *testing.T) {
+	turn := Turn{
+		Assistant: ai.AssistantMessage{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: "The first, unsupported answer."},
+				ai.ToolCall{ID: "read", Name: "read", Arguments: map[string]any{"path": "a.go"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+		Superseded: true,
+		Results: []ToolOutcome{
+			{CallID: "read", ToolName: "read", Result: Result{Text: "package a"}},
+		},
+	}
+	got := TranscriptTurn(turn)
+	if text := got.Assistant.Text(); text != "" {
+		t.Fatalf("superseded answer reached the transcript: %q", text)
+	}
+	if len(got.Results) != 1 || got.Results[0].CallID != "read" {
+		t.Fatalf("superseded turn lost its tool outcome: %+v", got.Results)
+	}
+	if messages := ConversationMessages([]Turn{turn}); len(messages) != 2 {
+		t.Fatalf("superseded turn projection = %+v, want the call and its result", messages)
+	}
+}
+
 // Prose followed by a tool call is investigation, not a conclusion. The call
 // and its evidence stay; the abandoned answer text does not.
 func TestTranscriptTurnDropsProseBeforeToolCall(t *testing.T) {
@@ -134,5 +164,25 @@ func TestTranscriptTurnDropsProseBeforeToolCall(t *testing.T) {
 	}
 	if len(got.Results) != 1 || got.Results[0].CallID != "read" {
 		t.Fatalf("results = %+v, want the read evidence", got.Results)
+	}
+}
+
+// The projection is a value, but its Content slice shares the loop's live
+// conversation. Stripping display text must not overwrite the turn the
+// completion authority still reads.
+func TestTranscriptTurnDoesNotMutateTheLoopTurn(t *testing.T) {
+	turn := Turn{
+		SuppressText: true,
+		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{
+			ai.TextContent{Text: "I will inspect the parser."},
+			ai.ToolCall{ID: "c1", Name: "read", Arguments: map[string]any{"path": "x.go"}},
+		}},
+	}
+	projected := TranscriptTurn(turn)
+	if text := projected.Assistant.Text(); strings.TrimSpace(text) != "" {
+		t.Fatalf("projected text = %q, want the narration removed", text)
+	}
+	if text := turn.Assistant.Text(); text != "I will inspect the parser." {
+		t.Fatalf("the loop turn was mutated: %q", text)
 	}
 }

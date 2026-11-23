@@ -138,7 +138,11 @@ func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, s
 		Mutations:      mutations,
 	}
 
-	verdict, reason := agent.ClassifyRun(err, input, deadlineExpired)
+	// The claim issues behind a review verdict are durable-task data: the TUI
+	// persists them with NeedsReview so a later turn repairs the named claims.
+	// The headless shell reports a single verdict and reason per run, so they
+	// are not duplicated into the exit vocabulary here.
+	verdict, reason, _ := agent.ClassifyRun(err, input, deadlineExpired)
 	switch verdict {
 	case agent.RunCompleted:
 		return newOutcome(runCompleted, "")

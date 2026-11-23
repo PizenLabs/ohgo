@@ -97,17 +97,21 @@ const (
 	MaxEvidenceItems = 256
 	// MaxEvidenceBytes bounds the retained payload total, so a checkpoint
 	// cannot grow into a second transcript. Values are bounded per item and
-	// the lowest-value items are evicted until the total fits.
-	MaxEvidenceBytes = 64 * 1024
+	// the lowest-value items are evicted until the total fits. It is sized for
+	// eight maximum-size exact observations: a smaller total evicted the item
+	// describing an already-sent result, and projection then had to replay the
+	// raw oversized message instead of its bounded excerpt.
+	MaxEvidenceBytes = 8 * MaxEvidenceValueBytes
 	// EvidenceVersion is the persisted schema version. Version 2 added
 	// optional snapshot provenance to Source; version 3 adds language,
 	// adapter, resolution, completeness, and truncation; version 4 adds
 	// project-scope completeness; version 5 adds bounded structural counts
 	// for claim support; version 6 adds inventory completeness, scope gaps,
 	// and the producing structural view; version 7 adds a conclusion's
-	// explicit unresolved code coordinates. Older records stay readable because
-	// every new field is optional and additive.
-	EvidenceVersion = 7
+	// explicit unresolved code coordinates; version 8 adds structural evidence
+	// facets. Older records stay readable because every new field is optional
+	// and additive.
+	EvidenceVersion = 8
 )
 
 // Source records where one observation came from.
@@ -214,6 +218,11 @@ type EvidenceItem struct {
 	// when one applies. It lets the claim projection distinguish an inventory
 	// from a targeted source observation without parsing the rendered line.
 	View string `json:"view,omitempty"`
+	// Facets names the evidence facets this observation establishes. It is
+	// written from structured result fields at ingestion, never inferred from
+	// the model's prose. Additive and optional: a legacy item without it uses
+	// the facet fallbacks in facets.go.
+	Facets []EvidenceFacet `json:"facets,omitempty"`
 	// Unresolved names the concrete code coordinates a conclusion still
 	// depends on. A conclusion is recorded for audit even when one of these is
 	// unresolved, but it is not admissible until the runtime observes the
@@ -493,6 +502,9 @@ func (s *EvidenceState) Clone() *EvidenceState {
 		}
 		out.Items[i].Counts = counts
 	}
+	for i := range out.Items {
+		out.Items[i].Facets = append([]EvidenceFacet(nil), out.Items[i].Facets...)
+	}
 	out.Requirements = append([]Requirement(nil), s.Requirements...)
 	out.ObservedCalls = make(map[string]bool, len(s.ObservedCalls))
 	for key, value := range s.ObservedCalls {
@@ -643,6 +655,9 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 	case key == "execution_result":
 		return execution.Executed
 	default:
+		if strings.HasPrefix(key, "facet:") {
+			return s.facetSatisfied(EvidenceFacet(strings.TrimPrefix(key, "facet:")))
+		}
 		for _, item := range s.Items {
 			if item.ID == key && item.Status != StatusRequired && item.Status != StatusUnknown {
 				return true
@@ -705,6 +720,13 @@ func (s *EvidenceState) hasRepositoryOverview() bool {
 			if strings.TrimSpace(item.Value) != "" {
 				return true
 			}
+		case strings.HasPrefix(item.ID, "structure:"), strings.HasPrefix(item.ID, "graph:"),
+			strings.HasPrefix(item.ID, "refs:"):
+			// A structural edge binds two code endpoints and carries content;
+			// an inventory alone does not.
+			if itemHasFacet(item, FacetRelationship) || relationshipTextEvidence(item) {
+				return true
+			}
 		}
 	}
 	return false
@@ -741,11 +763,15 @@ func (s *EvidenceState) hasImplementationObservation() bool {
 // of the project rather than one targeted answer.
 //
 // A specific question ("does this workflow run automatically?") is answered by
-// one content observation. "Analyze what this project is about" is not: purpose,
-// structure, and stack need at least a second content observation or a
-// structural listing. A project that has source code additionally needs at least
-// one implementation observation: two documentation artifacts describe what the
-// project says about itself, not what its implementation does.
+// one content observation. "Analyze what this project is about" is not. A
+// project with source code needs the entry point and at least one module it
+// leads to: one read plus a structural inventory is a file count, not a model
+// of the code, and it was enough for a real project analysis to stop at the
+// CLI root. Two implementation observations are the minimum relationship pair,
+// not a depth target; a repository whose structural snapshot reports exactly
+// one source file is fully observed by reading it. A project with no source
+// code instead needs two content observations, because the answer describes
+// documentation rather than implementation.
 func (s *EvidenceState) hasRepositorySurvey(facts RepositoryFacts) bool {
 	content, implementation, structure := 0, 0, 0
 	for _, item := range s.Items {
@@ -768,17 +794,71 @@ func (s *EvidenceState) hasRepositorySurvey(facts RepositoryFacts) bool {
 					implementation++
 				}
 			}
-		case strings.HasPrefix(item.ID, "dir:"):
-			structure++
+		case strings.HasPrefix(item.ID, "structure:"), strings.HasPrefix(item.ID, "graph:"),
+			strings.HasPrefix(item.ID, "refs:"):
+			if structuralObservationIsFactual(item) {
+				structure++
+			}
 		}
 	}
 	if content == 0 {
 		return false
 	}
-	if facts.HasSourceCode() && implementation == 0 {
+	if !facts.HasSourceCode() {
+		return content >= 2
+	}
+	if implementation == 0 {
 		return false
 	}
-	return content >= 2 || structure > 0
+	switch sources := s.reportedSourceFiles(); {
+	case sources == 1:
+		// A single-file project is fully observed by reading it.
+		return true
+	case sources > 1:
+		// The producer measured a multi-file project. The entry point plus one
+		// implementation file is the minimum relationship pair; a structural
+		// inventory does not stand in for reading a second source file.
+		return implementation >= 2
+	default:
+		// No snapshot reported a source total. The runtime cannot invent a
+		// numeric floor, so the structural/survey leg remains the best
+		// available model. A missing adapter must not block investigation.
+		return content >= 2 || structure > 0
+	}
+}
+
+// structuralObservationIsFactual reports whether a structural observation
+// carries a coordinate, an edge, or a parsed declaration rather than only an
+// inventory. It is used only when no producer measured the source total.
+func structuralObservationIsFactual(item EvidenceItem) bool {
+	if itemHasFacet(item, FacetRelationship) || itemHasFacet(item, FacetTarget) {
+		return true
+	}
+	for _, key := range []string{
+		"symbols", "references", "calls", "total_edges", "total_references", "packages",
+	} {
+		if item.Counts[key] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// reportedSourceFiles returns the largest source-file total a structural
+// observation reported, or zero when no producer measured it. It is used only
+// to exempt a genuinely single-file project from the second-observation rule;
+// an unknown total never invents a number.
+func (s *EvidenceState) reportedSourceFiles() int {
+	if s == nil {
+		return 0
+	}
+	sources := 0
+	for _, item := range s.Items {
+		if item.Counts["source_files"] > sources {
+			sources = item.Counts["source_files"]
+		}
+	}
+	return sources
 }
 
 // containsEvidence reports whether an item kind contains value.
@@ -1062,31 +1142,38 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 			s.addGeneric(outcome, seq)
 			return false, false
 		}
-		return true, s.addRead(outcome, path, details, seq)
+		fact, changed = true, s.addRead(outcome, path, details, seq)
 	case "ls":
-		return true, s.addListing(outcome, path, details, seq)
+		fact, changed = true, s.addListing(outcome, path, details, seq)
 	case "glob":
-		return true, s.addSearch(outcome, details, seq)
+		fact, changed = true, s.addSearch(outcome, details, seq)
 	case "grep":
-		return true, s.addSearch(outcome, details, seq)
+		fact, changed = true, s.addSearch(outcome, details, seq)
 	case "symbols":
-		return true, s.addSymbols(outcome, details, seq)
+		fact, changed = true, s.addSymbols(outcome, details, seq)
 	case "graph", "refs", "structure":
-		return true, s.addStructural(outcome, details, seq)
+		fact, changed = true, s.addStructural(outcome, details, seq)
 	case "investigate":
-		return true, s.addInvestigation(outcome, details, seq)
+		fact, changed = true, s.addInvestigation(outcome, details, seq)
 	case "conclude":
-		return true, s.addConclusion(outcome, details, seq)
+		fact, changed = true, s.addConclusion(outcome, details, seq)
 	case "write", "edit", "delete":
-		return true, s.addMutation(outcome, path, details, seq)
+		fact, changed = true, s.addMutation(outcome, path, details, seq)
 	case "bash", "verify":
-		return true, s.addBash(outcome, details, seq)
+		fact, changed = true, s.addBash(outcome, details, seq)
 	case "web_fetch", "search", "browser", "mcp_list", "mcp_read", "mcp_call":
-		return true, s.addExternal(outcome, details, seq)
+		fact, changed = true, s.addExternal(outcome, details, seq)
 	default:
 		s.addGeneric(outcome, seq)
-		return false, false
+		fact, changed = false, false
 	}
+	// A conclusion's own payload never settles the gaps it declares; every
+	// other successful observation is matched against the pending targets
+	// while its full, untruncated text is still available.
+	if tool != "conclude" {
+		s.settlePendingTargets(outcome, path, seq)
+	}
+	return fact, changed
 }
 
 // addError records an exact diagnostic. A missing-file error also establishes
@@ -1414,6 +1501,10 @@ func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[str
 	if hasPrevious && !previous.Complete && len(previous.Unresolved) > 0 {
 		targets = mergeConclusionTargets(previous.Unresolved, targets)
 	}
+	// A path obligation whose complete contents the run already observed was
+	// not made real by the declaration; the model is naming a file it read.
+	// The drop is path-only: symbol obligations keep the post-conclusion rule.
+	targets = s.dropPreReadPathTargets(targets)
 	attempts := 1
 	newEvidence := false
 	if hasPrevious && !previous.Complete {
@@ -1624,6 +1715,93 @@ func (s *EvidenceState) targetsObservedAfter(seq int, targets []string) bool {
 	return true
 }
 
+// settlePendingTargets records, at observe time, the pending conclusion
+// targets one successful observation actually mentions. The stored item's
+// retained excerpt is bounded (MaxEvidenceValueBytes) and can later be
+// evicted, so a target whose only mention lies outside the retained window
+// would otherwise read as unobserved forever and force a reread that
+// observes nothing new. The record is a tiny control fact whose ID carries
+// the target, so the existing targetsObservedAfter match admits it without a
+// second matching path.
+func (s *EvidenceState) settlePendingTargets(outcome agent.ToolOutcome, path string, seq int) {
+	latest, ok := s.latestConclusion()
+	if !ok || latest.Complete || len(latest.Unresolved) == 0 {
+		return
+	}
+	haystack := cleanPath(path) + "\n" + outcome.Result.Text
+	for _, target := range latest.Unresolved {
+		if !conclusionTargetMatches(haystack, target) {
+			continue
+		}
+		s.upsert(EvidenceItem{
+			ID:         "target_observed:" + target,
+			Status:     StatusKnown,
+			Retention:  RetentionExact,
+			Provenance: ProvenanceDiagnostic,
+			Summary:    bound(target+" observed by "+outcome.ToolName, MaxEvidenceSummaryBytes),
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID},
+			Seq:        seq,
+		})
+	}
+}
+
+// dropPreReadPathTargets removes path obligations whose complete contents
+// the run already observed. A conclusion that names an already-read file as
+// unresolved contradicts the evidence in hand; keeping the obligation would
+// force a reread of a window the runtime holds and turn a stale declaration
+// into a repeat-investigation loop. Symbol obligations are never dropped: an
+// earlier observation that merely mentions a name is not the targeted
+// inspection the conclusion declared missing, and a read that predates a
+// mutation of the same file no longer describes the current state.
+func (s *EvidenceState) dropPreReadPathTargets(targets []string) []string {
+	if len(targets) == 0 {
+		return targets
+	}
+	out := make([]string, 0, len(targets))
+	for _, target := range targets {
+		path := cleanPath(target)
+		if path == "" {
+			out = append(out, target)
+			continue
+		}
+		item, ok := s.Find("file:" + path)
+		if !ok && !strings.Contains(path, "/") {
+			// A persisted conclusion may predate the path rule and name only a
+			// basename. If any complete pre-read has that basename, the model
+			// already observed the file it meant; an ambiguous name cannot be
+			// turned into an unsatisfiable obligation.
+			item, ok = s.preReadByBasename(path)
+		}
+		if !ok || !item.Complete || item.Status == StatusConflicting {
+			out = append(out, target)
+			continue
+		}
+		if mutationSeq, mutated := s.LastMutationSeq[cleanPath(item.Source.Path)]; mutated && mutationSeq > item.Seq {
+			out = append(out, target)
+			continue
+		}
+	}
+	return out
+}
+
+// preReadByBasename finds a complete file observation whose basename equals
+// name. It is used only for legacy conclusions that named a bare file name.
+func (s *EvidenceState) preReadByBasename(name string) (EvidenceItem, bool) {
+	if s == nil || name == "" {
+		return EvidenceItem{}, false
+	}
+	for _, item := range s.Items {
+		if !strings.HasPrefix(item.ID, "file:") || !item.Complete ||
+			item.Status == StatusConflicting || item.Status == StatusUnknown {
+			continue
+		}
+		if filepath.Base(filepath.ToSlash(item.Source.Path)) == name {
+			return item, true
+		}
+	}
+	return EvidenceItem{}, false
+}
+
 // addInvestigation records one bounded investigation as structural evidence.
 //
 // The tool result is a provider-backed observation, not model narration: its
@@ -1662,6 +1840,7 @@ func (s *EvidenceState) addInvestigation(outcome agent.ToolOutcome, details map[
 		Digest:     digest(value),
 		Complete:   status == "sufficient",
 		View:       "investigate",
+		Facets:     investigationFacets(details),
 		Source:     Source{Tool: "investigate", CallID: outcome.CallID},
 		Seq:        seq,
 	})
@@ -1695,6 +1874,7 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 		Counts:     structuralCounts(details),
 		Complete:   complete,
 		View:       detailString(details, "view"),
+		Facets:     structuralFacets(details),
 		Source:     structuralSource(details, outcome.ToolName, outcome.CallID, "", 0, 0),
 		Seq:        seq,
 	})
@@ -1719,6 +1899,7 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 			Provenance: classifyPathProvenance(path),
 			Summary:    bound(symbol+" at "+path+":"+itoa(line), MaxEvidenceSummaryBytes),
 			Complete:   !detailBool(details, "partial") && !detailBool(details, "truncated"),
+			Facets:     coordinateFacets(kind, symbol),
 			Source: structuralSourceWithCoordinate(details, coord, outcome.ToolName, outcome.CallID, path,
 				line, endLine),
 			Seq: seq,
@@ -1736,17 +1917,35 @@ func structuralCounts(details map[string]any) map[string]int {
 	keys := []string{
 		"test_files", "total", "returned", "files", "packages", "symbols",
 		"references", "calls", "entrypoints", "configs", "directories",
+		"total_edges", "total_references", "source_files",
 	}
 	var counts map[string]int
-	for _, key := range keys {
-		value, ok := details[key].(int)
-		if !ok {
-			continue
-		}
+	add := func(key string, value int) {
 		if counts == nil {
 			counts = map[string]int{}
 		}
 		counts[key] = value
+	}
+	for _, key := range keys {
+		if value, ok := details[key].(int); ok {
+			add(key, value)
+		}
+	}
+	// The snapshot header is the producer's coverage accounting: it carries
+	// the source-file total a view's own map does not repeat. The top level
+	// wins when both exist, because a view-scoped count can be a subset.
+	if snapshot, ok := details["snapshot"].(map[string]any); ok {
+		for _, key := range []string{
+			"source_files", "parsed_files", "pending_files", "failed_files",
+			"files", "directories", "symbols", "references", "calls", "test_files",
+		} {
+			if _, exists := details[key]; exists {
+				continue
+			}
+			if value, ok := snapshot[key].(int); ok {
+				add(key, value)
+			}
+		}
 	}
 	return counts
 }
@@ -2494,19 +2693,102 @@ func isImplementationObservation(item EvidenceItem) bool {
 			// notice, not an implementation observation.
 			return false
 		}
-		path := strings.TrimSpace(item.Source.Path)
-		if path == "" || path == "." || path == "./" {
-			return false
+		// The coordinate of a grep is the file it matched, not the scope it
+		// searched. A repository-wide grep has an empty or "." scope yet can
+		// return source lines; classifying by the scope made that evidence
+		// invisible, so a term the model had just verified in source remained
+		// "documentation-only" and the answer review demanded another search.
+		if source, matched := grepSourceText(item.Value); matched {
+			return source != ""
 		}
-		switch agent.ClassifyPath(path) {
-		case agent.PathDocumentation, agent.PathManifest, agent.PathConfiguration, agent.PathGenerated:
-			return false
-		default:
-			return true
-		}
+		// A legacy or single-file result without rendered file headers keeps
+		// the scope fallback. The scope is only admissible when it names a
+		// concrete source file; a directory cannot prove its own contents.
+		return agent.ClassifyPath(item.Source.Path) == agent.PathSource
 	default:
 		return false
 	}
+}
+
+// grepSourceText returns the portion of a rendered grep result that belongs to
+// source files, and whether the result rendered any file coordinate at all.
+//
+// The producer groups matches under a "path:" header, and a single-file match
+// may render as "path:line: text". Both forms are parsed here so the evidence
+// model can attribute a match to the file that produced it. Documentation,
+// manifest, configuration, and generated sections are excluded: a README hit
+// must not corroborate an implementation claim merely because it arrived in
+// the same search as a source hit.
+func grepSourceText(text string) (source string, matched bool) {
+	var out strings.Builder
+	inSource := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			if inSource {
+				out.WriteString(line)
+				out.WriteByte('\n')
+			}
+			continue
+		}
+		if path := grepGroupHeader(trimmed); path != "" {
+			matched = true
+			inSource = sourcePathIsImplementation(path)
+			if inSource {
+				out.WriteString(line)
+				out.WriteByte('\n')
+			}
+			continue
+		}
+		if path := grepInlineMatchPath(trimmed); path != "" {
+			matched = true
+			inSource = false
+			if sourcePathIsImplementation(path) {
+				out.WriteString(line)
+				out.WriteByte('\n')
+			}
+			continue
+		}
+		// A summary or note ends the last file section.
+		inSource = false
+	}
+	return strings.TrimSpace(out.String()), matched
+}
+
+// grepGroupHeader returns the path of a "path:" group header, or "".
+func grepGroupHeader(line string) string {
+	if !strings.HasSuffix(line, ":") || strings.Contains(line, ": ") {
+		return ""
+	}
+	path := strings.TrimSuffix(line, ":")
+	if strings.ContainsAny(path, " \t") {
+		return ""
+	}
+	return path
+}
+
+// grepInlineMatchPath returns the path of a "path:line: text" match, or "".
+func grepInlineMatchPath(line string) string {
+	sep := strings.IndexByte(line, ':')
+	if sep <= 0 {
+		return ""
+	}
+	rest := line[sep+1:]
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits >= len(rest) || rest[digits] != ':' {
+		return ""
+	}
+	path := strings.TrimSpace(line[:sep])
+	if path == "" || strings.ContainsAny(path, " \t") {
+		return ""
+	}
+	return path
 }
 
 func firstLine(text string) string {

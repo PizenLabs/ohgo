@@ -69,7 +69,17 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 			}
 		case ProvenanceObservation:
 			if isImplementationObservation(item) {
-				implementation = append(implementation, item.Value)
+				// A grep item carries documentation matches in the same value
+				// as source matches. Only the source sections are implementation
+				// vocabulary; a README line that arrived in the same search must
+				// not clear a documentation-only term.
+				text := item.Value
+				if strings.HasPrefix(item.ID, "search:grep:") {
+					if source, _ := grepSourceText(item.Value); source != "" {
+						text = source
+					}
+				}
+				implementation = append(implementation, text)
 			}
 		case ProvenanceManifest:
 			implementation = append(implementation, item.Value)

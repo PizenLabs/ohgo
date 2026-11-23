@@ -136,6 +136,25 @@ func newUpdateFixture(t *testing.T, current, tag, binary string, manifest func(n
 	return &updateFixture{service: service, source: source, dest: dest, server: server, tag: tag}
 }
 
+// The running binary's adapter set decides which artifact is installable.
+// Losing this field at composition would silently fall back to the portable
+// release on the next update.
+func TestServiceCarriesTheConfiguredVariant(t *testing.T) {
+	root := t.TempDir()
+	service := NewService(Config{
+		CurrentVersion: "v1.0.0",
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		MultiLanguage:  true,
+		Cache:          NewCacheStoreAt(filepath.Join(root, "update.json")),
+		Transition:     NewTransitionStoreAt(filepath.Join(root, "update-transition.json")),
+		LockPath:       filepath.Join(root, "update.lock"),
+	})
+	if !service.target.MultiLanguage {
+		t.Fatal("service target lost the multi-language variant")
+	}
+}
+
 func TestServiceUpdateInstallsVerifiedRelease(t *testing.T) {
 	fixture := newUpdateFixture(t, "v1.0.0", "v2.0.0", "#!/bin/sh\necho ohgo v2.0.0\n", nil)
 	result, err := fixture.service.Update(context.Background())

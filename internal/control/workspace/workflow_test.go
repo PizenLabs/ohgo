@@ -104,6 +104,29 @@ func TestIsTaskFollowUpIsAboutTheOpenResult(t *testing.T) {
 	}
 }
 
+func TestIsDepthFollowUpIsAboutTheOpenSubject(t *testing.T) {
+	yes := []string{
+		"more info", "more information", "tell me more", "go deeper",
+		"dig deeper", "elaborate", "expand on that", "say more",
+	}
+	for _, text := range yes {
+		if !IsDepthFollowUp(text) {
+			t.Errorf("IsDepthFollowUp(%q) = false, want true", text)
+		}
+	}
+	// A named subject is a new objective, even with depth vocabulary.
+	no := []string{
+		"more info about the auth flow", "go deeper into the parser",
+		"tell me more about the checkout flow", "analyze the database layer",
+		"explain the caching", "",
+	}
+	for _, text := range no {
+		if IsDepthFollowUp(text) {
+			t.Errorf("IsDepthFollowUp(%q) = true, want false", text)
+		}
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

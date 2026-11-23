@@ -50,17 +50,10 @@ so self-update reports the platform as unsupported.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
-			// A development build already reports "development version"; the
-			// multi-language refusal is for a build that could otherwise
-			// install a release.
-			multiLanguage := len(ast.DefaultAdapters()) > 1 && !update.IsDevelopment(version)
-			if refusal := portableUpdateRefusal(multiLanguage, checkOnly); refusal != "" {
-				_, _ = fmt.Fprintln(out, refusal)
-				return &reportedExit{code: 1}
-			}
 			var last update.Stage
 			svc := update.NewService(update.Config{
 				CurrentVersion: version,
+				MultiLanguage:  multiLanguageBuild(),
 				Progress: func(stage update.Stage) {
 					if stage == last {
 						return
@@ -76,24 +69,10 @@ so self-update reports the platform as unsupported.`,
 	return cmd
 }
 
-// portableUpdateRefusal stops a multi-language binary from replacing itself
-// with the portable release.
-//
-// Published artifacts are CGO_ENABLED=0. `ohgo update` cannot install a
-// multi-language build, so proceeding would silently remove every non-Go
-// adapter while reporting a successful version update. --check remains safe
-// because it installs nothing.
-func portableUpdateRefusal(multiLanguage, checkOnly bool) string {
-	if checkOnly || !multiLanguage {
-		return ""
-	}
-	return "This binary was built with the multi-language structural adapters.\n" +
-		"Published release artifacts are portable (CGO disabled) and contain the Go adapter only.\n" +
-		"`ohgo update` would replace this binary and remove TypeScript/TSX, JavaScript/JSX, Java,\n" +
-		"C#, Rust, Kotlin, Ruby, C, and C++ parsing.\n" +
-		"Update the source and rebuild with `make build-multilang`, or run `ohgo update --check`\n" +
-		"to see the available release without installing it."
-}
+// multiLanguageBuild reports whether this binary compiled the non-Go
+// structural adapters. The updater uses it to select the artifact that
+// preserves them; a portable binary keeps updating to the portable artifact.
+func multiLanguageBuild() bool { return len(ast.DefaultAdapters()) > 1 }
 
 // executeUpdate renders one update operation.
 func executeUpdate(cmd *cobra.Command, svc updateService, checkOnly bool) error {

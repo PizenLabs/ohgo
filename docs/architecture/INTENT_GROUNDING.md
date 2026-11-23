@@ -248,6 +248,14 @@ form includes passive voice (“could not be read”), and a qualifier does not 
 a category into a file coordinate: “no Go source files” is still a category
 absence, not a concrete file claim.
 
+A manifest declaration ("no test scripts declared", "package.json declares no
+test script") reports what the observed declaration list contains; it is not a
+repository-wide existence claim, and the source-coverage gate does not review
+it. It is also not proof that tests do not exist: a static test inventory
+reports "0 test files", which is a measurement of what the inventory could
+associate, not a concept absence. A frontend test absence remains unproven
+because naming is convention-based.
+
 A report scoped to what the probes surfaced is not a repository-wide absence
 claim. “No test files were surfaced in the probes — worth verifying” describes
 this run's observations and names the limitation; it completes. The same
@@ -290,7 +298,10 @@ claim, and completes. The same holds for a comparison or report the run cannot
 offer (“there is no static-vs-runtime comparison to report”, “no runtime
 behavior to describe”): the noun names the missing analysis, not a repository
 artifact. “I make no claim about test coverage” is the same kind of limit, not a
-statement that the repository has no tests. The same is true of a negated
+statement that the repository has no tests. The same applies to a named
+identifier the answer explicitly disowns (“No claim is made about
+`cart.domain.Product`”): the name is the subject of the disclaimer, not an
+assertion about the repository. The same is true of a negated
 event: “no server/database was executed” reports non-occurrence, not use. A
 negator that introduces a coordinated subject list distributes over every item,
 so “no tests, server, or binary were executed” reports what the run did not do.
@@ -472,7 +483,8 @@ read as the conclusion (“No JWT, RabbitMQ client code, …”); a bare “no X
 elsewhere in the sentence stays with the inventory facts.
 
 A concrete line count needs the file's read `totalLines`, a whole-file shell
-read, or a line-count command. A paged shell read reports the page, not the
+read, or a line-count command. A `wc -l` measurement is bound to the path on
+the same output line; another file's count cannot satisfy the claim. A paged shell read reports the page, not the
 file total, and a phrase such as "first ~90 lines" is a read window rather than
 a total. A count inside a parenthetical annotation belongs to the path that
 introduces the parenthesis ("`order_factory.go` (read, 97 lines) and
@@ -516,6 +528,56 @@ observed source does not — so the answer can attribute them or inspect the
 source that carries them before the correction boundary. The observed-term
 comparison scans the full retained observation; it is not capped by the bounded
 output vocabulary, because a term past the output cap is still observed source.
+A repository-wide grep is attributed by the files it matched, not by the
+directory it searched: documentation sections in the same result do not
+corroborate an implementation term, and matched source sections do.
+
+### 4.6.1 Investigation requirements (evidence facets)
+
+A claim class says what an answer sentence may assert. An **evidence facet** says
+what the control plane requires before the task may reach an answer boundary.
+Facets are derived from the task shape, not from a model turn and not from the
+presence of a tool. They are the deterministic answer to "does this task need
+Structure Core?".
+
+The policy is deliberately narrow. A broad account ("inspect the architecture",
+"what is this project") remains an overview. A relationship claim is explicit by
+vocabulary or named target: dependency/depends, caller/callee/call graph,
+import, reference, implement/interface/adapter, impact, request/data flow, or a
+"who calls" question. Only then does the shape acquire facets and force the
+structural impact depth.
+
+| facet | required observation | not enough |
+| --- | --- | --- |
+| target | a current structural coordinate identifying the entity or module | a file name or a lexical hit |
+| relationship | a structural edge/reference binding two endpoints | source text that mentions both names |
+| interface boundary | an observed IMPLEMENTS/EXTENDS edge or named boundary | an interface word in prose |
+| implementation | observed source content or a concrete IMPLEMENTS/OVERRIDES edge | a manifest, README, or declaration |
+| flow | an observed call/reference chain from the target | a documentation statement about flow |
+
+Facet requirements are added to `TaskShape.RequiredKnowledge` before supporting
+repository requirements. That ordering is the repair policy: mandatory intent
+facets first, then direct claims, then supporting/enrichment claims. An
+observation is tagged with the facets it actually establishes from structured
+result fields; `EvidenceState` derives the status from those tags, with bounded
+fallbacks for older checkpoints. Every facet status carries the observation ids
+and snapshot provenance that satisfy it.
+
+Sufficiency is therefore:
+
+```text
+required facets satisfied
+AND no unresolved mandatory requirement
+AND capability availability accounted for
+```
+
+Confidence remains a provider-local estimate of trust. It is not a completion
+predicate. The `investigate` tool's own result is labelled
+`provider_sufficient` when its planner reaches its confidence target, with an
+explicit note that the control plane's facets still gate task completion.
+
+The model can propose a structural query or a symbol. It cannot decide that a
+relationship task does not need structural evidence.
 
 ### 4.7 Completion integrity
 
@@ -555,15 +617,65 @@ investigation. Each repairable audit issue carries the claim, its location, its
 category, the evidence class it needs, a reference, and the permitted action.
 The correction names at most `MaxRepairInstructions` claims and tells the model
 to keep every other sentence, reuse the observations already in the
-conversation, and stay within a small per-correction tool allowance
-(`CorrectionToolCalls`, default 3). Calls beyond the allowance fail closed
-before execution; a reused observation does not consume it. The allowance is
-per correction, not per run, so the initial investigation's budget is unchanged.
+conversation, and stay within the answer lifecycle's tool allowance
+(`CorrectionToolCalls`, default 4). The directive is re-rendered on every
+request in the correction window, not only the first: a window can span several
+model turns, and a later turn without the named claims follows an unrelated
+evidence frontier. Calls beyond the allowance fail closed before execution; a
+reused observation does not consume it. The allowance is
+per answer lifecycle, not per correction request, so a second repair pass cannot
+reopen the investigation the initial budget already paid for. When the
+allowance is spent, the projection closes the tool surface and states the
+exhausted budget instead of advertising a call the loop will refuse.
+
+A correction also withholds the generic evidence frontier carried by the
+informational state block. The review already named the claims to repair; a
+component frontier derived from unrelated structural inventory competes with
+that bounded instruction and can spend the remaining allowance on the wrong
+coordinate. The claim classes and documentation-only vocabulary remain visible,
+because those are the repair's evidence boundary.
+
 The pre-answer review also runs the documentation-only provenance audit when the
 host supplies the last projection's provenance, so a documented claim is
-repaired before completion instead of surfacing as a terminal review. When the
-evidence still cannot be obtained, the answer must qualify or remove the claim;
-the runtime never accepts it to finish the task.
+repaired before completion instead of surfacing as a terminal review. The
+correction is evidence-first: the reopened tool surface exists to obtain the
+missing observation, and a generic coverage disclaimer does not satisfy a
+specific claim. When the evidence still cannot be obtained, the model qualifies
+or removes only that sentence; the runtime never accepts the claim to finish
+the task.
+
+The corrected answer is reviewed by the same audit before publication. A repair
+can introduce a new unsupported claim, so a second correction pass is admitted
+only when the review names a different claim set (`answerRepairKey`); repeating
+the same rejection terminates at `NEEDS_REVIEW`. `MaxAnswerCorrections` bounds
+the passes. This is a convergence rule, not a retry loop: an unchanged claim set
+earns no further turn.
+
+A candidate that a correction supersedes is internal repair context. It is
+removed from the answer projection and is never rendered as a draft the user
+must read; only the candidate that ends the review loop can be shown. When
+correction is exhausted, the final candidate is not published. The response
+transaction records `REVIEW` and the host removes the provisional stream from
+the answer projection; it may keep that one terminal candidate as a labelled
+withdrawn draft so a streamed answer does not vanish without a trace. The
+uncertified claims are carried as `ReviewIssues` into `NEEDS_REVIEW`. A
+facet-only rejection is the exception: the answer may honestly state the
+missing deliverable, so the finalizer publishes it and completion records the
+facet gap. Deleting sentences and appending a runtime-authored "Evidence
+limitations" section
+produced a second, competing conclusion; it also removed supported detail the
+user asked for. The model's raw candidate remains in the completion input so the
+review can name exactly what was not established, but no host may display it as
+the final answer. The answer-finalization gate (`AnswerAudit.Approved`) and the
+completion authority use the same claim audits, so the transcript, the response
+transaction, and the completion verdict cannot disagree about whether the
+published text was approved.
+
+Coverage is presentation, not a claim. The turn footer reports measured
+structural coverage, but an answer is never rejected merely because it does not
+repeat a coverage disclaimer. A project-wide sentence is judged by the claim it
+makes and the evidence that claim requires; requiring a disclaimer taught the
+model to qualify prose instead of acquiring the missing observation.
 
 A paged read keeps the document's opening window. Different windows are not a
 conflict, and a later window no longer overwrites the definition that names the

@@ -29,6 +29,8 @@ func fileKindForLanguage(rel string, language Language, isSource bool) FileKind 
 		"jsconfig.json", "pom.xml", "build.gradle", "build.gradle.kts",
 		"settings.gradle", "settings.gradle.kts", "Cargo.toml", "Cargo.lock",
 		"Gemfile", "Gemfile.lock", "Rakefile", "CMakeLists.txt",
+		"pyproject.toml", "requirements.txt", "setup.py", "Pipfile",
+		"Pipfile.lock", "poetry.lock",
 		"Makefile", "makefile", "GNUmakefile", "Dockerfile", "Containerfile":
 		return FileManifest
 	case ".golangci.yml", ".golangci.yaml", ".goreleaser.yml", ".goreleaser.yaml",
@@ -139,6 +141,9 @@ func configLanguage(rel string) Language {
 		return LanguageRust
 	case "Gemfile", "Gemfile.lock", "Rakefile":
 		return LanguageRuby
+	case "pyproject.toml", "requirements.txt", "setup.py", "Pipfile",
+		"Pipfile.lock", "poetry.lock":
+		return LanguagePython
 	case "CMakeLists.txt":
 		return LanguageCpp
 	default:

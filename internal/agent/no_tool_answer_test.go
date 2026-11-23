@@ -631,6 +631,35 @@ func TestPreparatoryPlanIsNotAnAnswerOnAClosedSurface(t *testing.T) {
 	}
 }
 
+// A plan-only turn with no tool call is still not an answer. The runtime keeps
+// the text for the completion verdict but marks it unpublishable, so the TUI
+// and the persisted transcript never present "Let me check…" as the result.
+func TestPlanOnlyAnswerIsWithheldFromTheTranscript(t *testing.T) {
+	result := runInformational(t, []ai.AssistantMessage{
+		{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.TextContent{
+			Text: "Let me read the main module and then explain the project.",
+		}}},
+	})
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	last := result.turns[len(result.turns)-1]
+	if !last.SuppressText {
+		t.Fatal("a plan-only answer was marked publishable")
+	}
+	if strings.TrimSpace(last.Assistant.Text()) == "" {
+		t.Fatal("the plan was dropped from the completion input instead of being withheld from display")
+	}
+	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+		EvidenceReview: result.report.EvidenceReview(),
+	})
+	if got.Complete() {
+		t.Fatal("a plan-only answer was reported as the requested result")
+	}
+}
+
 // The answer review rejects the first candidate and names the gap. The
 // correction request must be able to close it: the previous answer-only verdict
 // closed the projected surface, and a model that follows the review's "use an

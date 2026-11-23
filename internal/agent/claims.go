@@ -63,7 +63,7 @@ func (i claimIssue) groundingIssue() contract.GroundingIssue {
 			issue.Category = "citation"
 			issue.Requirement = "source content for the cited path"
 			issue.Action = "read the cited path or present it as an unverified pointer"
-		case "unsupported_code_entity":
+		case "unsupported_code_entity", "unsupported_code_claim":
 			issue.Category = "entity"
 			issue.Requirement = "the declaration of the named identifier"
 			issue.Action = "read the declaration or remove the identifier"
@@ -378,6 +378,11 @@ func lineCountClaimIssue(sentence string, turns []Turn) *claimIssue {
 		total, observed := observedReadLineCount(turns, path)
 		if !observed {
 			total, observed = shellReadLineCount(turns, path)
+		}
+		if !observed {
+			if measured, ok := commandLineCountForPath(turns, path); ok {
+				total, observed = measured, true
+			}
 		}
 		if !observed {
 			detail := fmt.Sprintf(
@@ -1016,6 +1021,10 @@ func claimIsBounded(sentence string) bool {
 		"based on the inspected", "so far", "inferred",
 		"pending a read", "pending an inspection", "pending a check",
 		"needs to be read", "need to be read", "stays open", "remains open",
+		"no claim is made", "no claim is being made", "no claims are made",
+		"makes no claim", "make no claim", "not claiming",
+		"no assertion is made", "does not assert", "doesn't assert",
+		"nothing is asserted", "no statement is made",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -1344,9 +1353,7 @@ func commandLineCountObserved(turns []Turn, claimed int) bool {
 				continue
 			}
 			command := strings.ToLower(proposalArgString(outcome.Args, "command"))
-			if !strings.Contains(command, "wc ") && !strings.Contains(command, "cloc") &&
-				!strings.Contains(command, "tokei") && !strings.Contains(command, "scc ") &&
-				!strings.Contains(command, "sloc") {
+			if !isLineCountCommand(command) {
 				continue
 			}
 			for _, raw := range lineCountNumberPattern.FindAllString(outcome.Result.Text, -1) {
@@ -1357,6 +1364,47 @@ func commandLineCountObserved(turns []Turn, claimed int) bool {
 		}
 	}
 	return false
+}
+
+// commandLineCountForPath returns the count a line-count command measured for
+// one path. `wc -l` prints "<count> <path>"; a path-first form is accepted so
+// a different tool's output is not silently discarded.
+func commandLineCountForPath(turns []Turn, path string) (int, bool) {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.ToolName != "bash" || outcome.Result.IsError || !outcome.Result.Executes {
+				continue
+			}
+			command := strings.ToLower(proposalArgString(outcome.Args, "command"))
+			if !isLineCountCommand(command) {
+				continue
+			}
+			for _, line := range strings.Split(outcome.Result.Text, "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 2 {
+					continue
+				}
+				count := claimCount(fields[0])
+				name := strings.Join(fields[1:], " ")
+				if count <= 0 {
+					count = claimCount(fields[len(fields)-1])
+					name = strings.Join(fields[:len(fields)-1], " ")
+				}
+				if count <= 0 || !claimPathsMatch(strings.Trim(name, "`'\""), path) {
+					continue
+				}
+				return count, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// isLineCountCommand reports a command whose output can measure source lines.
+func isLineCountCommand(command string) bool {
+	return strings.Contains(command, "wc ") || strings.Contains(command, "cloc") ||
+		strings.Contains(command, "tokei") || strings.Contains(command, "scc ") ||
+		strings.Contains(command, "sloc")
 }
 
 var lineCountNumberPattern = regexp.MustCompile(`\b\d[\d,]*\b`)

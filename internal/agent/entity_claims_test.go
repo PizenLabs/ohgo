@@ -195,3 +195,82 @@ func TestEntityClaimIgnoresRuntimeStatusTokens(t *testing.T) {
 		t.Fatalf("runtime status tokens were reviewed as code entities: %+v", issues)
 	}
 }
+
+// Session 963: the answer named `cart.domain.Product`, an import-path
+// spelling of a type the read file uses as `domain.Product`. The file imports
+// `.../cart/domain`; requiring the literal dotted token reviewed a
+// source-observed declaration as invented and kept the correction loop alive.
+func TestEntityClaimAcceptsImportPathQualifiedReference(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("backend/cart/bounded_context.go", `package cart
+
+import (
+	"github.com/bkielbasa/go-ecommerce/backend/cart/domain"
+)
+
+type transformProductCatalog struct{}
+
+func (tpc transformProductCatalog) Find() (domain.Product, error) {
+	return domain.Product{}, nil
+}
+`),
+	}}}
+	answer := "The ACL translates a product catalog variant into `cart.domain.Product`."
+	if issues := claimScopeIssues(answer, turns); len(issues) != 0 {
+		t.Fatalf("an import-path-qualified observed declaration was reviewed: %+v", issues)
+	}
+}
+
+// The suffix match must not let an observed `domain.Product` support an
+// invented package prefix. The observation names `cart/domain`, not
+// `billing/domain`.
+func TestEntityClaimRejectsUnobservedPackagePrefix(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("backend/cart/bounded_context.go", `package cart
+
+import "github.com/bkielbasa/go-ecommerce/backend/cart/domain"
+
+func Find() domain.Product { return domain.Product{} }
+`),
+	}}}
+	answer := "The ACL translates a product catalog variant into `billing.domain.Product`."
+	issues := claimScopeIssues(answer, turns)
+	if len(issues) == 0 || issues[0].Code != "unsupported_code_entity" {
+		t.Fatalf("issues = %+v, want an unsupported package prefix", issues)
+	}
+}
+
+// A backticked filename names a path coordinate, not a declaration. The read
+// observed package.json; reviewing the name as an invented identifier would
+// send the model to re-read the file instead of repairing the absence claim.
+func TestEntityClaimSkipsFileCoordinates(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("package.json", `{"scripts":{"dev":"next dev","build":"next build"}}`),
+	}}}
+	answer := "`package.json` has no test script, so the project has no tests."
+	for _, issue := range claimScopeIssues(answer, turns) {
+		if issue.Code == "unsupported_code_entity" {
+			t.Fatalf("a filename was reviewed as a code entity: %+v", issue)
+		}
+	}
+}
+
+// A sentence that names an identifier only to disown it is a limitation, not
+// an assertion. Session 973: the model removed the unsupported
+// `cart.domain.Product` claim and added "No claim is made about ...", but the
+// entity audit reviewed the disclaimer as the original claim and the loop
+// could not terminate.
+func TestEntityClaimSkipsDisclaimedIdentifier(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("backend/cart/bounded_context.go", "package cart\n"),
+	}}}
+	disclaimer := "No claim is made about a `cart.domain.Product` type or similar internal identifiers."
+	if issues := claimScopeIssues(disclaimer, turns); len(issues) != 0 {
+		t.Fatalf("a disclaimer was reviewed as an assertion: %+v", issues)
+	}
+	assertion := "The ACL translates a variant into `cart.domain.Product`."
+	issues := claimScopeIssues(assertion, turns)
+	if len(issues) == 0 || issues[0].Code != "unsupported_code_entity" {
+		t.Fatalf("a plain assertion was accepted: %+v", issues)
+	}
+}

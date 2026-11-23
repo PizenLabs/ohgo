@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -119,6 +120,13 @@ func entityLooksProjectSpecific(identifier string) bool {
 	if strings.ContainsAny(identifier, "/\\") || strings.Contains(identifier, "://") {
 		return false
 	}
+	// A filename is a path coordinate owned by the file/claim checks. A read
+	// of `package.json` proves the file exists; it does not declare an
+	// identifier named `package.json`, and reviewing it sends the model to
+	// re-read a file it already observed.
+	if fileCoordinateIdentifier(identifier) {
+		return false
+	}
 	if codeClaimStopWords[strings.ToLower(identifier)] {
 		return false
 	}
@@ -137,6 +145,22 @@ func entityLooksProjectSpecific(identifier string) bool {
 	}
 	// A lowercase bare identifier is too easily a generic word. The existing
 	// code-claim check still owns prop/field claims for that shape.
+	return false
+}
+
+// fileCoordinateIdentifier reports a name that denotes a file rather than a
+// code declaration. The extension list is the finite set of source, manifest,
+// and documentation formats the repository tools read.
+func fileCoordinateIdentifier(identifier string) bool {
+	if isRootFileName(identifier) {
+		return true
+	}
+	switch strings.ToLower(path.Ext(identifier)) {
+	case ".go", ".md", ".json", ".yaml", ".yml", ".toml", ".ts", ".tsx",
+		".js", ".jsx", ".css", ".html", ".sql", ".sh", ".mod", ".sum",
+		".lock", ".txt", ".xml":
+		return true
+	}
 	return false
 }
 
@@ -177,6 +201,24 @@ func codeTokenObserved(text, token string) bool {
 			return true
 		}
 		if typeMemberDeclared(text, qualifier, member) {
+			return true
+		}
+	}
+	// An import path can qualify a reference the source writes with only its
+	// final package segment. The answer names `cart.domain.Product`; the read
+	// file imports `.../cart/domain` and uses `domain.Product`. Requiring the
+	// literal dotted token reviewed a source-verified declaration as invented.
+	// The suffix must be observed, and the removed prefix must name a path
+	// segment in the same observation so an unrelated `domain.Product` cannot
+	// support an invented package.
+	segments := strings.Split(token, ".")
+	for index := 1; index < len(segments)-1; index++ {
+		suffix := strings.Join(segments[index:], ".")
+		if !tokenObservedBoundary(text, suffix) {
+			continue
+		}
+		prefix := strings.Join(segments[:index], "/")
+		if tokenObservedBoundary(text, prefix+"/"+segments[index]) {
 			return true
 		}
 	}

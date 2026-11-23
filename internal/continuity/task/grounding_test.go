@@ -1,8 +1,11 @@
 package task
 
 import (
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
@@ -60,5 +63,69 @@ func TestControllerPersistsIntentGrounding(t *testing.T) {
 	}
 	if !restored.Contract.Grounding.HasMaterialAmbiguity() {
 		t.Fatal("restored task lost the material ambiguity")
+	}
+}
+
+// The review's machine-readable claims are durable state: a resumed task
+// repairs the named claims instead of re-auditing the answer from scratch,
+// and a completion clears the resolved list. General answer-level issues have
+// no category and stay in the flat reason.
+func TestControllerPersistsReviewRepairList(t *testing.T) {
+	root := t.TempDir()
+	controller := NewController(NewStore(root), nil)
+	intent := contract.IntentContract{
+		Objective: "explain the parser",
+		Kind:      contract.ObjectiveInformational,
+	}
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatal(err)
+	}
+	issues := []contract.GroundingIssue{
+		{
+			Code:        "unsupported_code_entity",
+			Category:    "entity",
+			Claim:       "`PaymentReconciler` harmonizes ledgers",
+			Requirement: "an observed code entity",
+			Action:      "inspect the claim's coordinate or remove the identifier",
+		},
+		{
+			Code:   "answer_level",
+			Detail: "a general reason with no claim class",
+		},
+	}
+	if _, err := controller.NeedsReview("intent grounding: unsupported claim", issues...); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := NewController(NewStore(root), nil)
+	restored, found, err := reopened.Restore()
+	if err != nil || !found {
+		t.Fatalf("restore: found=%v err=%v", found, err)
+	}
+	if len(restored.ReviewIssues) != 1 || restored.ReviewIssues[0].Code != "unsupported_code_entity" {
+		t.Fatalf("restored review issues = %+v, want the claim-level entry only", restored.ReviewIssues)
+	}
+	orientation := strings.Join(reopened.Context(), "\n")
+	if !strings.Contains(orientation, "PaymentReconciler") {
+		t.Fatalf("orientation = %q, want the named claim", orientation)
+	}
+	if !strings.Contains(orientation, "required: an observed code entity") {
+		t.Fatalf("orientation = %q, want the shared repair line", orientation)
+	}
+	if !strings.Contains(orientation, agent.RepairInstructions(restored.ReviewIssues)) {
+		t.Fatalf("orientation = %q, want the one repair formatter's output", orientation)
+	}
+
+	// Completion resolves the review boundary, so the repair list must not
+	// survive it as current state. A review is completed through the running
+	// lifecycle, never by a direct transition.
+	running := restored.Clone()
+	running.Status = StatusRunning
+	if err := running.Complete(time.Now()); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if len(running.ReviewIssues) != 0 || running.ReviewReason != "" {
+		t.Fatalf("completed task kept review state: reason=%q issues=%+v",
+			running.ReviewReason, running.ReviewIssues)
 	}
 }

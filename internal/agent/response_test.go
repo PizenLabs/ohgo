@@ -61,8 +61,8 @@ func TestCancelledRunDoesNotCommitARejectedDraft(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
-	if len(turns) != 1 || !turns[0].Suppressed {
-		t.Fatalf("turns = %+v, want one suppressed draft", turns)
+	if len(turns) != 1 || !turns[0].Superseded || turns[0].Suppressed {
+		t.Fatalf("turns = %+v, want one internal draft superseded by the correction", turns)
 	}
 	audit := loop.LastResponseAudit()
 	if audit.State != ResponseCancelled {
@@ -178,5 +178,28 @@ func TestRepeatedSuccessfulObservationIsAuditedAsRedundant(t *testing.T) {
 	}
 	if audit.RedundantToolCalls != 1 {
 		t.Fatalf("redundant calls = %d, want 1", audit.RedundantToolCalls)
+	}
+}
+
+// A finalizer that returns no text has withheld the draft on purpose. The
+// response transaction must commit the empty result, not resurrect the raw
+// draft the gate removed (for example, a copied runtime-state block).
+func TestFinalizerEmptyTextDoesNotRestoreTheRawDraft(t *testing.T) {
+	loop := &Loop{cfg: Config{FinalizeAnswer: func([]Turn, string, string) FinalizedAnswer {
+		return FinalizedAnswer{Text: ""}
+	}}}
+	loop.beginResponse()
+	turns := []Turn{{Assistant: ai.AssistantMessage{
+		Content: []ai.ContentBlock{ai.TextContent{Text: "# Runtime state\nsecret directive"}},
+	}}}
+	live := []Message{AssistantMessage{Message: turns[0].Assistant}}
+	if !loop.finalizeResponse(turns, &live, "") {
+		t.Fatal("the commit was refused")
+	}
+	if got := turns[0].Assistant.Text(); got != "" {
+		t.Fatalf("committed text = %q, want the gate's empty result", got)
+	}
+	if got := live[0].(AssistantMessage).Message.Text(); got != "" {
+		t.Fatalf("live text = %q, want the gate's empty result", got)
 	}
 }

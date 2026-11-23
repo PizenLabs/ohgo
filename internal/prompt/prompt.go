@@ -42,6 +42,18 @@ Guidelines:
 - An investigation is evidence, not proof. When it identifies a concrete
   declaration or call site, read that exact coordinate before claiming what
   the implementation does. Do not stop at a candidate list.
+- A broad project analysis is a model of the project, not an inventory. Read
+  the entry point and the implementation files it leads to (the data loader,
+  the main component or service, the persistence boundary) before answering.
+  Explain how the pieces connect: where data comes from, how it is loaded and
+  transformed, what renders or serves it, and what the main interaction is. A
+  list of files, components, or dependencies is not an analysis; name the
+  relationships you actually read.
+- Separate observed facts from documentation and inference. Attribute a
+  README, manifest, or metadata claim ("according to package.json"), label an
+  inference as inferred, and say plainly when a relationship or runtime
+  behavior was not observed. When the runtime reports partial structural
+  coverage, name the part of the repository the answer did not inspect.
 - When the runtime state asks for an investigation conclusion, call conclude
   with the vocabulary that state names. A failure investigation records SAFE,
   BUG, or UNRESOLVED. A general answer about the project records ANSWERED,
@@ -94,7 +106,7 @@ Prefer the shortest answer that fully answers the question.`
 // is what breaks a model out of a tool-call loop that has no tool left to call.
 // It is runtime-authored, never persisted as a user turn, and never shown in
 // the transcript.
-const AnswerRequest = `Runtime: no tool is available for this response. Provide the final answer to the user's request now, using the observations already gathered where they apply. Do not propose or describe another tool call. State any remaining evidence gap explicitly.`
+const AnswerRequest = `Runtime: no tool is available for this response. Provide the final answer to the user's request now, using the observations already gathered where they apply. Do not propose or describe another tool call. Keep the answer substantive. Name only a specific limitation that materially bounds it; do not add a generic coverage disclaimer.`
 
 // ExecutionRecoveryRequest is the one bounded correction the loop appends when
 // the model announces an action but emits no tool call. It does not authorize
@@ -111,18 +123,22 @@ const ProtocolRecoveryRequest = `Runtime protocol recovery: your previous messag
 // CompletionReviewRequest is the one bounded correction the loop appends when a
 // candidate answer fails the answer-level completion review. The placeholder is
 // replaced with the runtime's evidence reason. The model may use an available
-// tool to acquire the missing observation or qualify the claim; it must not
-// repeat an unsupported conclusion. It is runtime-authored, never persisted as a
-// user turn, and never shown in the transcript.
-const CompletionReviewRequest = `Runtime completion review: the previous answer cannot be accepted because {{reason}}. Correct it now using evidence already observed, or use an available tool to obtain the missing evidence. Do not repeat a claim the evidence does not support. If the missing fact cannot be established, state that limitation explicitly instead of completing the claim.`
+// tool to acquire the missing observation; a generic disclaimer is not a
+// correction. It is runtime-authored, never persisted as a user turn, and never
+// shown in the transcript.
+const CompletionReviewRequest = `Runtime completion review: the previous answer cannot be accepted because {{reason}}. The action surface is open for this repair. First obtain the missing observation with the available tools; the runtime reopened them for this purpose. Keep every supported sentence and the answer's structure. Do not add a general disclaimer about coverage or uncertainty; a disclaimer does not resolve an unrelated claim. If the allowed tools cannot establish a named fact, qualify or remove only the sentence that carries it and say what specifically remains unverified.`
 
 // ClaimRepairRequest is the bounded, claim-level correction. It is used in
 // place of CompletionReviewRequest when the review can name the rejected
-// claims. The model must repair only those sentences, keep the rest of the
+// claims. The model must repair only those claims, keep the rest of the
 // answer, and stay inside the correction's small tool allowance. It is
 // runtime-authored, never persisted as a user turn, and never shown in the
 // transcript.
-const ClaimRepairRequest = `Runtime completion review: {{count}} claim(s) in the previous answer lack sufficient evidence. Repair only these claims; keep every other sentence, structure, and supported claim exactly as it is. The initial observations are already in the conversation — do not repeat a read, listing, or structural query that is already present unless the listed repair says the evidence is stale or missing. You may use at most {{budget}} tool call(s), only for the evidence named below. If a claim cannot be evidenced, qualify or remove that sentence and state the remaining uncertainty.
+const ClaimRepairRequest = `Runtime completion review: {{count}} claim(s) in the previous answer are not supported by the evidence observed so far. This is a repair turn, not a rewrite: keep every supported sentence, section, and structural detail exactly as it is. The action surface is open for this repair.
+
+For each claim below, first obtain the missing observation its requirement/action names. Use the reopened surface only for those observations; the runtime enforces a small allowance and refuses a call past it. Read the exact coordinate the claim is about when the prior observation did not cover it; do not repeat an observation that already contains the required evidence.
+
+Only if those calls cannot establish the claim: remove that claim or qualify that sentence specifically. Do not add a general coverage or uncertainty disclaimer; it does not repair a different claim and will be rejected.
 
 {{repairs}}
 

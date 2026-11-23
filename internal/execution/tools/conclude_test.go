@@ -59,8 +59,12 @@ func TestConcludeRecordsAnAnswerOutcome(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("answer conclusion failed: %s", result.Text)
 	}
-	if !strings.Contains(result.Text, "answer: ANSWERED") {
-		t.Fatalf("text = %q, want the answer outcome label", result.Text)
+	if !strings.Contains(result.Text, "conclusion: ANSWERED") ||
+		!strings.Contains(result.Text, "status: FINAL") {
+		t.Fatalf("text = %q, want the terminal conclusion label and status", result.Text)
+	}
+	if strings.Contains(result.Text, "answer: ANSWERED") {
+		t.Fatalf("text = %q, a conclusion verdict was mislabeled as the user's answer", result.Text)
 	}
 	details, ok := result.Details.(map[string]any)
 	if !ok || details["mode"] != string(contract.ConclusionAnswer) {

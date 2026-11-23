@@ -272,11 +272,15 @@ git push origin vX.Y.Z
 
 The tag starts `.github/workflows/release.yml`. Its verification job checks the
 tag against `VERSION`, the version markers, formatting, and the full test
-suite; then an `ubuntu-latest` matrix runs `scripts/release-target.sh` once per
-target with `CGO_ENABLED=0` and native `GOOS`/`GOARCH` cross-compilation; the
-final job writes `sha256sums.txt` and publishes the four tarballs with generated
-GitHub release notes. Every job runs on `ubuntu-latest`, so the release never
-consumes a paid macOS or Windows runner.
+suite; then the portable matrix runs `scripts/release-target.sh` on
+`ubuntu-latest` with `CGO_ENABLED=0` and native `GOOS`/`GOARCH`
+cross-compilation, while the multi-language matrix runs the same script with
+`VARIANT=multilang` on a native runner per platform (linux arm64 uses
+`aarch64-linux-gnu-gcc`, darwin builds on macOS). The multi-language job
+smoke-tests the built artifact's adapter set before upload. The final job
+writes one `sha256sums.txt` and publishes both tarball sets with generated
+GitHub release notes. Only the portable matrix is cross-compiled; cgo has no
+portable cross-compiler.
 
 Only a stable tag publishes itself. A suffixed tag (for example
 `v1.0.0-rc1`) does not start the workflow on push: the verify job's condition

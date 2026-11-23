@@ -496,3 +496,207 @@ func TestAnsweredWithNamedGapRemainsProvisional(t *testing.T) {
 		t.Fatal("the named gap did not become the next observation")
 	}
 }
+
+// readTurnWindow builds one read whose reported window covers only part of
+// the file, so the observation is real but not complete.
+func readTurnWindow(callID, path, body string, offset, limit, totalLines int) agent.Turn {
+	return agent.Turn{Results: []agent.ToolOutcome{{
+		CallID:   callID,
+		ToolName: "read",
+		Args:     map[string]any{"path": path},
+		Result: agent.Result{Text: body, Details: map[string]any{
+			"path": path, "totalLines": totalLines, "offset": offset, "limit": limit,
+		}},
+	}}}
+}
+
+// A short method name (StockReserver.Run) is a satisfiable obligation: the
+// bare-name fallback matches on identifier boundaries, so a longer token such
+// as "runtime" or "CheckoutRunner" cannot satisfy it and no length gate is
+// needed. The old len>=4 gate made such targets unsatisfiable, and the
+// runtime demanded the same inspection on every turn.
+func TestShortMethodTargetIsSatisfiableOnIdentifierBoundaries(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED",
+			"checkout Place calls Run before Save",
+			"the implementation of StockReserver.Run is unknown"),
+	})
+	target := "investigation_target:StockReserver.Run"
+	if evidence.Satisfied(target, ExecutionState{}) {
+		t.Fatal("the short method target was satisfied before any observation")
+	}
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "other.go",
+			"package other\n\n// runtime helper for the CheckoutRunner flow\n"),
+	})
+	if evidence.Satisfied(target, ExecutionState{}) {
+		t.Fatal("a longer token containing the name satisfied the target: substring matching leaked")
+	}
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-2", "reserver.go",
+			"package stock\n\nfunc (s StockReserver) Run(ctx context.Context) error {\n\treturn nil\n}\n"),
+	})
+	if !evidence.Satisfied(target, ExecutionState{}) {
+		t.Fatal("the short method target stayed missing after its bare name was observed")
+	}
+}
+
+// A target whose only mention lies outside the retained evidence excerpt is
+// still observed. Matching happens at observe time against the whole tool
+// text, so retention bounds (MaxEvidenceValueBytes) cannot make a real
+// observation read as missing and force a reread that observes nothing new.
+func TestTargetObservationSurvivesRetentionTruncation(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED",
+			"checkout Place calls Reserve before Save",
+			"the implementation of StockReserver.Reserve is unknown"),
+	})
+	target := "investigation_target:StockReserver.Reserve"
+	// The preamble alone exceeds the retained per-item bound; the named
+	// symbol appears only after it.
+	filler := strings.Repeat("func FillerRoutine() { return \"padding\" }\n", 600)
+	body := filler + "func (db StockReserver) Reserve(ctx context.Context) error {\n\treturn nil\n}\n"
+	if len(filler) <= MaxEvidenceValueBytes {
+		t.Fatalf("fixture preamble = %d bytes, must exceed MaxEvidenceValueBytes", len(filler))
+	}
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "adapter.go", body),
+	})
+	if !evidence.Satisfied(target, ExecutionState{}) {
+		t.Fatal("the target stayed missing though its file was read past the retained excerpt")
+	}
+}
+
+// A conclusion that names a file whose complete contents the run already
+// holds does not reopen that file: the obligation would only force a reread
+// of a window the runtime already observed (the reported main.go case).
+func TestCompletePriorReadSatisfiesNamedPathTarget(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "main.go", "package main\n\nfunc main() {}\n"),
+	})
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED",
+			"the entrypoint wires the CLI",
+			"the role of main.go in the wiring is unknown"),
+	})
+	if !evidence.Satisfied("investigation_conclusion", ExecutionState{}) {
+		t.Fatal("a conclusion naming an already-completely-read file stayed provisional")
+	}
+	if pending := evidence.PendingConclusionTargets(); len(pending) != 0 {
+		t.Fatalf("pending = %v, want no reopened path obligation", pending)
+	}
+
+	// A partial window is not the file's contents; naming it stays a real
+	// obligation because more of the file may still matter.
+	partial := NewEvidenceState()
+	partial.ObserveTurns(shape, []agent.Turn{
+		readTurnWindow("read-1", "cmd/ohgo/main.go", "package main\n", 1, 2, 100),
+	})
+	partial.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED",
+			"the entrypoint wires the CLI",
+			"the role of cmd/ohgo/main.go in the wiring is unknown"),
+	})
+	if partial.Satisfied("investigation_conclusion", ExecutionState{}) {
+		t.Fatal("a partial window read was treated as the file's complete contents")
+	}
+	if pending := partial.PendingConclusionTargets(); len(pending) == 0 {
+		t.Fatal("the partial-window path obligation did not open")
+	}
+}
+
+// A mutation after the read invalidates the prior-read credit: the
+// conclusion may be naming the post-change state, so the file must be
+// observed again.
+func TestMutationAfterReadReopensNamedPathTarget(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "main.go", "package main\n\nfunc main() {}\n"),
+	})
+	evidence.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID:   "write-1",
+		ToolName: "write",
+		Args:     map[string]any{"path": "main.go"},
+		Result: agent.Result{Text: "wrote", Mutates: true,
+			Details: map[string]any{"path": "main.go", "bytes": 5}},
+	}}}})
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED",
+			"the entrypoint wires the CLI",
+			"the role of main.go after the change is unknown"),
+	})
+	if evidence.Satisfied("investigation_conclusion", ExecutionState{}) {
+		t.Fatal("a pre-mutation read was credited against a post-mutation obligation")
+	}
+	if pending := evidence.PendingConclusionTargets(); len(pending) == 0 {
+		t.Fatal("the mutated path did not reopen as an observation obligation")
+	}
+}
+
+// A conclusion that names a path the run already read completely is not a new
+// obligation, regardless of language. The drop used to be Go-only, so a
+// TypeScript or Python conclusion forced a reread of a window the runtime held.
+func TestPreReadPathTargetIsDroppedForAnyLanguage(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurnWindow("read-1", "src/parser.ts", "export function parse() { return [] }\n", 1, 2000, 1),
+	})
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED",
+			"the entrypoint loads Markdown posts",
+			"the behavior of src/parser.ts remains unknown"),
+	})
+	for _, target := range evidence.PendingConclusionTargets() {
+		if target == "src/parser.ts" {
+			t.Fatalf("a completely read path was reopened: %v", evidence.PendingConclusionTargets())
+		}
+	}
+}
+
+// A conclusion that mentions a basename it already read completely is not a
+// new obligation. The runtime must resolve "main.go" against the file the run
+// actually inspected; otherwise the exact observed file can never satisfy the
+// target and the model is forced to conclude again.
+func TestPreReadBasenameSatisfiesConclusionTarget(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "backend/cmd/web/main.go", "package main\n\nfunc main() {}\n"),
+	})
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED",
+			"the web entrypoint wires the contexts",
+			"the composition root was verified partially via main.go wiring"),
+	})
+	if pending := evidence.PendingConclusionTargets(); len(pending) != 0 {
+		t.Fatalf("pending targets = %v, want the already-read basename resolved", pending)
+	}
+	if !evidence.Satisfied("investigation_conclusion", ExecutionState{}) {
+		t.Fatal("a conclusion naming an already-read file stayed provisional")
+	}
+}
+
+// A path target is canonicalised before it becomes an obligation. "./x.go"
+// and "x.go" are the same coordinate, so a pre-read of either satisfies both.
+func TestConclusionPathTargetIsCanonical(t *testing.T) {
+	shape := conclusionShape("Investigate the order flow and conclude SAFE, BUG, or UNRESOLVED.")
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{
+		readTurn("read-1", "backend/checkout/app/checkout.go", "package app\n"),
+	})
+	evidence.ObserveTurns(shape, []agent.Turn{
+		conclusionTurn("conclude-1", "UNRESOLVED", "checkout",
+			"the body of ./backend/checkout/app/checkout.go remains unknown"),
+	})
+	if pending := evidence.PendingConclusionTargets(); len(pending) != 0 {
+		t.Fatalf("pending targets = %v, want the canonical pre-read path", pending)
+	}
+}

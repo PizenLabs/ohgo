@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // RunVerdict is the terminal classification of a finished run, independent of
@@ -68,8 +69,8 @@ func (v RunVerdict) String() string {
 	return "UNKNOWN"
 }
 
-// ClassifyRun maps a finished run's error and evidence to one verdict and its
-// evidence reason.
+// ClassifyRun maps a finished run's error and evidence to one verdict, its
+// evidence reason, and the machine-readable claims behind a review.
 //
 // The order is load-bearing: cancellation and resource stops are decided first
 // because evaluating evidence after a stop would perform a filesystem walk the
@@ -81,10 +82,14 @@ func (v RunVerdict) String() string {
 // because a wall-clock bound is still authoritative. A caller that has already
 // normalised the deadline into context.DeadlineExceeded passes false and gets
 // identical behaviour through the error branch.
-func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVerdict, string) {
+//
+// The issues are non-empty only when the verdict is a review produced by the
+// deterministic answer audits; every other review (lifecycle and resource
+// conditions) has no claim list to carry.
+func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVerdict, string, []contract.GroundingIssue) {
 	switch {
 	case errors.Is(err, context.Canceled):
-		return RunCancelled, "interrupted"
+		return RunCancelled, "interrupted", nil
 	case errors.Is(err, context.DeadlineExceeded):
 		return budgetVerdict(input, "deadline reached")
 	case errors.Is(err, budget.ErrExhausted):
@@ -95,13 +100,13 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 		}
 		return budgetVerdict(input, reason)
 	case errors.Is(err, ErrTurnLimit):
-		return RunPaused, "turn limit reached"
+		return RunPaused, "turn limit reached", nil
 	case errors.Is(err, ErrTaskBlocked):
 		reason := strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrTaskBlocked.Error()+": "))
 		if reason == "" {
 			reason = "the runtime closed the task because no further action can make progress"
 		}
-		return RunNeedsReview, reason
+		return RunNeedsReview, reason, nil
 	case errors.Is(err, ErrCapabilityUnavailable):
 		// The control plane refused the turn before the provider was called.
 		// Nothing executed and no model output exists, so this is neither a
@@ -111,7 +116,7 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 		if reason == "" {
 			reason = "a required capability is unavailable in this runtime"
 		}
-		return RunBlocked, reason
+		return RunBlocked, reason, nil
 	case errors.Is(err, ErrContextOverflow):
 		// The task state is intact; the runtime could not construct a request
 		// that fits this model window. Report review rather than completion or
@@ -121,32 +126,32 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 		if reason == "" {
 			reason = "the context could not be reduced to fit the model window"
 		}
-		return RunNeedsReview, reason
+		return RunNeedsReview, reason, nil
 	case errors.Is(err, ErrNoModelOutput), errors.Is(err, ErrExecutionIntentWithoutTool),
 		errors.Is(err, ErrToolNormalizationFailed):
 		// These are model/protocol lifecycle failures before any requested
 		// action executed. They are non-terminal: the task identity, evidence,
 		// and authority remain valid, so the human can retry the turn.
-		return RunNeedsReview, strings.TrimPrefix(err.Error(), "agent: ")
+		return RunNeedsReview, strings.TrimPrefix(err.Error(), "agent: "), nil
 	case err != nil:
-		return RunFailed, err.Error()
+		return RunFailed, err.Error(), nil
 	}
 	if deadlineExpired {
 		return budgetVerdict(input, "deadline reached")
 	}
 	completion := EvaluateTaskCompletion(input)
 	if completion.Complete() {
-		return RunCompleted, ""
+		return RunCompleted, "", nil
 	}
-	return RunNeedsReview, completion.Reason
+	return RunNeedsReview, completion.Reason, completion.Issues
 }
 
 // budgetVerdict applies the budget-completion rule to a resource stop: already
 // complete evidence remains authoritative, and everything else stays paused
 // under the caller's reason.
-func budgetVerdict(input CompletionInput, reason string) (RunVerdict, string) {
+func budgetVerdict(input CompletionInput, reason string) (RunVerdict, string, []contract.GroundingIssue) {
 	if EvaluateBudgetCompletion(input, true).Complete() {
-		return RunCompleted, ""
+		return RunCompleted, "", nil
 	}
-	return RunPaused, reason
+	return RunPaused, reason, nil
 }

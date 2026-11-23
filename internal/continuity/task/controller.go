@@ -751,14 +751,20 @@ func (c *Controller) Complete() (Task, error) {
 	return c.commit(before, beforeAction)
 }
 
-// NeedsReview records that a turn ended without enough runtime evidence to
-// claim the objective was reached.
+// NeedsReview records that a turn ended without enough runtime evidence
+// to claim the objective was reached.
 //
-// It is deliberately distinct from PAUSED (an interruption) and FAILED (an
-// unrecoverable error): the work may be fine, but the runtime did not observe
-// the change or its verification. A later turn resumes the same task and can
-// supply the missing evidence.
-func (c *Controller) NeedsReview(reason string) (Task, error) {
+// It is deliberately distinct from PAUSED (an interruption) and FAILED
+// (an unrecoverable error): the work may be fine, but the runtime did not
+// observe the change or its verification. A later turn resumes the same task
+// and can supply the missing evidence.
+//
+// The issues are the machine-readable claims behind the reason, when the
+// review came from the deterministic answer audits. They are the durable
+// repair list: the newest review owns the list, so a lifecycle review
+// without claims replaces a stale claim list rather than stacking behind it.
+// General answer-level reasons carry no Category and stay in the flat reason.
+func (c *Controller) NeedsReview(reason string, issues ...contract.GroundingIssue) (Task, error) {
 	if err := c.ensureLoaded(); err != nil {
 		return Task{}, err
 	}
@@ -770,6 +776,7 @@ func (c *Controller) NeedsReview(reason string) (Task, error) {
 	if reviewed := strings.TrimSpace(reason); reviewed != "" {
 		c.task.ReviewReason = reviewed
 	}
+	c.task.ReviewIssues = boundReviewIssues(claimIssues(issues))
 	if c.task.Status != StatusNeedsReview {
 		if err := c.task.NeedsReview(c.now().UTC()); err != nil {
 			return c.task.Clone(), err
@@ -785,6 +792,21 @@ func (c *Controller) NeedsReview(reason string) (Task, error) {
 		Summary: c.lastAction,
 	})
 	return c.commit(before, beforeAction)
+}
+
+// claimIssues keeps only the claim-level review issues. An issue without a
+// Category is a general answer-level reason already carried by the flat
+// ReviewReason; storing it twice would make the repair list repeat the
+// prose the model already has.
+func claimIssues(issues []contract.GroundingIssue) []contract.GroundingIssue {
+	var out []contract.GroundingIssue
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.Category) == "" {
+			continue
+		}
+		out = append(out, issue)
+	}
+	return out
 }
 
 // Fail records an unrecoverable execution error.

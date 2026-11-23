@@ -94,6 +94,12 @@ type Request struct {
 	Intent planner.Intent
 	// Focus is an optional path or symbol the question is about.
 	Focus string
+	// PreferExternal is an explicit request to answer structural steps with
+	// the external structural provider where it can serve them. It widens the
+	// router's information-need policy to steps that would otherwise stay
+	// native, and it must be disclosed when it cannot be met. Zero keeps the
+	// automatic policy exactly as before.
+	PreferExternal bool
 	// Budget bounds the run.
 	Budget Budget
 }
@@ -246,7 +252,9 @@ type Status string
 
 // Statuses.
 const (
-	// StatusSufficient means the plan reached its confidence target.
+	// StatusSufficient means the provider plan reached its own confidence
+	// target. It is not task sufficiency: the control plane's required evidence
+	// facets still decide whether the task may answer.
 	StatusSufficient Status = "sufficient"
 	// StatusPartial means work stopped before the target, with explicit issues.
 	StatusPartial Status = "partial"

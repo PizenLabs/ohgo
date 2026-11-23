@@ -2039,6 +2039,29 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 	renderEntryContent(sb, entry, pal, layout, ctx)
 }
 
+// assistantDisplay selects the text an assistant block shows and the status
+// label that qualifies it.
+//
+// AssistantText is the answer contract: a withdrawn candidate moves its text
+// out of that field, so copy, persistence, and answer projections cannot see
+// it. WithdrawnText is display-only history.
+func assistantDisplay(entry Entry) (text, label string) {
+	if entry.Discarded {
+		if strings.TrimSpace(entry.WithdrawnText) == "" {
+			return "", ""
+		}
+		reason := strings.TrimSpace(entry.WithdrawnReason)
+		if reason == "" {
+			reason = "the runtime did not accept this draft"
+		}
+		return entry.WithdrawnText, "draft withdrawn · " + reason
+	}
+	if entry.Provisional {
+		return entry.AssistantText, "draft · answer review pending"
+	}
+	return entry.AssistantText, ""
+}
+
 func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, ctx entryRenderContext) {
 	writeGap := func() {
 		if ctx.leadingGap {
@@ -2054,14 +2077,21 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 	case EntryAssistant:
 		// A whitespace-only block renders no rows, so it must not claim the
 		// gap that follows a tool run: the gap belongs to visible content.
-		if strings.TrimSpace(entry.AssistantText) == "" {
+		text, label := assistantDisplay(entry)
+		if strings.TrimSpace(text) == "" {
 			return
 		}
 		writeGap()
+		if label != "" {
+			// A streamed candidate is not an answer yet, and a withdrawn
+			// candidate is not the one the runtime published. The label is
+			// presentation only: it never enters the block's copyable text.
+			sb.WriteString(pal.Warning.Render(label) + "\n")
+		}
 		// The markdown layer owns wrapping: it measures plain cells first
 		// and styles after, so one width calculation governs and ANSI
 		// never inflates the budget. Never re-wrap styled output here.
-		rendered := RenderMarkdownWrapped(entry.AssistantText, pal, textWidth(layout))
+		rendered := RenderMarkdownWrapped(text, pal, textWidth(layout))
 		if !entryFading(entry, ctx.now) {
 			if age, ok := assistantFinalLineAge(entry, ctx.now); ok && age < fadeFinalAt {
 				rendered = fadeRenderedTail(rendered, age, ctx.theme)

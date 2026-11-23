@@ -484,7 +484,7 @@ func messageStrings(messages []ai.Message) []string {
 // TestClassifyRunTreatsContextOverflowAsReview proves a truthful overflow is
 // not completion and not a terminal failure: the task survives with review.
 func TestClassifyRunTreatsContextOverflowAsReview(t *testing.T) {
-	verdict, reason := ClassifyRun(ErrContextOverflow, CompletionInput{}, false)
+	verdict, reason, _ := ClassifyRun(ErrContextOverflow, CompletionInput{}, false)
 	if verdict != RunNeedsReview {
 		t.Fatalf("verdict = %v, want RunNeedsReview", verdict)
 	}

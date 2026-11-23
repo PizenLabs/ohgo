@@ -616,9 +616,16 @@ successful version update, silently removing ten adapters.
 A non-development multi-language build refuses the install and explains the
 choice; `--check` remains safe.
 
+**Superseded 2026-11-22:** the release now publishes a multi-language artifact
+for every supported platform. `ohgo update` selects the artifact matching the
+running binary (`Target.MultiLanguage`), and a missing multi-language asset
+fails the update rather than downgrading to portable. The refusal was removed.
+
 ### Regression
 
-`TestPortableUpdateRefusalProtectsMultiLanguageBuilds`.
+`TestPortableUpdateRefusalProtectsMultiLanguageBuilds` (removed with the
+refusal); replaced by `TestArtifactForSelectsTheMatchingVariant` and
+`TestServiceCarriesTheConfiguredVariant`.
 
 ---
 

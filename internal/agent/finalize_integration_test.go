@@ -12,6 +12,8 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
@@ -98,8 +100,8 @@ func TestPrematureInformationalAnswerIsCorrectedBeforeCommit(t *testing.T) {
 	if len(turns) != 3 {
 		t.Fatalf("turns = %d, want 3", len(turns))
 	}
-	if !turns[0].Suppressed {
-		t.Fatal("the premature answer was not suppressed")
+	if !turns[0].Superseded || turns[0].Suppressed {
+		t.Fatal("the premature answer was not superseded by the correction")
 	}
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "controlled runtime") {
 		t.Fatalf("final answer = %q, want the evidence-backed answer", got)
@@ -181,5 +183,138 @@ func TestCompletionDependsOnEvidenceNotToolCount(t *testing.T) {
 					verdict.State, verdict.Reason, test.want, result.report.EvidenceReview())
 			}
 		})
+	}
+}
+
+// A source-matched repository grep is implementation evidence. A detailed
+// answer that names the technology the grep observed must pass the
+// pre-publication review without spending a correction, even though the term
+// also appears in the README. The evidence model used to classify the search
+// by its root, so the runtime demanded another survey it could never satisfy.
+func TestSourceGrepPreventsAProvenanceCorrection(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"go.mod":    "module example.com/gocommerce\n\ngo 1.24\n",
+		"README.md": "# go-ecommerce\nGoCommerce is a Go + HTMX e-commerce application.\n",
+		"main.go":   "package main\n\n// htmx request handler\nfunc main() {}\n",
+		"app.go":    "package main\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	prompt := "check this project and analyze what this project is about?"
+	intent := workspace.BuildIntentContract(prompt)
+	facts := cognition.ProbeFacts(root)
+	shape := cognition.BuildShape(intent, cognition.ShapeParams{Authority: "ask", Facts: facts})
+	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
+
+	const answer = "GoCommerce is a Go + HTMX e-commerce application. The source handles htmx requests."
+	script := []ai.AssistantMessage{
+		{
+			Content: []ai.ContentBlock{
+				ai.ToolCall{ID: "structure-1", Name: "structure", Arguments: map[string]any{"view": "overview"}},
+				ai.ToolCall{ID: "read-readme", Name: "read", Arguments: map[string]any{"path": "README.md"}},
+				ai.ToolCall{ID: "read-main", Name: "read", Arguments: map[string]any{"path": "main.go"}},
+				ai.ToolCall{ID: "grep-1", Name: "grep", Arguments: map[string]any{"pattern": "HTMX|htmx"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}},
+	}
+	var requests atomic.Int64
+	var lastReport agent.ProjectionReport
+	haveReport := false
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			index := int(requests.Add(1)) - 1
+			if index >= len(script) {
+				t.Fatalf("provider request %d exceeded the script; the review forced a correction", index+1)
+			}
+			return ai.NewCompletedStream(script[index]), nil
+		},
+		Tools: []agent.Tool{
+			evidenceReadTool{},
+			tools.NewGrepTool(root),
+			sourceOverviewTool{},
+		},
+		Project:                 projector.Project,
+		Authorize:               allowRead{},
+		MaxTurns:                8,
+		CompletionReviewRequest: "Runtime completion review: {{reason}}. Acquire the missing evidence.",
+		OnProjection: func(report agent.ProjectionReport) {
+			lastReport = report
+			haveReport = true
+		},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	provenance := func() agent.EvidenceProvenance {
+		if haveReport {
+			return lastReport.Provenance
+		}
+		return agent.EvidenceProvenance{}
+	}
+	loop.SetInformationalReviews(intent, provenance)
+	loop.SetEvidenceGap(func() string {
+		if haveReport {
+			return lastReport.EvidenceReview()
+		}
+		return ""
+	})
+	loop.SetAnswerFinalizer(func(turns []agent.Turn, answer, gap string) agent.FinalizedAnswer {
+		return agent.FinalizeAnswer(intent, turns, answer, provenance(), gap)
+	})
+
+	turns, err := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: prompt}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("provider requests = %d, want the observation and the answer (2)", requests.Load())
+	}
+	if len(turns) != 2 {
+		t.Fatalf("turns = %d, want the observation and the answer", len(turns))
+	}
+	if turns[0].Suppressed || turns[1].Suppressed {
+		t.Fatalf("turns = %+v, want no rejected candidate", turns)
+	}
+	if got := turns[len(turns)-1].Assistant.Text(); got != answer {
+		t.Fatalf("final answer was rewritten:\n%s", got)
+	}
+	audit := loop.LastResponseAudit()
+	if audit.State != agent.ResponseCommitted {
+		t.Fatalf("response state = %s, want COMMITTED", audit.State)
+	}
+	if audit.Answer.UnsupportedClaims != 0 {
+		t.Fatalf("committed answer audit = %+v", audit.Answer)
+	}
+	if audit.Rejected != 0 {
+		t.Fatalf("rejected candidates = %d, want none", audit.Rejected)
+	}
+}
+
+// sourceOverviewTool reports a measured three-file source tree. It is the
+// producer accounting the survey requirement reads, not a content observation.
+type sourceOverviewTool struct{}
+
+func (sourceOverviewTool) Name() string        { return "structure" }
+func (sourceOverviewTool) Description() string { return "structural overview" }
+func (sourceOverviewTool) Parameters() *jsonschema.Schema {
+	return jsonschema.MustCompile([]byte(`{"type":"object"}`))
+}
+func (sourceOverviewTool) Approval() agent.Approval      { return agent.Approval{Tier: agent.TierRead} }
+func (sourceOverviewTool) Exclusive(map[string]any) bool { return false }
+func (sourceOverviewTool) Execute(agent.Context, map[string]any) agent.Result {
+	return agent.Result{
+		Text: "view: overview\ninventory: COMPLETE\nstructural: COMPLETE\nsource_files: 3\n",
+		Details: map[string]any{
+			"view": "overview", "source_files": 3, "files": 3,
+			"complete": true, "inventory_complete": true,
+			"scope_complete": true, "structural_complete": true,
+		},
 	}
 }

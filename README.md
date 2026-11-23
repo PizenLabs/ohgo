@@ -55,12 +55,18 @@ it is done. ohgo is built around the opposite contract.
 - **Budgets are finite.** Turns, model calls, tool calls, delegated children,
   background jobs, external I/O, and wall-clock time are all bounded.
 - **Completion is evidence-based.** A run ends with a verdict derived from
-  observed results, never from the model's claim of success.
+  observed results, never from the model's claim of success. Relationship
+  questions declare required evidence facets up front (target, structural
+  edge, interface boundary, implementation, and/or flow); lexical co-occurrence
+  and a provider's confidence target cannot satisfy them.
 - **The transport is a seam.** The agent loop never touches HTTP, so every
   layer can be tested against a real request body instead of a mock.
-- **The default binary is static.** The portable release is pure Go with zero
-  cgo. The optional multi-language build compiles pinned tree-sitter grammars
-  and therefore requires cgo; it is not the static release artifact.
+- **The default build can see non-Go source.** `make build` uses the host C
+  toolchain to compile the pinned tree-sitter grammars, so TypeScript, TSX,
+  JavaScript, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++ are structurally
+  observable. A `CGO_ENABLED=0` portable build remains available for
+  environments without a toolchain; it reports those sources as unsupported
+  rather than silently treating them as absent.
 
 ## Features
 
@@ -75,7 +81,7 @@ it is done. ohgo is built around the opposite contract.
 - **Repository intelligence** — `symbols`, `graph`, `refs`, and `structure`
   share one incremental structural snapshot. Go uses the native `go/ast`
   backend; cgo builds add pinned tree-sitter adapters for TypeScript/TSX,
-  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, and C++. A broad project
+  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++. A broad project
   question stays metadata-first, while targeted/impact queries parse only the
   pending supported files they need. Reference and call queries report
   `ambiguous`, `truncated`, `unsupported`, and `unknown` explicitly instead of
@@ -113,8 +119,11 @@ curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh | sh
 
 The script resolves the latest stable release, selects the tarball for your OS
 and architecture, and verifies it against the published `sha256sums.txt`
-before installing. It installs to `$PREFIX/bin` (default `$HOME/.local/bin`,
-already on a typical PATH) and runs `ohgo version` as a smoke test.
+before installing. It prefers the multi-language artifact, so a fresh install
+can parse TypeScript, TSX, JavaScript, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++;
+set `OHGO_VARIANT=portable` to install the Go-only static build instead. It
+installs to `$PREFIX/bin` (default `$HOME/.local/bin`, already on a typical
+PATH) and runs `ohgo version` as a smoke test.
 
 Pin a release tag, or choose another prefix:
 
@@ -140,18 +149,18 @@ curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh \
 ```sh
 git clone https://github.com/PizenLabs/ohgo.git
 cd ohgo
-make build          # CGO_ENABLED=0, static binary at ./ohgo
+make build          # host toolchain; includes the tree-sitter adapters
 ./ohgo --help
 ```
 
-Requires **Go 1.27+**. `CGO_ENABLED=0 go build ./...` succeeds without a C
-toolchain and keeps the native Go structural backend; the other language
-adapters are then reported as unsupported. Build with `CGO_ENABLED=1` (the
-default on a machine with a C compiler) to compile the pinned tree-sitter
-grammars into the binary. `make build-multilang` builds that variant; the
-portable static release target stays `CGO_ENABLED=0` and therefore ships the
-native Go structural backend only. No grammar is downloaded or loaded at
-runtime.
+Requires **Go 1.27+** and, for the default build, a C toolchain. The pinned
+tree-sitter grammars compile into the binary; no grammar is downloaded or
+loaded at runtime. `make build-portable` (or `CGO_ENABLED=0 go build ./...`)
+produces the static Go-only variant when no C toolchain is available; it keeps
+the native Go structural backend and reports every other source extension as
+`UNSUPPORTED` instead of pretending the project has no declarations.
+`make build-multilang` is the explicit cgo build and fails loudly without a C
+toolchain.
 
 ### Install into your user prefix
 
@@ -160,7 +169,9 @@ make install                    # ~/.local/bin, first on a typical PATH
 sudo make install PREFIX=/usr/local
 ```
 
-`DESTDIR` is supported for packagers.
+`make install` installs the host-toolchain build, so a machine with a C
+compiler gets the tree-sitter adapters. `make install-portable` installs the
+static Go-only variant. `DESTDIR` is supported for packagers.
 
 ### Go install
 
@@ -212,11 +223,13 @@ amd64/arm64 are the published matrix; everything else reports unsupported. The
 updater never invokes `sudo`, never edits shell configuration, and is not an
 agent tool: only a human running `ohgo update` can install.
 
-The published tarballs are portable (`CGO_ENABLED=0`) builds. `ohgo update`
-refuses to replace a multi-language installation with a portable binary,
-because doing so would silently remove the non-Go adapters the user built. It
-reports the downgrade and leaves the installed binary untouched; update a
-multi-language build from source with `make build-multilang`.
+The release publishes two artifact sets for every supported platform: the
+portable (`CGO_ENABLED=0`) build and the multi-language build. `ohgo update`
+selects the artifact that matches the running binary, so a multi-language
+installation stays multi-language and a portable installation stays portable.
+A release that lacks the matching multi-language artifact fails the update
+instead of silently replacing it with the portable binary and removing every
+non-Go adapter.
 
 Verification currently rests on TLS plus the publisher's SHA-256 manifest.
 Release signing is not part of the current release workflow; the verifier seam
@@ -454,14 +467,18 @@ GitHub Copilot's OAuth token exchange, Bedrock SigV4/IAM credentials, and
 streamable-HTTP request/response core (standalone GET streams, resumability,
 and server-to-client requests are not implemented).
 
-Semantic assistance is bounded and optional. When `gopls` is installed,
-`investigate` uses it for Go declarations, references, and call hierarchy at
-the module the request names; the server is started lazily and closed after the
-step. DAP runtime observation exists only for an already-authorized stopped
-debug session and is not exposed as a start/attach tool. No other language has
-a language server in this build: TypeScript, JavaScript, Java, C#, Rust,
-Kotlin, Ruby, C, and C++ have syntax-level Tree-sitter facts only, and the
-portable build has no adapter for them at all.
+Semantic assistance is bounded and optional. `ohgo doctor` reports the language
+servers discovered on `PATH`; `investigate` selects the server matching the
+request's language (or the workspace's dominant supported language) and starts
+only that one, lazily, closing it after the step. Discovered servers include
+`gopls` (Go), `typescript-language-server` (TypeScript/TSX/JavaScript/JSX),
+`pyright`/`pylsp` (Python), `rust-analyzer`, `jdtls`, `clangd`, `ruby-lsp`,
+`csharp-ls`, and `kotlin-language-server`. A missing server is reported as
+semantic `UNAVAILABLE`; AST evidence from the same workspace remains available.
+DAP runtime observation exists only for an already-authorized stopped debug
+session and is not exposed as a start/attach tool. The portable build has no
+tree-sitter adapters for non-Go languages, and reports them as unsupported
+rather than absent.
 
 Credentials resolve in order: explicit request key, `~/.ohgo/credentials.json`
 (0600, written only when you save), environment, then parsed shell startup

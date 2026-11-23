@@ -92,6 +92,20 @@ func collectTurnFacts(turns []agent.Turn) turnFacts {
 				if path := footerPathArg(outcome.Args); path != "" {
 					facts.read = appendUnique(facts.read, path)
 				}
+			case "check":
+				// Discovery is not a check. A successful run of the
+				// repository's own command plan is.
+				if strings.EqualFold(footerDetailString(outcome.Result.Details, "mode"), "run") &&
+					strings.EqualFold(footerDetailString(outcome.Result.Details, "status"), "pass") {
+					facts.checks++
+				}
+			case "verify":
+				// The structured verifier sets Verifies only when the plan
+				// reached readiness, its checks passed while the service was
+				// alive, and cleanup completed.
+				if outcome.Result.Verifies {
+					facts.checks++
+				}
 			}
 		}
 	}
@@ -146,6 +160,15 @@ func verifiedFooter(turns []agent.Turn, authority string) *TurnFooter {
 		parts = append(parts, "read-only analysis")
 	}
 
+	// "Verified" means the turn's claims passed the runtime's checks; it does
+	// not mean the run understood the whole repository. When the structural
+	// snapshot was partial, the footer says so, from the same summary the answer
+	// review uses. The note is omitted when no structural observation exists:
+	// an unobserved repository is unknown, not partial.
+	if coverage := agent.ObserveStructuralCoverage(turns); coverage.Seen && !coverage.Complete() {
+		parts = append(parts, structuralCoverageLabel(coverage))
+	}
+
 	switch {
 	case authority == workspace.Ask.String():
 		parts = append(parts, "provenance clean")
@@ -156,6 +179,16 @@ func verifiedFooter(turns []agent.Turn, authority string) *TurnFooter {
 	}
 
 	return &TurnFooter{Kind: FooterVerified, Detail: strings.Join(parts, " · ")}
+}
+
+// structuralCoverageLabel renders the footer's bounded coverage note. The
+// counts are the producer's source-file accounting; a snapshot that reported
+// neither a count nor a truncation is labeled partial rather than completed.
+func structuralCoverageLabel(coverage agent.StructuralCoverage) string {
+	if total := coverage.Parsed + coverage.Pending + coverage.Failed; total > 0 {
+		return fmt.Sprintf("structural coverage %d/%d parsed", coverage.Parsed, total)
+	}
+	return "structural coverage partial"
 }
 
 // isCheckCommand recognizes a command whose success is verification evidence.
@@ -194,6 +227,21 @@ func footerPathArg(args map[string]any) string {
 func footerStringArg(args map[string]any, key string) string {
 	value, _ := args[key].(string)
 	return strings.TrimSpace(value)
+}
+
+// footerDetailString returns one trimmed detail field. Producers use string
+// aliases for status and mode, so the conversion goes through fmt rather than
+// a string assertion that would silently miss them.
+func footerDetailString(details any, key string) string {
+	fields, ok := details.(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, ok := fields[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // appendUnique appends value when it is not already present.

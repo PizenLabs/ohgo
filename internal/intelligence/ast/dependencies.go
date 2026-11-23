@@ -416,6 +416,12 @@ func locallyShapedImport(language Language, spec string, js jsPathConfig) bool {
 		return js.localSpecifier(spec)
 	case LanguageRuby:
 		return strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/")
+	case LanguagePython:
+		// A relative import is unambiguously repository-local. An absolute
+		// Python import is indistinguishable from a stdlib/third-party module
+		// without executing the interpreter's path resolution, so it is not
+		// treated as a structural gap.
+		return strings.HasPrefix(spec, ".")
 	case LanguageRust:
 		return strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") ||
 			strings.HasPrefix(spec, "crate::") || strings.HasPrefix(spec, "super::") ||

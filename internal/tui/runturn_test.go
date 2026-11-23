@@ -55,12 +55,16 @@ func TestRunTurnPublishesAssistantText(t *testing.T) {
 	for !found {
 		select {
 		case event := <-p.events:
-			if delta, ok := event.(AssistantDelta); ok && delta.Text == "hello golang" {
+			// A completed (non-token) transport publishes its exact text as a
+			// reconcile, the same event a token stream uses to replace its
+			// provisional preview.
+			if reconcile, ok := event.(AssistantReconcile); ok &&
+				!reconcile.Discard && reconcile.Text == "hello golang" {
 				found = true
 			}
 			p.state.Apply(event)
 		case <-timeout:
-			t.Fatal("no AssistantDelta published: the UI would look idle after a success")
+			t.Fatal("no answer published: the UI would look idle after a success")
 		}
 	}
 	if got := p.state.AssistantText(); got != "hello golang" {
@@ -181,6 +185,11 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 			}
 			message := script[index]
 			index++
+			if len(message.ToolCalls()) == 0 {
+				// Live providers stream answer text; the provisional preview
+				// is what the user sees before the review decides.
+				return ai.NewTextStream(message.Text()), nil
+			}
 			return ai.NewCompletedStream(message), nil
 		},
 		Tools:                   []agent.Tool{read},
@@ -197,13 +206,20 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 		p.runTurn("analyze this project and report what it is")
 	}()
 
-	var published strings.Builder
+	published := ""
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
 		case event := <-p.events:
 			if delta, ok := event.(AssistantDelta); ok {
-				published.WriteString(delta.Text)
+				published += delta.Text
+			}
+			if reconcile, ok := event.(AssistantReconcile); ok {
+				if reconcile.Discard {
+					published = ""
+				} else {
+					published = reconcile.Text
+				}
 			}
 			p.state.Apply(event)
 		case <-done:
@@ -211,7 +227,14 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 				select {
 				case event := <-p.events:
 					if delta, ok := event.(AssistantDelta); ok {
-						published.WriteString(delta.Text)
+						published += delta.Text
+					}
+					if reconcile, ok := event.(AssistantReconcile); ok {
+						if reconcile.Discard {
+							published = ""
+						} else {
+							published = reconcile.Text
+						}
 					}
 					p.state.Apply(event)
 					continue
@@ -219,7 +242,7 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 				}
 				break
 			}
-			got := published.String()
+			got := published
 			if strings.Contains(got, "no database") {
 				t.Fatalf("a rejected draft reached the transcript: %q", got)
 			}
@@ -235,6 +258,22 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 			}
 			if read.calls != 1 {
 				t.Fatalf("correction read calls = %d, want 1", read.calls)
+			}
+			if got := p.state.AssistantText(); got != "This project is a Go coding agent." {
+				t.Fatalf("answer projection = %q, want only the committed answer", got)
+			}
+			var rendered strings.Builder
+			for _, entry := range p.state.Entries {
+				if entry.Kind == EntryAssistant && entry.Discarded && strings.TrimSpace(entry.WithdrawnText) != "" {
+					t.Fatalf("a correction-bound candidate leaked as a visible draft: %q", entry.WithdrawnText)
+				}
+				renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
+			}
+			if strings.Contains(rendered.String(), "draft withdrawn") {
+				t.Fatalf("the review loop leaked a withdrawn-draft block:\n%s", rendered.String())
+			}
+			if !strings.Contains(rendered.String(), "This project is a Go coding agent.") {
+				t.Fatalf("the committed answer is missing from the transcript:\n%s", rendered.String())
 			}
 			return
 		case <-timeout:
@@ -299,5 +338,71 @@ func TestRunTurnPersistsExactlyOneAssistantAnswer(t *testing.T) {
 	}
 	if answers[0] != "This project is a Go coding agent." {
 		t.Fatalf("persisted answer = %q, want the committed answer", answers[0])
+	}
+}
+
+// A candidate the publication audit refuses must not survive as the answer on
+// screen. The provisional preview is withdrawn; the terminal footer carries
+// the review boundary instead of a competing answer.
+func TestRunTurnDoesNotPublishUnapprovedAnswer(t *testing.T) {
+	var requests int
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			requests++
+			return ai.NewTextStream("There is no database anywhere in the repository."), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	done := make(chan struct{})
+	go func() { defer close(done); p.runTurn("analyze this project") }()
+
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-p.events:
+			p.state.Apply(event)
+		case <-done:
+			for {
+				select {
+				case event := <-p.events:
+					p.state.Apply(event)
+					continue
+				default:
+				}
+				break
+			}
+			if got := p.state.AssistantText(); got != "" {
+				t.Fatalf("an unapproved answer reached the transcript: %q", got)
+			}
+			withdrawn := ""
+			for _, entry := range p.state.Entries {
+				if entry.Kind == EntryAssistant && entry.Discarded {
+					withdrawn = entry.WithdrawnText
+				}
+			}
+			if !strings.Contains(withdrawn, "no database") {
+				t.Fatalf("unapproved candidate vanished without a trace: %q", withdrawn)
+			}
+			var rendered strings.Builder
+			for _, entry := range p.state.Entries {
+				if entry.Kind == EntryAssistant && entry.Discarded {
+					renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
+				}
+			}
+			if !strings.Contains(rendered.String(), "draft withdrawn") {
+				t.Fatalf("unapproved candidate has no withdrawn label:\n%s", rendered.String())
+			}
+			if audit := loop.LastResponseAudit(); audit.State != agent.ResponseReview {
+				t.Fatalf("response state = %s after %d request(s), want REVIEW", audit.State, requests)
+			}
+			return
+		case <-timeout:
+			t.Fatal("runTurn hung")
+		}
 	}
 }

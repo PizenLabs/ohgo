@@ -54,24 +54,32 @@ func (r *StructuralRouter) Observe(ctx context.Context, req Request, step planne
 
 	// Native first. The task contract gives native structural analysis
 	// precedence and makes the external provider an escalation for a specific
-	// evidence gap, not a replacement for every target-shaped question.
+	// evidence gap, not a replacement for every target-shaped question. An
+	// explicit external preference is the one exception: honoring it outranks
+	// the cheaper native answer.
+	external, externalDisclosure := r.externalFor(ctx, req, step)
 	var native Observation
 	haveNative := r.Native != nil
 	var nativeErr error
 	if haveNative {
 		native, nativeErr = r.Native.Observe(ctx, req, step, meter)
 		if nativeErr == nil && native.Sufficient &&
-			native.Outcome != OutcomeStale && native.Outcome != OutcomeFailed {
+			native.Outcome != OutcomeStale && native.Outcome != OutcomeFailed &&
+			(external == nil || !req.PreferExternal) {
 			// A sufficient answer can still carry a global coverage limit
 			// (unsupported SQL or templates). That limit does not turn a
 			// complete focus answer into an evidence gap that justifies an
-			// external request.
+			// external request. A request that explicitly asked for the
+			// external provider skips this shortcut: the preference must be
+			// honored, not silently downgraded to a sufficient native answer.
 			native.Source = "native"
+			if externalDisclosure != "" {
+				native.Issues = append(native.Issues, externalDisclosure)
+			}
 			return native, nil
 		}
 	}
 
-	external := r.externalFor(ctx, req, step)
 	if external == nil {
 		if !haveNative {
 			return Observation{
@@ -83,6 +91,9 @@ func (r *StructuralRouter) Observe(ctx context.Context, req Request, step planne
 			return Observation{}, nativeErr
 		}
 		native.Source = "native"
+		if externalDisclosure != "" {
+			native.Issues = append(native.Issues, externalDisclosure)
+		}
 		return native, nil
 	}
 
@@ -133,9 +144,16 @@ func (r *StructuralRouter) Observe(ctx context.Context, req Request, step planne
 	// The external provider being absent or not indexed is a configuration
 	// state, not a limitation of the native answer. Qualifying every native
 	// result with it would make an optional capability look like a failure.
+	// A request that explicitly asked for the external provider is the
+	// exception: it is owed the explanation, not silence.
 	if externalErr == nil &&
 		(externalObservation.Outcome == OutcomeUnavailable || externalObservation.Outcome == OutcomeNotIndexed) {
 		native.Source = "native"
+		if req.PreferExternal {
+			native.Issues = append(native.Issues,
+				"requested external structural provider reported "+string(externalObservation.Outcome)+
+					"; native structural analysis served this step")
+		}
 		return native, nil
 	}
 
@@ -212,18 +230,32 @@ func mergeStructural(native, external Observation) Observation {
 }
 
 // externalFor returns the external provider when this step's information need
-// is better served by it, and it can actually run.
-func (r *StructuralRouter) externalFor(ctx context.Context, req Request, step planner.Step) Provider {
+// is better served by it, and it can actually run. The second return value is
+// the disclosure owed when an explicit external preference cannot be met: it is
+// non-empty only when the request asked for the external provider and none was
+// returned, so an auto request stays exactly as quiet as before.
+func (r *StructuralRouter) externalFor(ctx context.Context, req Request, step planner.Step) (Provider, string) {
 	if r.External == nil {
-		return nil
+		if req.PreferExternal {
+			return nil, "requested external structural provider is not configured; native structural analysis served this step"
+		}
+		return nil, ""
 	}
 	if !prefersExternal(req, step) {
-		return nil
+		if req.PreferExternal {
+			// Only native-only orientation steps reach here under an explicit
+			// preference; every other strategy is widened by prefersExternal.
+			return nil, "requested external structural provider was not used: this orientation step is native-only by design; native structural analysis served it"
+		}
+		return nil, ""
 	}
 	if !r.External.Available(ctx) {
-		return nil
+		if req.PreferExternal {
+			return nil, "requested external structural provider is unavailable; native structural analysis served this step"
+		}
+		return nil, ""
 	}
-	return r.External
+	return r.External, ""
 }
 
 // prefersExternal is the information-need policy.
@@ -241,6 +273,11 @@ func (r *StructuralRouter) externalFor(ctx context.Context, req Request, step pl
 func prefersExternal(req Request, step planner.Step) bool {
 	if step.Strategy == "filesystem-hierarchy" {
 		return false
+	}
+	if req.PreferExternal {
+		// An explicit request widens the policy to every step the external
+		// provider can serve. Orientation steps stay native-only by design.
+		return true
 	}
 	switch req.Intent {
 	case planner.IntentProject:

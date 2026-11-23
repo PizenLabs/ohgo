@@ -25,7 +25,7 @@ language uses a pinned tree-sitter adapter. There is no second parser, index,
 daemon, graph database, or evidence path.
 
 - `symbols` returns exact declaration coordinates across Go, TypeScript/TSX,
-  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, and C++. A language filter is
+  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, Python, C, and C++. A language filter is
   a query convenience; the per-file language and native kind stay explicit.
 - `graph` remains the Go package/import graph. It reports the snapshot's
   language coverage and points a non-Go selector at `structure`/`refs` instead
@@ -42,8 +42,9 @@ daemon, graph database, or evidence path.
   explicit relations, and an impact composition of references, callers,
   importers, and tests. Its `overview` and `languages` views are metadata-first;
   targeted/impact views parse the pending supported files on demand. Semantic
-  activation is reserved and fails explicitly because no semantic resolver is
-  configured. Every view's header states four independent dimensions —
+  activation is an optional provider: the discovered language server for the
+  request's language is started lazily, and a missing server is reported as
+  `UNAVAILABLE` rather than as an absent declaration. Every view's header states four independent dimensions —
   `scope` (path inclusion), `inventory` (file observation), `structural`
   (parsed coverage) and `source_access` — because they fail independently: a
   build without an adapter for the project's language reports
@@ -668,9 +669,15 @@ user's request before execution and the evidence the runtime observed.
   non-empty visible assistant text in the final turn, and that text must pass
   the claim/evidence audit before publication. The audit withholds a rejected
   sentence and publishes a bounded limitation instead; a draft is never the
-  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A request
-  that explicitly required external knowledge also
-  needs a successful external observation; a local answer does not satisfy it.
+  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A streamed
+  candidate is labelled provisional until the response transaction commits it.
+  A candidate superseded by a bounded correction is internal repair context:
+  it is removed from the answer projection and never becomes a transcript
+  artifact. Only a terminal review refusal may remain as one labelled
+  withdrawn draft, so the final answer cannot vanish without a trace while the
+  review loop stays out of the conversation. Committed text is never
+  withdrawn. A request that explicitly required external knowledge also needs
+  a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from
   observed implementation facts: a term that appears only in README/docs, never
   in a source or structural observation, must be attributed ("the README
@@ -782,8 +789,17 @@ the model said. Two properties keep the loop honest and small:
   project", "the codebase", "the system", including a modified form such as
   "this Go e-commerce project") combined with an
   understanding/overview/architecture concept declares a `repository_survey`
-  need: at least two content observations or one content observation plus
-  structure. A named coordinate, a specific artifact ("this project's license",
+  need. A project with source code needs the entry point plus at least one
+  implementation file it leads to: two implementation observations are the
+  minimum relationship pair, and one read plus a structural inventory is a file
+  count rather than a model of the code. A repository whose structural snapshot
+  reports exactly one source file is fully observed by reading it. A project
+  with no source code instead needs two content observations, because the
+  answer describes documentation rather than implementation. The rule is not a
+  depth target: after the entry pair, the model decides which relationships are
+  material, and a structural query is evidence for those relationships rather
+  than a substitute for the source read. A named
+  coordinate, a specific artifact ("this project's license",
   the test suite, one file), or a named repository concept ("the checkout
   flow") stays targeted even when the sentence contains a broad verb. A
   documentation path introduced by a provenance phrase ("facts documented by
@@ -793,9 +809,7 @@ the model said. Two properties keep the loop honest and small:
   classification is deterministic and derived from the objective and the
   contract's targets and concept entities, so unusual wording does not fall
   back to the single-observation policy and narrow questions are not forced
-  into a repository-wide survey. A repository that has source code also needs
-  at least one implementation observation; two documentation artifacts describe
-  what the project says about itself, not what its implementation does.
+  into a repository-wide survey.
 - **A path-scoped mutation already has its coordinate.** When a mutation names
   a concrete path, the path is the edit boundary; completion re-resolves every
   named symbol after the change, so the run does not also demand a separate
@@ -880,26 +894,40 @@ the model said. Two properties keep the loop honest and small:
   proposals cannot consume turns but a valid correction is never mistaken for a
   repeated outage.
 - **An answer correction reopens the permitted surface.** When the answer-level
-  review rejects a candidate answer, the next request may gather the evidence
-  the review named. The loop reopens the surface for that turn
-  (`ProjectionRequest.Correcting`; the constructed set when no projector is
-  installed), and the projection reports the same surface: the answer-boundary
-  closure is removed, while mutation authority,
-  scope, language, external, and budget exclusions still apply. The request is
-  not answer-eligible, so a call during it is evidence gathering rather than
+  review rejects a candidate answer, the next requests may gather the evidence
+  the review named. The loop reopens the surface for the whole correction
+  window (`ProjectionRequest.Correcting`; the constructed set when no projector
+  is installed), and the projection reports the same surface: the
+  answer-boundary closure is removed, while mutation authority, scope,
+  language, external, and budget exclusions still apply. The request is not
+  answer-eligible, so a call during it is evidence gathering rather than
   continuation after a finished answer. Without this synchronisation the model
   reads a stale "no tool is available" verdict next to a live tool block and
-  spends the correction turn reconciling the contradiction.
+  spends the correction turn reconciling the contradiction. The claim-level
+  repair directive is re-appended to every request in the window: the window
+  can span several model turns, and a later turn that no longer sees the named
+  claims follows an unrelated state-block frontier instead.
+  When the allowance is spent (`ProjectionRequest.CorrectionBudget` is zero),
+  the projection closes the surface again and states that the repair window is
+  closed, so the next visible text is the candidate answer rather than a call
+  the loop would refuse. The allowance is enforced, not narrated: the runtime
+  block names the closed window but never the remaining call count, because a
+  model told the counter reasons about the control plane instead of the
+  evidence. A correction also withholds the generic evidence
+  frontier: the review's named claims are the actionable list, and an unrelated
+  component list spends a bounded repair on work the answer audit did not
+  request.
 - **A correction is proportional to its rejected claims.** The answer audit
   projects each repairable issue into the shared `GroundingIssue` contract
   (claim, location, category, required evidence, reference, permitted action).
   The loop's `AnswerRepairs` planner is a projection of the same audit, never a
   second check, and `ClaimRepairRequest` renders at most
-  `MaxRepairInstructions` claims with a tool-call allowance. The correction
-  keeps the initial conversation and evidence; the directive explicitly forbids
-  re-reading what is already present. A reused observation is answered from the
-  loop's replay cache and does not consume the correction allowance.
-  `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 3) is enforced
+  `MaxRepairInstructions` claims. The correction keeps the initial conversation
+  and evidence; the directive asks first for the missing observation and
+  forbids only a repeat whose result already contains the required evidence. A
+  reused observation is answered from the loop's replay cache and does not
+  consume the correction allowance.
+  `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 4) is enforced
   before tool execution and survives concurrent batches; calls beyond it fail
   closed with `ToolFailureCorrectionBudget` and the model must answer with the
   evidence it has. The pre-answer review includes the documentation-only
@@ -1725,8 +1753,10 @@ CapabilityRequest → admission → root budget → bounded execution
   interface, so a real BPE encoder drops in without touching call sites.
 
 Run `make bench` for the current numbers; `make check` for the full gate
-(build + vet + gofmt + tests). Releases are `make release` (four static
-tarballs: linux/darwin × amd64/arm64, `CGO_ENABLED=0`) installed via
-`install.sh` or `make install` (`~/.local/bin` by default). The complete
-versioned-document and upgrade-verification checklist is
+(build + vet + gofmt + tests). Releases publish portable static tarballs
+(`CGO_ENABLED=0`, Go adapters only) and multi-language tarballs (native cgo
+build, all tree-sitter adapters) for linux/darwin × amd64/arm64, installed via
+`install.sh` or `make install` (`~/.local/bin` by default); `install.sh`
+prefers the multi-language artifact and `ohgo update` keeps the running
+variant. The complete versioned-document and upgrade-verification checklist is
 [`docs/RELEASING.md`](../RELEASING.md).

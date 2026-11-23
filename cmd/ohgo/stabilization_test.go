@@ -25,7 +25,7 @@ func TestDoctorReportsAllChecks(t *testing.T) {
 	cmd := rootCmd()
 	reports := collectDoctorReports(cmd)
 
-	want := []string{"workdir", "config", "catalog", "structural", "model", "credentials", "endpoint", "sessions", "tools"}
+	want := []string{"workdir", "config", "catalog", "structural", "semantic", "runtime", "model", "credentials", "endpoint", "sessions", "tools"}
 	if len(reports) != len(want) {
 		t.Fatalf("checks = %d, want %d", len(reports), len(want))
 	}

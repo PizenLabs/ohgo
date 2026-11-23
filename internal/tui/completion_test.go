@@ -18,12 +18,10 @@ func TestTurnTaskOutcomeHonorsEvidenceReview(t *testing.T) {
 		Content:    []ai.ContentBlock{ai.TextContent{Text: "It is a Go project."}},
 		StopReason: ai.StopEndTurn,
 	}}}
-	action, reason := turnTaskOutcomeWithReview(
-		nil, turns, workspace.BuildIntentContract("Explain this project."), nil, nil,
+	action, reason, _ := turnTaskOutcomeWithReview(nil, turns, workspace.BuildIntentContract("Explain this project."), nil, nil,
 		"runtime evidence was not sufficient for the objective (INSUFFICIENT) at stage explore",
 		false,
-		agent.EvidenceProvenance{},
-	)
+		agent.EvidenceProvenance{})
 	if action != taskActionReview {
 		t.Fatalf("action = %v, want review (reason %q)", action, reason)
 	}
@@ -41,7 +39,7 @@ func TestTurnTaskOutcomeRejectsFailedToolCall(t *testing.T) {
 		}}},
 		stopTurn(),
 	}
-	action, reason := turnTaskOutcome(nil, turns, workspace.BuildIntentContract("Update note.txt."), nil, nil)
+	action, reason, _ := turnTaskOutcome(nil, turns, workspace.BuildIntentContract("Update note.txt."), nil, nil)
 	if action != taskActionReview {
 		t.Fatalf("action = %v, want review (reason %q)", action, reason)
 	}
@@ -53,7 +51,7 @@ func TestTurnTaskOutcomeRejectsFailedToolCall(t *testing.T) {
 // A mutation request that produced no observed change is not complete, even
 // when the model says it is done and the todo list is empty.
 func TestTurnTaskOutcomeRejectsUnobservedMutation(t *testing.T) {
-	action, reason := turnTaskOutcome(nil, []agent.Turn{stopTurn()}, workspace.BuildIntentContract("Update note.txt."), nil, nil)
+	action, reason, _ := turnTaskOutcome(nil, []agent.Turn{stopTurn()}, workspace.BuildIntentContract("Update note.txt."), nil, nil)
 	if action != taskActionReview {
 		t.Fatalf("action = %v, want review (reason %q)", action, reason)
 	}
@@ -80,7 +78,7 @@ func TestTurnTaskOutcomeAcceptsVerifiedMutation(t *testing.T) {
 		}}},
 		stopTurn(),
 	}
-	action, reason := turnTaskOutcome(nil, turns, workspace.BuildIntentContract("Fix the failing tests."), nil, nil)
+	action, reason, _ := turnTaskOutcome(nil, turns, workspace.BuildIntentContract("Fix the failing tests."), nil, nil)
 	if action != taskActionComplete {
 		t.Fatalf("action = %v, want complete (reason %q)", action, reason)
 	}
@@ -100,7 +98,7 @@ func TestTurnTaskOutcomeRejectsAmbiguousMutation(t *testing.T) {
 		}}},
 		stopTurn(),
 	}
-	action, reason := turnTaskOutcome(nil, turns, workspace.BuildIntentContract("Update the code to be more robust."), nil, nil)
+	action, reason, _ := turnTaskOutcome(nil, turns, workspace.BuildIntentContract("Update the code to be more robust."), nil, nil)
 	if action != taskActionReview {
 		t.Fatalf("action = %v, want review (reason %q)", action, reason)
 	}
@@ -108,7 +106,7 @@ func TestTurnTaskOutcomeRejectsAmbiguousMutation(t *testing.T) {
 
 // Cancellation is a recoverable pause, never completion and never failure.
 func TestTurnTaskOutcomePausesOnCancellation(t *testing.T) {
-	action, reason := turnTaskOutcome(context.Canceled, []agent.Turn{stopTurn()}, workspace.BuildIntentContract("Explain this."), nil, nil)
+	action, reason, _ := turnTaskOutcome(context.Canceled, []agent.Turn{stopTurn()}, workspace.BuildIntentContract("Explain this."), nil, nil)
 	if action != taskActionPause || reason != "interrupted" {
 		t.Fatalf("action/reason = %v/%q, want pause/interrupted", action, reason)
 	}
@@ -116,7 +114,7 @@ func TestTurnTaskOutcomePausesOnCancellation(t *testing.T) {
 
 // A turn-cap stop is recoverable, not a failure of the work.
 func TestTurnTaskOutcomePausesOnTurnLimit(t *testing.T) {
-	action, reason := turnTaskOutcome(agent.ErrTurnLimit, []agent.Turn{stopTurn()}, workspace.BuildIntentContract("Explain this."), nil, nil)
+	action, reason, _ := turnTaskOutcome(agent.ErrTurnLimit, []agent.Turn{stopTurn()}, workspace.BuildIntentContract("Explain this."), nil, nil)
 	if action != taskActionPause || reason != "turn limit reached" {
 		t.Fatalf("action/reason = %v/%q, want pause/turn limit reached", action, reason)
 	}
@@ -124,7 +122,7 @@ func TestTurnTaskOutcomePausesOnTurnLimit(t *testing.T) {
 
 // A real execution error is a failure, not a review.
 func TestTurnTaskOutcomeFailsOnExecutionError(t *testing.T) {
-	action, reason := turnTaskOutcome(errors.New("provider unavailable"), nil, workspace.BuildIntentContract("Explain this."), nil, nil)
+	action, reason, _ := turnTaskOutcome(errors.New("provider unavailable"), nil, workspace.BuildIntentContract("Explain this."), nil, nil)
 	if action != taskActionFail || reason != "provider unavailable" {
 		t.Fatalf("action/reason = %v/%q, want fail/provider unavailable", action, reason)
 	}
@@ -177,7 +175,7 @@ func TestTurnTaskOutcomeProvesTechnologyMigration(t *testing.T) {
 			{Path: "next.config.ts", Status: "A"},
 		},
 	}
-	action, reason := turnTaskOutcomeForAuthority(nil, turns, intent, nil, nil, "", false,
+	action, reason, _ := turnTaskOutcomeForAuthority(nil, turns, intent, nil, nil, "", false,
 		agent.EvidenceProvenance{}, mutations, "build")
 	if action != taskActionComplete {
 		t.Fatalf("action = %v (%s), want complete", action, reason)

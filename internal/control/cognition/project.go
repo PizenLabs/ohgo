@@ -39,12 +39,18 @@ type ProjectorOptions struct {
 // DefaultProjectorOptions returns the built-in bounds.
 func DefaultProjectorOptions() ProjectorOptions {
 	return ProjectorOptions{
-		StateBlockBytes:     DefaultStateBlockBytes,
-		StateBlockItems:     DefaultStateBlockItems,
-		ExactKeepBytes:      4096,
+		StateBlockBytes: DefaultStateBlockBytes,
+		StateBlockItems: DefaultStateBlockItems,
+		// A source read is the evidence synthesis explains architecture from.
+		// The evidence ledger already retains 16 KiB per exact observation, so
+		// excerpting the same result to 4 KiB in the request was discarding the
+		// implementation the answer had just read. The bound is still per
+		// result, so the cache-stable wire form does not depend on history
+		// length; compaction remains the aggregate bound.
+		ExactKeepBytes:      16 * 1024,
 		DiagnosticKeepBytes: 8192,
 		ExternalKeepBytes:   4096,
-		StructuralKeepBytes: 4096,
+		StructuralKeepBytes: 8192,
 	}
 }
 
@@ -355,30 +361,54 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// same tools. A terminal or missing-capability verdict is not overridden;
 	// no call could close it, and the loop keeps the surface closed.
 	correcting := false
+	correctionSpent := false
 	if req.Correcting && len(gaps) == 0 &&
 		suff.Kind != BlockCapabilityFailure && suff.Kind != BlockProgressStalled {
-		// Remove only the answer-boundary closure: authority, scope, language,
-		// and budget exclusions still apply, so the reopened surface is the
-		// same one the task shape permits, not the full constructed set.
-		offered, excluded := correctionCandidates(shape, execution, req.Tools, p.Facts, suff)
-		if len(offered) > 0 {
-			candidates.Tools = offered
-			candidates.Excluded = excluded
-			candidates.Notices = nil
-			candidates.AnswerOnly = false
-			suff.Next = nil
-			correcting = true
+		if req.CorrectionBudget <= 0 {
+			// The allowance belongs to the answer lifecycle. Once it is spent,
+			// the loop refuses every non-terminal call, so offering the
+			// surface would advertise a capability the next call cannot use.
+			// Close it and make the answer the only remaining output.
+			correctionSpent = true
+		} else {
+			// Remove only the answer-boundary closure: authority, scope, language,
+			// and budget exclusions still apply, so the reopened surface is the
+			// same one the task shape permits, not the full constructed set.
+			offered, excluded := correctionCandidates(shape, execution, req.Tools, p.Facts, suff)
+			if len(offered) > 0 {
+				candidates.Tools = offered
+				candidates.Excluded = excluded
+				candidates.Notices = nil
+				candidates.AnswerOnly = false
+				suff.Next = nil
+				correcting = true
+			}
 		}
+	}
+	if correctionSpent && len(candidates.Tools) > 0 {
+		for _, tool := range candidates.Tools {
+			candidates.Excluded = append(candidates.Excluded, agent.CandidateExclusion{
+				Tool:   tool.Name(),
+				Reason: "the correction tool allowance is spent; answer from the evidence already observed",
+			})
+		}
+		candidates.Tools = []agent.Tool{}
+		candidates.AnswerOnly = true
+		suff.Next = nil
 	}
 
 	messages, report := projectMessages(req.Messages, p.Evidence, options)
-	state := RenderState(shape, p.Evidence, execution, suff, candidates,
-		options.StateBlockBytes, options.StateBlockItems)
-	if correcting {
-		// The budget is runtime state, not a suggestion: the loop refuses the
-		// call after it is spent. Naming it beside the reopened surface keeps
-		// the model from planning a second investigation.
-		state += fmt.Sprintf("Correction budget: %d tool call(s) remaining; repair only the named claims and keep the rest of the answer.\n", req.CorrectionBudget)
+	// A correction suppresses the generic evidence frontier for the same
+	// reason the candidate surface is bounded: the review already named the
+	// claims to repair, and an unrelated component list competes with that
+	// instruction instead of narrowing it.
+	state := renderState(shape, p.Evidence, execution, suff, candidates,
+		options.StateBlockBytes, options.StateBlockItems, !req.Correcting)
+	if correctionSpent {
+		// The allowance is enforced before execution. State the consequence,
+		// not the control-plane counter: a model told how many calls remain
+		// spends reasoning on the budget instead of the evidence.
+		state += "The repair window is closed. Answer from the evidence already observed; qualify or remove any claim that remains unsupported.\n"
 	}
 	if len(advice.Hints) > 0 {
 		state = appendExperienceHints(state, advice.Hints, options.StateBlockBytes)
@@ -430,8 +460,17 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		// not continuation after a finished answer.
 		report.AnswerEligible = false
 	}
+	if correctionSpent {
+		// No action remains, so the next visible text is the candidate answer,
+		// not narration preceding a call the loop would refuse.
+		report.AnswerEligible = true
+	}
 	report.Terminal = suff.Kind == BlockCapabilityFailure || suff.Kind == BlockProgressStalled
 	report.Missing = append([]string(nil), suff.Missing...)
+	report.Facets = facetReportRows(suff.Facets)
+	if suff.RequiredFacets > 0 {
+		report.FacetCoverage = fmt.Sprintf("%d/%d", suff.SatisfiedFacets, suff.RequiredFacets)
+	}
 	switch {
 	case len(gaps) > 0:
 		// The capability verdict is the actual reason this request cannot
@@ -453,6 +492,9 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	}
 	if correcting {
 		report.Reason = "answer correction: the permitted action surface is reopened for the evidence the review named"
+	}
+	if correctionSpent {
+		report.Reason = "answer correction: the tool allowance is spent; answer from the evidence already observed"
 	}
 
 	result := agent.ProjectionResult{

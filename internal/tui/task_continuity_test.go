@@ -481,7 +481,7 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			recorded, err := controller.Pause(reason)
 			return runtimeProjection(recorded, err)
 		},
-		NeedsReview: func(reason string) TaskProjection {
+		NeedsReview: func(reason string, _ []contract.GroundingIssue) TaskProjection {
 			recorded, err := controller.NeedsReview(reason)
 			return runtimeProjection(recorded, err)
 		},

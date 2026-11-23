@@ -108,17 +108,17 @@ func TestAnswerReviewCorrectsMissingFacetOnce(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("turns = %d, want the rejected answer plus one correction", len(turns))
 	}
-	if len(reported) != 2 || !reported[0].Suppressed || reported[1].Suppressed {
-		t.Fatalf("reported turns = %+v, want the candidate suppressed before publication", reported)
+	if len(reported) != 2 || !reported[0].Superseded || reported[1].Superseded || reported[1].Suppressed {
+		t.Fatalf("reported turns = %+v, want the candidate superseded before publication", reported)
 	}
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "Tests: 4") {
 		t.Fatalf("final answer = %q, want the corrected facet", got)
 	}
-	if !turns[0].Suppressed {
-		t.Fatal("the rejected candidate was not suppressed")
+	if !turns[0].Superseded || turns[0].Suppressed {
+		t.Fatal("the rejected candidate was not superseded")
 	}
-	if turns[len(turns)-1].Suppressed {
-		t.Fatal("the accepted answer was suppressed")
+	if turns[len(turns)-1].Suppressed || turns[len(turns)-1].Superseded {
+		t.Fatal("the accepted answer was withheld")
 	}
 }
 
@@ -299,6 +299,18 @@ func TestCorrectionSurfaceSpansMultipleRequests(t *testing.T) {
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "Tests: 4") {
 		t.Fatalf("final answer = %q", got)
 	}
+	// The repair instruction must follow every request in the correction
+	// window. Withholding it after the first read leaves the next turn with
+	// only the generic state block, so it follows an unrelated frontier.
+	directives := 0
+	for _, request := range stream.requests {
+		if strings.Contains(strings.Join(messageTexts(request.Messages), "\n"), "Runtime completion review:") {
+			directives++
+		}
+	}
+	if directives != 3 {
+		t.Fatalf("correction directive carried by %d request(s), want every request in the correction window", directives)
+	}
 }
 
 // Three model texts — a rejected candidate, an answer abandoned for another
@@ -332,5 +344,22 @@ func TestOnlyTheFinalAnswerIsPublished(t *testing.T) {
 	}
 	if !strings.Contains(published[0], "Tests: 4") {
 		t.Fatalf("published %q, want only the final answer", published[0])
+	}
+}
+
+// A plan-only answer is rejected before it can consume the completion
+// verdict. The loop withholds the text from the transcript and spends its one
+// correction window asking for the answer the user requested.
+func TestReviewInformationalAnswerRejectsAPlanOnlyMessage(t *testing.T) {
+	intent := contract.IntentContract{Objective: "analyze this project", Kind: contract.ObjectiveInformational}
+	reason := ReviewInformationalAnswer(intent, nil, "Let me read the main module and then explain the project.")
+	if strings.TrimSpace(reason) == "" {
+		t.Fatal("a plan-only message was accepted as an answer")
+	}
+	if !strings.Contains(strings.ToLower(reason), "answer") {
+		t.Fatalf("reason = %q, want a request for the actual answer", reason)
+	}
+	if got := ReviewInformationalAnswer(intent, nil, "This project is a Go coding agent."); got != "" {
+		t.Fatalf("a substantive answer was rejected: %q", got)
 	}
 }

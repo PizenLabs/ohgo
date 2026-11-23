@@ -256,25 +256,37 @@ func TestBroadSurveyStillRequiresASurvey(t *testing.T) {
 	}
 }
 
-// A named symbol remains a coordinate requirement.
+// A named symbol remains a coordinate requirement, and a "who calls" question
+// additionally needs the call edge. A symbol lookup alone identifies the
+// target; it does not prove who calls it.
 func TestNamedSymbolTargetStillRequiresCoordinates(t *testing.T) {
 	_, shape := regressionShape("Who calls `parseConfig`?", RepositoryFacts{Go: true})
 	requireNeed(t, shape, "target_coordinates:parseConfig", true)
+	requireNeed(t, shape, FacetKey(FacetRelationship), true)
 
 	if suff := EvaluateSufficiency(shape, NewEvidenceState(), ExecutionState{}, false); suff.State != Insufficient || suff.Stage != StageExplore {
 		t.Fatalf("empty evidence = %s/%s, want INSUFFICIENT/explore", suff.State, suff.Stage)
 	}
-	state := NewEvidenceState()
-	state.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{
+	symbolOnly := NewEvidenceState()
+	symbolOnly.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{
 		symbolEvidence("symbols-1", "parseConfig", "internal/config/config.go"),
 	}}})
-	if suff := EvaluateSufficiency(shape, state, ExecutionState{}, false); suff.State != Sufficient || suff.Stage != StageAnswer {
-		t.Fatalf("symbol observation = %s/%s, want SUFFICIENT/answer", suff.State, suff.Stage)
+	if suff := EvaluateSufficiency(shape, symbolOnly, ExecutionState{}, false); suff.State != Insufficient || suff.Stage != StageExplore {
+		t.Fatalf("symbol-only evidence = %s/%s, want INSUFFICIENT/explore for a call question", suff.State, suff.Stage)
 	}
-	if review := completionAfter(shape, RepositoryFacts{Go: true}, []agent.ToolOutcome{
+
+	outcomes := []agent.ToolOutcome{
 		symbolEvidence("symbols-1", "parseConfig", "internal/config/config.go"),
-	}); !review.Complete() {
-		t.Fatalf("the symbol answer did not complete: %s", review.Reason)
+		structuralRelationsOutcome("structure-1",
+			map[string]any{"from": "loadConfig", "to": "parseConfig", "kind": "CALLS"}),
+	}
+	state := NewEvidenceState()
+	state.ObserveTurns(shape, []agent.Turn{{Results: outcomes}})
+	if suff := EvaluateSufficiency(shape, state, ExecutionState{}, false); suff.State != Sufficient || suff.Stage != StageAnswer {
+		t.Fatalf("symbol plus call edge = %s/%s, want SUFFICIENT/answer (%v)", suff.State, suff.Stage, suff.Missing)
+	}
+	if review := completionAfter(shape, RepositoryFacts{Go: true}, outcomes); !review.Complete() {
+		t.Fatalf("the symbol/call answer did not complete: %s", review.Reason)
 	}
 }
 

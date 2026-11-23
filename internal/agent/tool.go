@@ -178,7 +178,8 @@ func (r Result) Rejected() bool {
 	switch r.FailureClass {
 	case ToolFailureInvalidArgument, ToolFailureInvalidSelector,
 		ToolFailureUnknownTool, ToolFailureUnsupported,
-		ToolFailureAuthorization:
+		ToolFailureAuthorization, ToolFailureCorrectionBudget,
+		ToolFailureCapabilityUnavailable, ToolFailureOutsideWorkspace:
 		return true
 	}
 	return false

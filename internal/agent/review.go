@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -11,17 +12,24 @@ import (
 // ReviewInformationalAnswer is the answer-level gate a host installs on the
 // loop for an informational or investigative turn.
 //
-// It is deliberately narrower than completion: it can ask for one corrected
-// answer, but it cannot prove a mutation, grant authority, or publish a result.
-// The final verdict still comes from EvaluateTaskCompletion after the loop
-// stops. A mutation objective is not reviewed here because its correction is a
-// real change plus a check, not a rewritten sentence.
+// It is deliberately narrower than completion: it can ask for a bounded,
+// claim-level corrected answer, but it cannot prove a mutation, grant
+// authority, or publish a result. The final verdict still comes from
+// EvaluateTaskCompletion after the loop stops. A mutation objective is not
+// reviewed here because its correction is a real change plus a check, not a
+// rewritten sentence.
 func ReviewInformationalAnswer(intent contract.IntentContract, turns []Turn, answer string) string {
 	if intent.Kind != contract.ObjectiveInformational {
 		return ""
 	}
 	if strings.TrimSpace(answer) == "" {
 		return "the answer contains no project finding"
+	}
+	if answerIsDeferredPlan(answer) {
+		// A promise to keep investigating is not a finding. The loop already
+		// withholds it from the transcript; this review spends the one
+		// correction window on the answer the user actually asked for.
+		return "the previous message only announces a further action; state the answer from the evidence already observed"
 	}
 	assessment := AssessGrounding(intent, turns, answer)
 	if assessment.Pass() {
@@ -153,6 +161,47 @@ func boundRepair(text string, limit int) string {
 // another full investigation.
 const MaxRepairInstructions = 5
 
+// MaxAnswerCorrections bounds the correction requests for one answer
+// lifecycle. A repair can introduce a new unsupported claim; the next review
+// must be allowed to repair it or the one correction silently publishes
+// nothing. The bound stays small, and a correction is admitted only when the
+// review names a different claim set (answerRepairKey), so this cannot become a
+// retry loop.
+const MaxAnswerCorrections = 2
+
+// blocksPublication reports whether a review's issues are factual claims that
+// must not be published. A review with no claim list is a prose rejection (a
+// plan or an empty answer), which is also not publishable. A facet gap is a
+// completion gap the answer may honestly state, so it does not block
+// publication; the finalizer's Approved gate still runs.
+func blocksPublication(issues []contract.GroundingIssue) bool {
+	if len(issues) == 0 {
+		return true
+	}
+	for _, issue := range issues {
+		if !isFacetIssue(issue) {
+			return true
+		}
+	}
+	return false
+}
+
+// answerRepairKey identifies the claims a review rejected. It is the progress
+// signal for correction admission: a different set may earn the next pass,
+// while the same set terminates at review.
+func answerRepairKey(issues []contract.GroundingIssue, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if len(issues) == 0 {
+		return reason
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		parts = append(parts, strings.TrimSpace(issue.Code)+"\x00"+strings.TrimSpace(issue.Claim))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x01")
+}
+
 // completionRepairDirective renders the claim-level correction. It falls back
 // to the prose directive when the run has no structured repairs or the host did
 // not install a repair template.
@@ -177,7 +226,7 @@ func completionRepairDirective(template, fallback, reason string, repairs []cont
 	return strings.NewReplacer(
 		"{{count}}", strconv.Itoa(len(repairs)),
 		"{{budget}}", strconv.Itoa(budget),
-		"{{repairs}}", repairInstructions(repairs),
+		"{{repairs}}", RepairInstructions(repairs),
 		"{{reason}}", reason,
 	).Replace(template)
 }
@@ -197,8 +246,12 @@ func usableRepairs(repairs []contract.GroundingIssue) []contract.GroundingIssue 
 	return out
 }
 
-// repairInstructions renders one bounded line per claim.
-func repairInstructions(repairs []contract.GroundingIssue) string {
+// RepairInstructions renders one bounded line per claim. It is the single
+// formatter for machine-readable repair instructions: the run's correction
+// directive, a resumed task's orientation, and the human review surface all
+// render the same line for the same issue, so no consumer re-derives a
+// second format for the same data.
+func RepairInstructions(repairs []contract.GroundingIssue) string {
 	lines := make([]string, 0, len(repairs))
 	for index, repair := range repairs {
 		var line strings.Builder

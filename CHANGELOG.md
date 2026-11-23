@@ -7,19 +7,65 @@ immutable.
 
 ### Added
 
+- Python structural coverage. The multi-language build registers
+  `tree-sitter-python` over `.py`/`.pyi`: classes (including base classes),
+  functions/methods, module variables, `import`/`from` resolution,
+  `self.method()` call qualifiers, annotations, `test_*` declarations, and the
+  `if __name__ == "__main__"` entrypoint guard. The portable build reports
+  Python as unsupported, never as an empty file.
+- Cross-language semantic discovery. `doctor` reports the language servers
+  found on `PATH` (gopls, typescript-language-server, pyright/pylsp,
+  rust-analyzer, jdtls, clangd, ruby-lsp, csharp-ls, kotlin-language-server).
+  `investigate` selects the server for the request's language, or the
+  workspace's dominant supported language, starts only that server, and reports
+  a missing server as `UNAVAILABLE` with AST evidence still available. Each
+  server loads its own project root (Go module, TypeScript workspace, Python
+  project) instead of an unrelated monorepo root.
+- Missing unnamed syntax tokens now mark a parse partial. Tree-sitter reports
+  missing punctuation as an unnamed `MISSING` node; the previous named-only
+  walk could report a malformed Python file as a clean parse.
+- Test associations now include non-Go calls and references. A Python
+  `test_*` function calling a helper is a static association, not an empty
+  result caused by the Go-only association scan.
+
 - Claim-level answer repair. `GroundingIssue` now carries the rejected claim,
   its sentence location, category, required evidence class, reference, and
   permitted action; the grounding, provenance, citation, entity, line-count,
   absence, and facet audits populate them. `ReviewInformationalRepairs` is a
   projection of the same audit, `ClaimRepairRequest` names at most five claims,
   and the loop renders only those instead of a full-answer correction reason.
-- A per-correction tool budget (`CorrectionToolCalls`, default 3). The loop
-  enforces it before tool execution across concurrent batches, reports the
-  remaining allowance in the correction runtime block, and fails closed with
-  `ToolFailureCorrectionBudget`; reused observations do not consume it.
+- A per-answer-lifecycle tool budget (`CorrectionToolCalls`, default 4). The
+  loop enforces it before tool execution across concurrent batches and fails
+  closed with `ToolFailureCorrectionBudget`; reused observations do not consume
+  it. A second repair pass does not reset the allowance. The runtime does not
+  narrate a remaining-call counter: it states only that the repair window is
+  open or closed, so the model reasons about the evidence instead of the
+  control-plane budget.
 - The pre-answer review now runs the documentation-only provenance audit when
   the host supplies the last projection summary, so a documented claim is
   attributed or verified before completion rather than after it.
+- A repository-wide grep is implementation evidence for the files it matched.
+  The evidence model classifies a grep by its matched file sections, not by the
+  search root: an unscoped source hit now corroborates the term it matched,
+  while a README-only section in the same result does not. This is what lets an
+  evidence-first repair actually clear a documentation-only term instead of
+  demanding the same search forever.
+- The corrected answer is reviewed again before publication. A second repair
+  pass is admitted only when the review names a different claim set; repeating
+  the same claims terminates at `NEEDS_REVIEW`. The passes are bounded by
+  `MaxAnswerCorrections`, so this is a convergence rule, not a retry loop.
+- An answer the publication audit refuses is not committed. The response
+  transaction records `REVIEW`, the turn is suppressed, and the host withdraws
+  the provisional stream; completion still carries the exact claims into
+  `NEEDS_REVIEW`. A committed answer and the displayed answer must be the same
+  text.
+- A conclusion verdict is labelled `conclusion:`, never `answer:`. ANSWERED is
+  a judgement about the evidence, not the user's answer, and the result now
+  names `status` and says that answer synthesis is a separate step.
+- A conclusion target that names a basename the run already read completely
+  ("main.go" after reading `backend/cmd/web/main.go`) is resolved against that
+  observation instead of forcing an impossible reread. Path targets are
+  canonicalised before they become obligations.
 - A bounded negative report is not widened by the intensifier "at all".
   "No tests were found in the inspected scope" stays a report about the
   inspected evidence even when another clause says "at all".
@@ -27,20 +73,48 @@ immutable.
   not consume the correction tool allowance, so a model that repairs its
   claims and then concludes is not forced into another answer by a budget
   error.
-- The TUI publishes model text only when its turn completes and the turn is
-  publishable. It no longer streams text while the request is open, because
-  that text can be a rejected candidate or an answer the model abandons for a
-  tool call. The final answer is the only answer shown.
-- Assistant prose that is followed by a tool call is not published as an
-  answer. The call and its result remain; the prose was investigation the
-  model replaced. Together with candidate suppression, a run that emits a
-  rejected answer, an abandoned answer, and a final answer publishes only the
-  final one.
+- The TUI streams real provider deltas again. Assistant text is published as
+  it arrives into a provisional transcript block, and a new
+  `AssistantReconcile` event settles that block with the exact committed text.
+  A dropped delta, a finalized rewrite, or a non-streaming transport therefore
+  converges on one authoritative answer instead of a partial or duplicated
+  block. Output-first mode keeps provisional text in the live viewport (a
+  markdown-safe suffix when it is long) and never seals it to scrollback, so a
+  withdrawn draft cannot persist as a competing answer.
+- Assistant prose that is followed by a tool call is withdrawn at stream end,
+  before the tool card opens. The call and its result remain; the prose was
+  investigation the model replaced.
 - A rejected answer candidate is suppressed, not published. The loop keeps it
-  in the provider context so the correction request can see the claim, marks
-  it `Suppressed`, and the transcript, plain output, persistence, and next
-  request project it away. Informational answer text is not streamed while an
-  answer review is active; the accepted final answer is published once.
+  in the provider context so the correction request can see the claim, withholds
+  its text from the transcript (`Suppressed`, or `SuppressText` when the same
+  turn also produced real tool results), and the plain output, persistence, and
+  next request project it away. A plan-only message ("let me inspect…") is withheld
+  from the transcript and spends a correction pass on the answer.
+- Answer finalization no longer deletes sentences or appends a runtime-authored
+  "Evidence limitations" section. The model's one answer is preserved exactly;
+  uncertified claims are carried as review issues, and completion still refuses
+  to certify them. A sentence-level editor could mangle tables, lists, and
+  fenced examples, and the appended limitation report was a second conclusion.
+- Claim repair is evidence-first. The correction prompt tells the model to
+  obtain the missing observation with the reopened tool surface before
+  qualifying a claim, and rejects a generic coverage disclaimer as a repair.
+- Coverage disclosure is presentation, not a completion veto. The turn footer
+  may report measured structural coverage; a project-wide answer is no longer
+  rejected merely for omitting a disclaimer.
+- A broad account of a measured multi-file source project needs the entry point
+  plus one implementation file it leads to; a structural inventory is not a
+  substitute for the second read. A single-file project is exempt, and an
+  unknown source total never invents a numeric floor.
+- A control refusal that never ran (authorization, invalid selector,
+  correction budget, capability unavailable, outside-workspace) is a
+  rejection, not a pending capability failure. It no longer vetoes completion
+  as an unrecovered tool error; the capability remains available and the
+  evidence frontier still owns certification.
+- Markdown headings have a visible hierarchy again (h1 underlined, h2 accent,
+  h3 lightweight, h4-h6 receding), `~~~` fences render as code, and the
+  output-first commit cut never splits a fenced block.
+- `TranscriptTurn` no longer mutates the loop's assistant content when it
+  strips tool-round prose; the completion authority reads the original turn.
 - Assistant turns persist their measured provider usage in the session
   transcript. A benchmark can separate the initial investigation from the
   answer correction instead of reading only an aggregate session total; usage
@@ -128,8 +202,77 @@ immutable.
   credit-metered and NVIDIA publishes no per-token price, so these rows report
   pricing as unknown instead of verified-free.
 
+### Changed
+
+- `make build` now uses the host toolchain. With a C compiler it compiles the
+  pinned tree-sitter grammars, so TypeScript, TSX, JavaScript, Java, C#, Rust,
+  Kotlin, Ruby, Python, C, and C++ are structurally observable. `make build-portable`
+  is the explicit `CGO_ENABLED=0` variant; `make build-multilang` is the
+  explicit cgo variant.
+- File discovery and the structural index now share one built-in exclusion
+  list (`vendor`, `.venv`, `__pycache__`, `target`, `dist`, `.next`, caches,
+  and other dependency/build output), so a path pruned by `glob`/`grep`/`ls`
+  cannot be parsed into the graph and reported as repository structure.
+- Relationship questions now acquire control-plane evidence facets before an
+  answer boundary: target, structural relationship, interface boundary,
+  implementation, and flow. The facets are derived from the task shape, force
+  structural activation, reject lexical co-occurrence as relationship proof,
+  and are reported as satisfied/total coverage in the runtime state block and
+  projection audit. Broad architecture overviews remain overviews.
+- `investigate` reports its provider-local confidence target as
+  `provider_sufficient`; the control plane's evidence facets still decide task
+  completion.
+- The `structure` header's `adapters:` line now lists adapter identities
+  (`tree-sitter-javascript`) instead of language aliases (`javascript`, `jsx`),
+  matching `ohgo doctor`.
+- The release publishes a multi-language artifact beside the portable one;
+  `install.sh` prefers it, and `ohgo update` selects the artifact matching the
+  running binary. A missing matching artifact fails the update instead of
+  silently downgrading to the portable build.
+
 ### Fixed
 
+- Answer review no longer turns its internal candidate revisions into
+  conversation. A streamed candidate is labelled `draft · answer review
+  pending`; a candidate superseded by a bounded correction is withdrawn when
+  the correction starts and never becomes a transcript artifact. Only the
+  candidate that ends the review loop — accepted, or refused by the terminal
+  review or publication audit — can appear. A terminal refusal keeps its text
+  under `draft withdrawn · <reason>` as display-only history; withdrawn text is
+  excluded from the answer projection, copy, and persistence, and committed
+  answers are never retracted.
+- The verified footer counts successful `check` and `verify` outcomes as
+  checks. A passing `check` run no longer sits beside "no checks run", which
+  made a verified turn contradict its own evidence.
+- A package-qualified code reference is matched to the import path the source
+  actually read. An answer naming `cart.domain.Product` is supported by a file
+  that imports `.../cart/domain` and uses `domain.Product`; the literal dotted
+  spelling is no longer required, so a source-verified declaration does not
+  keep the correction loop alive. An invented package prefix is still rejected.
+- An explicit disclaimer ("No claim is made about `X`") is no longer reviewed
+  as an assertion of `X`. A model that withdraws an unsupported identifier
+  could not previously terminate: the retraction itself kept the entity audit
+  alive.
+- A `wc -l <path>` measurement is accepted as the line count for that path,
+  including when the command measured several files. A listing's byte size is
+  still not a line count, and another file's measurement does not satisfy the
+  claim.
+- A negative claim now carries the offsets of the sentence it was read from.
+  The review points the repair at the unsupported sentence, not the first
+  occurrence of the subject word. A manifest declaration ("no test scripts
+  declared") is a statement about the observed declaration list, not a
+  repository absence, and a static test inventory reports "0 test files"
+  rather than proving that tests do not exist.
+- The claim-level repair directive now follows every request in the correction
+  window, not only the first. A window can span several model turns; a later
+  turn without the named claims followed an unrelated evidence frontier and
+  spent the remaining allowance on the wrong coordinate.
+- A spent answer-correction window now closes the tool surface and says the
+  allowance is exhausted, instead of offering tools the loop will refuse. A
+  correction also withholds the generic component frontier from the runtime
+  state block: the review's named claims are the actionable list, and an
+  unrelated inventory gap was spending the remaining repair on the wrong
+  coordinate.
 - A non-Go reference is resolved through the referring file's imports before
   the global-name rule. Two modules exporting the same name no longer make
   every consumer reference `AMBIGUOUS`; the import path proves the target, and
@@ -269,6 +412,12 @@ immutable.
   edit. The checkpoint diff compares the before and after captures under their
   own ignore rules, so a path that only became invisible is not reported as a
   file change, and a path-scoped `.gitignore` task is not a scope violation.
+- Non-Go structural intelligence on a TypeScript/TSX project. A default
+  `make build` produced the Go-only adapter set, so `structure` reported
+  `adapters: go`, `parsed_files: 0/77`, and `structural: UNSUPPORTED` even
+  though the tree-sitter adapters existed. The capability was never missing;
+  the default build did not compile it. The portable build still reports those
+  sources as `UNSUPPORTED`, and `ohgo doctor` now names the rebuild command.
 
 ## [v0.1.3] - 2026-11-19
 

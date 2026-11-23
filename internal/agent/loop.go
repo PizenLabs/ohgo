@@ -50,11 +50,12 @@ var ErrCapabilityUnavailable = errors.New("agent: capability unavailable")
 // small enough that a runaway loop is visible rather than open-ended.
 const DefaultMaxTurns = 100
 
-// DefaultCorrectionToolCalls bounds the evidence a single answer correction may
-// gather. Three calls is enough to read a cited file, inspect a declaration, or
-// run one check; a larger number turns the bounded repair back into the
-// investigation that already failed to support the claim.
-const DefaultCorrectionToolCalls = 3
+// DefaultCorrectionToolCalls bounds the evidence the answer lifecycle's repairs
+// may gather. Four calls is enough to read a cited file, inspect a declaration,
+// or run one check after the model has spent a previous request correcting the
+// claim. A larger number turns the bounded repair back into the investigation
+// that already failed to support the claim.
+const DefaultCorrectionToolCalls = 4
 
 // Turn is one request/response cycle.
 type Turn struct {
@@ -75,6 +76,13 @@ type Turn struct {
 	// but it is not a publication: hosts must hide it from the transcript,
 	// persistence, and plain output. Only the accepted final answer is shown.
 	Suppressed bool
+	// Superseded marks a rejected candidate that a bounded correction
+	// replaces. It is model context, not a user-visible artifact: the run is
+	// still investigating and the next candidate is the only one a host may
+	// present. Tool outcomes in the same turn remain real work and stay
+	// visible; only the prose is internal. Unlike Suppressed, this is not a
+	// terminal review verdict.
+	Superseded bool
 }
 
 // ToolOutcome records what happened to one tool call.
@@ -204,10 +212,11 @@ type Config struct {
 	// an action or complete a task; completion still evaluates the finalized
 	// text and the durable evidence.
 	FinalizeAnswer func(turns []Turn, answer, evidenceGap string) FinalizedAnswer
-	// CorrectionToolCalls bounds tool execution during the one correction
-	// window. Zero uses DefaultCorrectionToolCalls. The bound is per correction,
-	// not per run: the initial investigation already has the tree budget, and a
-	// repair must not re-run the whole investigation.
+	// CorrectionToolCalls bounds the tool execution the answer lifecycle may
+	// spend on repairs. Zero uses DefaultCorrectionToolCalls. The bound is per
+	// answer lifecycle, not per correction request: a second repair pass may
+	// still answer, but it cannot reopen the investigation the tree budget
+	// already paid for.
 	CorrectionToolCalls int
 	// Tools are offered to the model.
 	Tools []Tool
@@ -255,6 +264,12 @@ type Config struct {
 	// generated instead of landing as one block when the turn completes.
 	// Nil disables it; transports that never token-stream never fire it.
 	OnTextDelta func(delta string)
+	// OnAssistantMessage receives each completed assistant message before
+	// any tool call is dispatched. It is the truthful boundary at which a
+	// host that streamed the deltas learns whether the text is prose around
+	// a tool call (not an answer) or a candidate answer. A nil hook changes
+	// nothing; the message is the same value the turn carries.
+	OnAssistantMessage func(message ai.AssistantMessage)
 	// OnThinkingDelta receives reasoning deltas while a stream is still open,
 	// in order. It is separate from OnTextDelta because reasoning is a
 	// presentation block of its own, never assistant prose.
@@ -796,6 +811,17 @@ func (l *Loop) SetTextDeltaHook(hook func(delta string)) {
 	l.cfg.OnTextDelta = hook
 }
 
+// SetAssistantMessageHook installs the completed-stream reporter after
+// construction.
+//
+// It must be called before Run, never during one. The hook runs on the
+// request goroutine after the stream has been drained and before the turn is
+// classified, so a host can discard live text that belonged to a tool round
+// without waiting for the tool's result.
+func (l *Loop) SetAssistantMessageHook(hook func(message ai.AssistantMessage)) {
+	l.cfg.OnAssistantMessage = hook
+}
+
 // SetThinkingDeltaHook installs the live-reasoning reporter after
 // construction.
 //
@@ -891,9 +917,10 @@ func (l *Loop) SetConclusionMode(mode contract.ConclusionMode) {
 }
 
 // SetAnswerReview installs the bounded answer-level completion gate for the
-// next run, or nil to accept every answer. The gate can ask for one corrected
-// answer; it cannot authorize an action, widen the tool set beyond the loop's
-// constructed capabilities, or mark the run complete.
+// next run, or nil to accept every answer. The gate can ask for bounded,
+// progress-gated corrected answers; it cannot authorize an action, widen the
+// tool set beyond the loop's constructed capabilities, or mark the run
+// complete.
 func (l *Loop) SetAnswerReview(review func(turns []Turn, answer string) string) {
 	l.cfg.AnswerReview = review
 }
@@ -1068,12 +1095,20 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// covers both a forced answer after refusals and a natural evidence
 	// boundary where the first answer request produced only reasoning.
 	answerRetried := false
-	// answerCorrectionAttempted and correctionPending implement the one
-	// bounded completion-review correction. The first rejected answer spends
-	// the correction; the next request reopens the constructed tool surface so
-	// the model can acquire the missing evidence instead of rewriting prose.
-	answerCorrectionAttempted := false
+	// answerCorrections and correctionPending implement the bounded
+	// completion-review correction. The next request reopens the constructed
+	// tool surface so the model can acquire the missing evidence instead of
+	// rewriting prose. A correction is only spent on a new claim set: the same
+	// rejected claims terminate at review, so a model that repeats itself
+	// cannot turn the correction into a retry loop.
+	answerCorrections := 0
+	lastRepairKey := ""
 	correctionPending := false
+	// correctionDirective is the claim-level repair instruction for the active
+	// correction window. It is re-appended to every request while the window
+	// is open: the window can span several model turns, and a later turn that
+	// no longer sees the named claims follows an unrelated frontier instead.
+	correctionDirective := ""
 	// executionRecoveryAttempted and normalizationRecoveryAttempted are the
 	// bounded protocol recoveries. Each is spent at most once per run and the
 	// run/turn budget still bounds the whole loop, so neither can become an
@@ -1106,6 +1141,123 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// so they ride the runtime suffix and are cleared once that request is
 	// sent.
 	var nudges []string
+
+	// reportTurn publishes the completed turn. It is deliberately called after
+	// the answer review: a rejected candidate is marked suppressed first, so a
+	// host never displays it as an answer.
+	reportTurn := func() {
+		if l.cfg.OnTurn != nil && len(turns) > 0 {
+			l.cfg.OnTurn(turns[len(turns)-1])
+		}
+	}
+	// acceptAnswer is the one publication gate for an assistant candidate. It
+	// returns true when the run must end and false when it issued a correction
+	// request.
+	//
+	// Every path that can end a run with a publishable answer goes through
+	// here. A text turn that skipped this gate used to be published by the host
+	// even though no response transaction committed it and no claim audit
+	// approved it, which is how a candidate could be displayed and then
+	// rejected by the completion verdict. Prose that accompanied tool calls is
+	// narration, not a candidate: it stays in the turn for completion's veto
+	// but never opens a transaction.
+	acceptAnswer := func() bool {
+		if len(turns) == 0 {
+			return true
+		}
+		last := &turns[len(turns)-1]
+		if !last.SuppressText || l.cfg.AnswerReview != nil {
+			l.noteDraft()
+		}
+		// suppress withdraws the candidate text. Tool results in the same
+		// turn are real work: hiding them from the transcript would erase
+		// calls the user watched run, so only the prose is withheld.
+		suppress := func() {
+			if len(last.Results) > 0 {
+				last.SuppressText = true
+				last.Suppressed = false
+				return
+			}
+			last.Suppressed = true
+		}
+		// supersede withdraws an intermediate candidate that a correction
+		// replaces. It must not become a user-visible answer artifact: the
+		// user watched a provisional preview, not a result. The model still
+		// sees the text in the live conversation, so it can repair the named
+		// claims. Tool outcomes remain visible.
+		supersede := func() {
+			last.Superseded = true
+			last.Suppressed = false
+			last.SuppressText = false
+		}
+		finish := func() { reportTurn() }
+		reason := l.answerReviewReason(turns)
+		if reason != "" {
+			repairs := l.answerRepairs(turns)
+			key := answerRepairKey(repairs, reason)
+			// One correction cannot repair a claim the repair itself
+			// introduced. A second pass is admitted only when the review
+			// names a different claim set; repeating the same rejection
+			// terminates at review instead of spinning.
+			if answerCorrections < MaxAnswerCorrections && key != lastRepairKey &&
+				len(turns) < l.cfg.MaxTurns {
+				if directive := l.correctionDirective(turns, reason); directive != "" {
+					supersede()
+					l.noteRejected()
+					if answerCorrections == 0 {
+						// The tool allowance belongs to the answer
+						// lifecycle, not to each repair: a second pass must
+						// not double the investigation budget.
+						l.correctionCalls.Store(0)
+					}
+					answerCorrections++
+					lastRepairKey = key
+					correctionPending = true
+					correctionDirective = directive
+					l.correctionActive.Store(true)
+					finish()
+					return false
+				}
+			}
+			// The correction allowance is spent, the claim set did not
+			// change, or the host authorized no correction. A factual claim
+			// the same review refuses is not a final answer: keep it for
+			// completion's claim list, but never publish it. A facet gap is
+			// different: the answer may honestly state the missing
+			// deliverable, and the finalizer's Approved gate decides whether
+			// the text is publishable while completion carries the gap.
+			if blocksPublication(repairs) {
+				suppress()
+				l.noteRejected()
+				l.markResponseReview(repairs)
+				finish()
+				return true
+			}
+		}
+		if last.SuppressText {
+			// Prose that accompanied tool calls or only announced a future
+			// action is narration. It stays in the completion input for its
+			// veto, but it is not a publishable answer and must not open a
+			// response transaction.
+			finish()
+			return true
+		}
+		if !l.finalizeResponse(turns, &live, lastEvidenceReview) {
+			// The finalizer's own audit is authoritative. It refused the
+			// candidate, so the host must not publish it. The raw turn stays
+			// available to completion, which reports the exact claims.
+			suppress()
+			l.noteRejected()
+			if l.responseState() != ResponseReview {
+				l.markResponseReview(l.answerRepairs(turns))
+			}
+			finish()
+			return true
+		}
+		finish()
+		return true
+	}
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return turns, err
@@ -1306,6 +1458,15 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			activeTools = []Tool{}
 			closed = true
 		}
+		// The repair claims are the correction window's objective, not a
+		// one-request hint. A correction can need several model turns (read,
+		// read, answer), and a later turn that no longer sees the named claims
+		// follows whatever unrelated coordinate the state block surfaces. The
+		// directive is appended per request and withheld once the allowance is
+		// spent; the projection then states the exhausted budget.
+		if l.correctionActive.Load() && correctionDirective != "" && l.remainingCorrectionCalls() > 0 {
+			runtimeBlocks = append(runtimeBlocks, correctionDirective)
+		}
 		// The reopened surface applies to this correction request only. A
 		// second rejected answer is returned to the host for completion
 		// evaluation rather than spending another turn.
@@ -1384,6 +1545,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		l.observeRequest(len(turns), shape, assistant.Usage)
 		// The directives belonged to the request that was just sent.
 		nudges = nil
+		// The stream is closed, so a host that published live deltas can now
+		// decide whether they were prose around a tool call or a candidate
+		// answer. This runs before dispatch: a tool's start must not be the
+		// event that first reveals the turn was not an answer.
+		if l.cfg.OnAssistantMessage != nil {
+			l.cfg.OnAssistantMessage(assistant)
+		}
 
 		turn := Turn{Assistant: assistant}
 		live = append(live, AssistantMessage{Message: assistant})
@@ -1398,7 +1566,6 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// an answer the run later replaces.
 		if len(calls) > 0 && strings.TrimSpace(assistant.Text()) != "" {
 			turn.SuppressText = true
-			l.noteDraft()
 		}
 		if len(calls) > 0 {
 			// A canonical call is the correction both protocol recoveries ask
@@ -1409,15 +1576,15 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 		if len(calls) == 0 {
 			turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
-			turns = append(turns, turn)
-			// The hook publishes the completed turn. It is deliberately called
-			// after the answer review: a rejected candidate is marked suppressed
-			// first, so a host never displays it as an answer.
-			reportTurn := func() {
-				if l.cfg.OnTurn != nil {
-					l.cfg.OnTurn(turns[len(turns)-1])
-				}
+			// A message made only of "let me check…" clauses is a plan, not a
+			// result. It stays in the turn so completion can veto it, but it is
+			// never published or persisted as the answer: exposing internal
+			// exploration narration as final prose is the failure this
+			// suppression closes.
+			if answerIsDeferredPlan(turn.Assistant.Text()) {
+				turn.SuppressText = true
 			}
+			turns = append(turns, turn)
 			// A terminal surface with neither a proposal nor an answer is a
 			// blocked task, not a clean model stop. Preserve the terminal reason
 			// for the outcome layer instead of letting an empty turn look like a
@@ -1535,26 +1702,14 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				return turns, fmt.Errorf("%w: the provider produced no visible text and no tool call",
 					ErrNoModelOutput)
 			}
-			// A visible text turn ends any correction tool window. A second
-			// rejection is returned to the evaluator, never another window.
+			// A visible text turn ends any correction tool window. The
+			// publication gate reviews it, spends a correction pass when the
+			// host authorized one and the claim set changed, and otherwise
+			// commits or rejects it.
 			l.correctionActive.Store(false)
-			if !answerCorrectionAttempted && len(turns) < l.cfg.MaxTurns {
-				if reason := l.answerReviewReason(turns); reason != "" {
-					if directive := l.correctionDirective(turns, reason); directive != "" {
-						turns[len(turns)-1].Suppressed = true
-						l.noteRejected()
-						answerCorrectionAttempted = true
-						correctionPending = true
-						l.correctionActive.Store(true)
-						l.correctionCalls.Store(0)
-						nudges = append(nudges, directive)
-						reportTurn()
-						continue
-					}
-				}
+			if !acceptAnswer() {
+				continue
 			}
-			l.finalizeResponse(turns, &live, lastEvidenceReview)
-			reportTurn()
 			return turns, nil
 		}
 
@@ -1574,32 +1729,15 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			turn.Assistant = SanitizeAssistantMessage(answerWithoutToolCalls(assistant))
 			turn.SuppressText = false
 			turns = append(turns, turn)
+			// The stored turn dropped the call blocks, so the live conversation
+			// must drop them too. A correction request otherwise replays a call
+			// with no result; a committed answer leaves a call the host would
+			// persist without its outcome.
+			live[len(live)-1] = AssistantMessage{Message: turn.Assistant}
 			// A visible text turn ends any correction tool window.
 			l.correctionActive.Store(false)
-			if !answerCorrectionAttempted && len(turns) < l.cfg.MaxTurns {
-				if reason := l.answerReviewReason(turns); reason != "" {
-					if directive := l.correctionDirective(turns, reason); directive != "" {
-						// The stored turn dropped the call blocks; the live
-						// conversation must drop them too, or the correction
-						// request would replay a call with no result.
-						live[len(live)-1] = AssistantMessage{Message: turn.Assistant}
-						turns[len(turns)-1].Suppressed = true
-						l.noteRejected()
-						answerCorrectionAttempted = true
-						correctionPending = true
-						l.correctionActive.Store(true)
-						l.correctionCalls.Store(0)
-						nudges = append(nudges, directive)
-						if l.cfg.OnTurn != nil {
-							l.cfg.OnTurn(turns[len(turns)-1])
-						}
-						continue
-					}
-				}
-			}
-			l.finalizeResponse(turns, &live, lastEvidenceReview)
-			if l.cfg.OnTurn != nil {
-				l.cfg.OnTurn(turns[len(turns)-1])
+			if !acceptAnswer() {
+				continue
 			}
 			return turns, nil
 		}
@@ -1711,8 +1849,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			continue
 		}
 		// The model received the refusal and still produced nothing actionable.
-		// If it also produced text, that text is the best answer available;
-		// completion decides whether it is sufficient.
+		// If it also produced text, that text is the best candidate available;
+		// the publication gate and completion decide whether it is sufficient.
 		if strings.TrimSpace(assistant.Text()) != "" {
 			return turns, nil
 		}
@@ -2610,8 +2748,8 @@ func (l *Loop) execute(
 	if l.correctionActive.Load() && call.Name != "conclude" {
 		limit := int64(l.correctionToolBudget())
 		if used := l.correctionCalls.Add(1); used > limit {
-			return failClass(ToolFailureCorrectionBudget, fmt.Sprintf(
-				"correction budget exhausted: this repair may use at most %d tool call(s). Answer with the evidence already observed; qualify or remove any claim that remains unsupported", limit))
+			return failClass(ToolFailureCorrectionBudget,
+				"the repair window is closed. Answer with the evidence already observed; qualify or remove any claim that remains unsupported")
 		}
 	}
 	// Authority has admitted the operation; budget now decides whether the

@@ -35,7 +35,12 @@ func unresolvedConclusionTargets(text string) []string {
 		out = append(out, target)
 	}
 	for _, match := range conclusionPathPattern.FindAllString(text, -1) {
-		add(match)
+		// Canonicalise the path once, here, so the obligation and the evidence
+		// ledger use the same coordinate. "./backend/x.go" and "backend/x.go"
+		// are one file, not two unsatisfied obligations.
+		if cleaned := cleanPath(match); cleaned != "" {
+			add(cleaned)
+		}
 	}
 	for _, match := range conclusionSymbolPattern.FindAllString(text, -1) {
 		parts := strings.Split(match, ".")
@@ -52,9 +57,15 @@ func unresolvedConclusionTargets(text string) []string {
 }
 
 // conclusionTargetMatches reports whether one observation mentions a named
-// target. A dotted symbol may be observed through its method name when the
-// implementation file does not repeat the type qualifier; that is still the
-// targeted observation the conclusion declared missing.
+// target. A dotted symbol may be observed through its bare method name when
+// the implementation file does not repeat the type qualifier; that is still
+// the targeted observation the conclusion declared missing.
+//
+// The bare-name fallback matches on identifier boundaries, never as a raw
+// substring: "Run" must not be satisfied by "runtime" or "CheckoutRunner".
+// Boundary matching makes a length gate unnecessary, and the old len>=4 gate
+// made short-method obligations (StockReserver.Run) unsatisfiable, forcing
+// the runtime to demand the same inspection on every turn.
 func conclusionTargetMatches(haystack, target string) bool {
 	if target == "" {
 		return false
@@ -72,8 +83,33 @@ func conclusionTargetMatches(haystack, target string) bool {
 	if len(parts) < 2 {
 		return false
 	}
-	last := parts[len(parts)-1]
-	return len(last) >= 4 && strings.Contains(haystack, last)
+	return identifierContains(haystack, parts[len(parts)-1])
+}
+
+// identifierContains reports whether name occurs in haystack as one complete
+// code identifier, delimited by non-identifier bytes or text edges.
+func identifierContains(haystack, name string) bool {
+	if name == "" {
+		return false
+	}
+	for from := 0; from+len(name) <= len(haystack); {
+		at := strings.Index(haystack[from:], name)
+		if at < 0 {
+			return false
+		}
+		at += from
+		if (at == 0 || !isIdentifierByte(haystack[at-1])) &&
+			(at+len(name) == len(haystack) || !isIdentifierByte(haystack[at+len(name)])) {
+			return true
+		}
+		from = at + 1
+	}
+	return false
+}
+
+// isIdentifierByte reports whether b can occur inside a code identifier.
+func isIdentifierByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 // mergeConclusionTargets preserves an existing provisional obligation while

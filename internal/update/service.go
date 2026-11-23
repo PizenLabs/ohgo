@@ -75,6 +75,9 @@ type Config struct {
 	// GOOS and GOARCH default to the running platform.
 	GOOS   string
 	GOARCH string
+	// MultiLanguage selects the multi-language release artifact. It is a
+	// property of the running binary, supplied by composition.
+	MultiLanguage bool
 	// Source resolves releases. Default: GitHubSource for DefaultRepo.
 	Source Source
 	// Cache is the local observation store. Default: the machine state path.
@@ -223,7 +226,7 @@ func NewService(cfg Config) *Service {
 	}
 	return &Service{
 		current:    cfg.CurrentVersion,
-		target:     Target{GOOS: goos, GOARCH: goarch},
+		target:     Target{GOOS: goos, GOARCH: goarch, MultiLanguage: cfg.MultiLanguage},
 		source:     source,
 		cache:      cache,
 		transition: transition,

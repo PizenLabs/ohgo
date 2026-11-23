@@ -28,7 +28,7 @@ const (
 // review, was interrupted, or failed. The model's stop reason is never enough:
 // completion comes from agent.EvaluateTaskCompletion, which requires the
 // contract's target evidence and a verification that covers it.
-func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver) (taskAction, string) {
+func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver) (taskAction, string, []contract.GroundingIssue) {
 	return turnTaskOutcomeWithReview(err, turns, intent, snapshot, resolver, "", false, agent.EvidenceProvenance{})
 }
 
@@ -43,7 +43,7 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 //
 // The stop classification and the completion rules belong to agent.ClassifyRun;
 // this function only projects its verdict into the durable task lifecycle.
-func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance) (taskAction, string) {
+func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance) (taskAction, string, []contract.GroundingIssue) {
 	return turnTaskOutcomeForAuthority(err, turns, intent, snapshot, resolver, evidenceReview, priorChange, provenance, agent.MutationProvenance{}, "")
 }
 
@@ -57,11 +57,11 @@ func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.In
 // An empty or invalid authority disables the phase projection. The caller has
 // no trustworthy capability context, so the persisted objective is evaluated
 // unchanged.
-func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance, mutations agent.MutationProvenance, authority string) (taskAction, string) {
+func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance, mutations agent.MutationProvenance, authority string) (taskAction, string, []contract.GroundingIssue) {
 	if err == nil {
 		if active, parseErr := workspace.Parse(authority); parseErr == nil {
 			if phase, deferred := workspace.PhaseContract(intent, active); deferred {
-				verdict, reason := agent.ClassifyRun(nil, agent.CompletionInput{
+				verdict, reason, issues := agent.ClassifyRun(nil, agent.CompletionInput{
 					Turns:          turns,
 					Contract:       phase,
 					Snapshot:       snapshot,
@@ -71,11 +71,11 @@ func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.
 					Provenance:     provenance,
 					Mutations:      mutations,
 				}, false)
-				return projectTaskVerdict(verdict, reason, true)
+				return projectTaskVerdict(verdict, reason, issues, true)
 			}
 		}
 	}
-	verdict, reason := agent.ClassifyRun(err, agent.CompletionInput{
+	verdict, reason, issues := agent.ClassifyRun(err, agent.CompletionInput{
 		Turns:          turns,
 		Contract:       intent,
 		Snapshot:       snapshot,
@@ -92,38 +92,39 @@ func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.
 	if verdict == agent.RunCompleted && err == nil && intent.Kind == workspace.ObjectiveMutation &&
 		intent.ConditionalMutation && !priorChange {
 		if mutated, _ := agent.CompletionEvidence(turns, true); !mutated {
-			return taskActionPhaseComplete, ""
+			return taskActionPhaseComplete, "", nil
 		}
 	}
-	return projectTaskVerdict(verdict, reason, false)
+	return projectTaskVerdict(verdict, reason, issues, false)
 }
 
 // projectTaskVerdict maps the shared run verdict into the durable task
 // lifecycle. phase distinguishes a completed authority phase from completion
-// of the persisted objective; only the latter may record a proof.
-func projectTaskVerdict(verdict agent.RunVerdict, reason string, phase bool) (taskAction, string) {
+// of the persisted objective; only the latter may record a proof. The issues
+// travel only with a review verdict: every other action has no claim list.
+func projectTaskVerdict(verdict agent.RunVerdict, reason string, issues []contract.GroundingIssue, phase bool) (taskAction, string, []contract.GroundingIssue) {
 	switch verdict {
 	case agent.RunCompleted:
 		if phase {
-			return taskActionPhaseComplete, ""
+			return taskActionPhaseComplete, "", nil
 		}
-		return taskActionComplete, ""
+		return taskActionComplete, "", nil
 	case agent.RunNeedsReview:
-		return taskActionReview, reason
+		return taskActionReview, reason, issues
 	case agent.RunCancelled:
-		// Cancellation is a pause, not a failure verdict: the human's stop is
-		// the more truthful transition for a non-terminal run.
-		return taskActionPause, reason
+		// Cancellation is a pause, not a failure verdict: the human's stop
+		// is the more truthful transition for a non-terminal run.
+		return taskActionPause, reason, nil
 	case agent.RunBlocked:
 		// The objective needs a capability this runtime cannot provide. The
 		// task becomes BLOCKED (a failed lifecycle, never a review of work
 		// that did not happen), and the reason carries the machine-readable
 		// class so a diagnostic path can distinguish it from a model failure.
-		return taskActionFail, agent.RunBlocked.String() + ": " + reason
+		return taskActionFail, agent.RunBlocked.String() + ": " + reason, nil
 	case agent.RunFailed:
-		return taskActionFail, reason
+		return taskActionFail, reason, nil
 	default: // agent.RunPaused
-		return taskActionPause, reason
+		return taskActionPause, reason, nil
 	}
 }
 

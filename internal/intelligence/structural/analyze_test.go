@@ -109,9 +109,9 @@ func TestArchitectureAnalysisUsesEdgeEvidence(t *testing.T) {
 // succeeds, but the unreadable language is named and coverage is qualified.
 func TestUnsupportedLanguageIsAnExplicitIssue(t *testing.T) {
 	root := fixture(t, map[string]string{
-		"go.mod":    "module example.com/app\n\ngo 1.21\n",
-		"main.go":   "package main\n\nfunc main() {}\n",
-		"script.py": "def run():\n    pass\n",
+		"go.mod":       "module example.com/app\n\ngo 1.21\n",
+		"main.go":      "package main\n\nfunc main() {}\n",
+		"script.swift": "func run() {}\n",
 	})
 	analysis := analyze(t, newIndex(t, root), Request{Intent: IntentArchitecture}, nil)
 	if !hasIssue(analysis.Issues, "unsupported_language") {

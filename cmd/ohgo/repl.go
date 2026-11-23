@@ -106,6 +106,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				var last update.Stage
 				svc := update.NewService(update.Config{
 					CurrentVersion: version,
+					MultiLanguage:  multiLanguageBuild(),
 					Progress: func(stage update.Stage) {
 						if stage == last {
 							return

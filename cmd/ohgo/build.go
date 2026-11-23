@@ -4,10 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -89,7 +86,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 			External: gryintel.New(gryintel.FromEnv(opts.root)),
 		},
 		&investigate.RetrievalProvider{Workspace: retrieve.Workspace(), Source: sourceFor(structural), Root: opts.root},
-		semanticProvider(opts.root),
+		semanticProvider(opts.root, structural, nil),
 	)
 	toolSet := []agent.Tool{
 		tools.NewReadTool(opts.root),
@@ -183,57 +180,25 @@ func structuralCacheFor(source *tools.StructuralSource) structural.Cache {
 	return nil
 }
 
-// semanticProvider configures gopls only when it is actually installed.
-func semanticProvider(root string) *investigate.SemanticProvider {
-	path, err := exec.LookPath("gopls")
-	if err != nil {
+// semanticProvider configures the discovered language servers. Starting is
+// lazy: a machine with no server reports semantic evidence unavailable, and a
+// machine with several starts only the one the request selects.
+func semanticProvider(root string, source *tools.StructuralSource, lookPath lookPathFunc) *investigate.SemanticProvider {
+	specs := languageServerSpecs(root, lookPath)
+	if len(specs) == 0 {
 		return &investigate.SemanticProvider{}
 	}
-	// gopls loads the module whose go.mod is at or below its workspace root.
-	// A repository that keeps the module in backend/ has no module at the
-	// project root, so starting gopls there makes workspace/symbol answer
-	// nothing for a symbol that exists.
 	return &investigate.SemanticProvider{
 		Root: root,
-		Start: func(ctx context.Context) (*semantic.Manager, error) {
-			return semantic.NewManager(semanticWorkspaceRoot(root), []semantic.Spec{{
-				Name: "gopls", Languages: []string{"go"}, Command: []string{path, "serve"},
-			}}, 1), nil
+		// A symbol-only request has no path to derive a language from. The
+		// workspace's dominant supported language is the deterministic
+		// fallback; it is computed lazily so startup pays nothing.
+		DefaultLanguage: func() string { return dominantLanguage(source) },
+		SnapshotID:      func() string { return structuralSnapshotID(source) },
+		Start: func(context.Context) (*semantic.Manager, error) {
+			return semantic.NewManager(root, specs, len(specs)), nil
 		},
 	}
-}
-
-// semanticWorkspaceRoot picks the module gopls should load. It never guesses
-// among several modules: a multi-module workspace keeps the project root and
-// lets the server report what it can.
-func semanticWorkspaceRoot(root string) string {
-	if info, err := os.Stat(filepath.Join(root, "go.mod")); err == nil && info.Mode().IsRegular() {
-		return root
-	}
-	var modules []string
-	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if entry.IsDir() {
-			if path == root {
-				return nil
-			}
-			name := entry.Name()
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.Name() == "go.mod" {
-			modules = append(modules, filepath.Dir(path))
-		}
-		return nil
-	})
-	if len(modules) == 1 {
-		return modules[0]
-	}
-	return root
 }
 
 type spawnFunc func(ctx context.Context, spec agent.SubagentSpec) (agent.SubagentResult, error)

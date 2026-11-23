@@ -95,11 +95,17 @@ state system was added.
 When a candidate answer fails the answer-level review:
 
 1. The loop records the reason in a runtime-authored directive.
-2. It spends **one** correction turn.
-3. It reopens the loop's constructed tool set for that turn only, so the model
-   can acquire missing evidence; authority and grounding still gate every call.
-4. It re-runs the same review on the corrected answer.
-5. A second failure returns to the host, which reports `NEEDS_REVIEW`.
+2. It admits a bounded correction pass, at most `MaxAnswerCorrections` (2).
+3. It reopens the loop's constructed tool set for the correction window, so the
+   model can acquire missing evidence; authority and grounding still gate every
+   call. The correction tool allowance is enforced silently, not announced as a
+   remaining-call counter.
+4. It re-runs the same review on the corrected answer. A further pass is
+   admitted only when the review names a different claim set.
+5. An exhausted or repeated rejection returns to the host, which reports
+   `NEEDS_REVIEW`. A candidate superseded by a correction is internal and is
+   never displayed; only the terminal candidate may remain as one labelled
+   withdrawn draft.
 
 The correction is not a completion bypass: it cannot mark the task complete,
 widen authority, or turn an unsupported claim into evidence. An empty

@@ -308,13 +308,45 @@ func (p *tsParser) collectParseIssues() {
 		}
 		return p.issues < tsMaxParseIssues
 	})
-	if real == 0 {
+	if real == 0 && !p.missingToken() {
 		return
 	}
 	p.facts.Partial = true
 	if len(p.facts.Issues) == 0 {
 		p.addIssue("recoverable syntax error", p.root)
 	}
+}
+
+// missingToken reports an unnamed MISSING node that is not a grammar's
+// automatic-semicolon recovery. Tree-sitter names error nodes but leaves
+// missing punctuation unnamed, so the named-only walk above cannot see a
+// Python `def f(:` recovery; the Kotlin grammar's automatic semicolon is the
+// one recovery token that does not describe lost source.
+func (p *tsParser) missingToken() bool {
+	if p == nil || p.root == nil {
+		return false
+	}
+	type entry struct {
+		node  *sitter.Node
+		depth int
+	}
+	stack := []entry{{node: p.root}}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if current.node == nil || current.depth > tsMaxTraversalDepth {
+			continue
+		}
+		if current.node.IsMissing() && !strings.Contains(current.node.Type(), "automatic_semicolon") {
+			return true
+		}
+		for i := int(current.node.ChildCount()) - 1; i >= 0; i-- {
+			if child := current.node.Child(i); child != nil {
+				stack = append(stack, entry{node: child, depth: current.depth + 1})
+			}
+		}
+	}
+	return false
 }
 
 // finishSymbols applies ordering and the shared kind filter. Tree-sitter

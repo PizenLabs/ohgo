@@ -24,6 +24,12 @@ type SemanticProvider struct {
 	Start func(ctx context.Context) (*semantic.Manager, error)
 	// Root bounds paths resolved from file URIs.
 	Root string
+	// DefaultLanguage resolves the workspace's dominant language when the
+	// request names no path. It is called lazily, at most once per step.
+	DefaultLanguage func() string
+	// SnapshotID identifies the structural snapshot the semantic result is
+	// being correlated with. Empty keeps the server identity alone.
+	SnapshotID func() string
 	// MaxSymbols bounds declarations and follow-up requests.
 	MaxSymbols int
 }
@@ -44,16 +50,16 @@ func (p *SemanticProvider) Observe(ctx context.Context, req Request, _ planner.S
 		return Observation{}, fmt.Errorf("start language server: %w", err)
 	}
 	defer func() { _ = manager.Close() }()
-	servers := manager.Servers()
-	if len(servers) == 0 {
-		return Observation{
-			Outcome: OutcomeUnavailable,
-			Issues:  []string{"semantic: no language server is configured for this workspace"},
-		}, nil
-	}
-	client, err := manager.Client(ctx, servers[0])
+	client, server, err := p.selectClient(ctx, manager, req)
 	if err != nil {
-		return Observation{}, fmt.Errorf("language server %s: %w", servers[0], err)
+		if errors.Is(err, semantic.ErrNoServer) {
+			detail := "semantic: no language server is configured for this workspace; AST evidence remains available"
+			if server != "" {
+				detail = "semantic: no language server is configured for " + server + "; AST evidence remains available"
+			}
+			return Observation{Outcome: OutcomeUnavailable, Issues: []string{detail}}, nil
+		}
+		return Observation{}, fmt.Errorf("language server %s: %w", server, err)
 	}
 	if !client.Supports("workspace/symbol") {
 		return Observation{Outcome: OutcomeUnavailable, Issues: []string{
@@ -82,8 +88,9 @@ func (p *SemanticProvider) Observe(ctx context.Context, req Request, _ planner.S
 		State:      evidence.Observed,
 		Confidence: 0.6,
 		Coverage:   0.3,
-		Summary:    fmt.Sprintf("%d declarations resolved by %s", len(symbols), servers[0]),
+		Summary:    fmt.Sprintf("%d declarations resolved by %s", len(symbols), server),
 	}
+	snapshotID := p.semanticSnapshotID(server)
 	if len(symbols) == 0 {
 		observation.Outcome = OutcomeUnresolved
 		observation.State = evidence.Unknown
@@ -107,13 +114,13 @@ func (p *SemanticProvider) Observe(ctx context.Context, req Request, _ planner.S
 			State: evidence.Observed, Confidence: 0.9, Freshness: evidence.FreshnessCurrent,
 			Scope:      evidence.Scope{Workspace: p.Root, Path: rel},
 			Refs:       []evidence.Ref{{Path: rel, URI: symbol.URI, Line: line, Column: symbol.Range.Start.Character + 1}},
-			SnapshotID: "lsp:" + servers[0],
+			SnapshotID: snapshotID,
 			Note:       strings.TrimSpace(symbol.Container + " " + symbol.Detail),
 		})
 		observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()),
 			Subject: symbol.Name, Detail: fmt.Sprintf("declared at %s:%d (%s)", rel, line, symbol.Container)})
 		if index < 2 {
-			p.enrich(ctx, client, &observation, symbol, rel, servers[0], meter)
+			p.enrich(ctx, client, &observation, symbol, rel, server, snapshotID, meter)
 		}
 	}
 	return observation, nil
@@ -122,7 +129,7 @@ func (p *SemanticProvider) Observe(ctx context.Context, req Request, _ planner.S
 // enrich adds references and incoming calls for one resolved declaration.
 // A failure here is an explicit capability issue, never a zero count.
 func (p *SemanticProvider) enrich(ctx context.Context, client *semantic.Client, observation *Observation,
-	symbol semantic.Symbol, rel, server string, meter *Meter) {
+	symbol semantic.Symbol, rel, server, snapshotID string, meter *Meter) {
 	if symbol.URI == "" {
 		return
 	}
@@ -150,7 +157,7 @@ func (p *SemanticProvider) enrich(ctx context.Context, client *semantic.Client, 
 				Relation: "references", Object: fmt.Sprintf("%d", len(references)),
 				State: evidence.Observed, Confidence: 0.9, Freshness: evidence.FreshnessCurrent,
 				Scope:      evidence.Scope{Workspace: p.Root, Path: rel},
-				SnapshotID: "lsp:" + server,
+				SnapshotID: snapshotID,
 				Note:       referenceNote(references),
 			})
 			observation.Facts = append(observation.Facts, Fact{Provider: string(p.Name()),
@@ -168,7 +175,7 @@ func (p *SemanticProvider) enrich(ctx context.Context, client *semantic.Client, 
 					Relation: "incoming_calls", Object: fmt.Sprintf("%d", len(calls)),
 					State: evidence.Observed, Confidence: 0.85, Freshness: evidence.FreshnessCurrent,
 					Scope:      evidence.Scope{Workspace: p.Root, Path: rel},
-					SnapshotID: "lsp:" + server,
+					SnapshotID: snapshotID,
 				})
 			} else if !errors.Is(callErr, semantic.ErrUnsupportedCapability) {
 				observation.Issues = append(observation.Issues, "semantic: call hierarchy failed: "+callErr.Error())
@@ -177,6 +184,61 @@ func (p *SemanticProvider) enrich(ctx context.Context, client *semantic.Client, 
 			observation.Issues = append(observation.Issues, "semantic: call hierarchy failed: "+err.Error())
 		}
 	}
+}
+
+// semanticSnapshotID ties an LSP observation to the structural snapshot it was
+// correlated with, so a stale AST and a live server cannot be mistaken for the
+// same evidence state.
+func (p *SemanticProvider) semanticSnapshotID(server string) string {
+	id := "lsp:" + server
+	if p.SnapshotID != nil {
+		if snapshot := p.SnapshotID(); snapshot != "" {
+			id += ":" + snapshot
+		}
+	}
+	return id
+}
+
+// selectClient resolves the request's language and starts only that server.
+// A language with no configured server is an explicit unavailable state, not
+// a reason to query an unrelated server and report a false absence.
+func (p *SemanticProvider) selectClient(ctx context.Context, manager *semantic.Manager, req Request) (*semantic.Client, string, error) {
+	language := requestLanguage(req)
+	if language == "" && p.DefaultLanguage != nil {
+		language = p.DefaultLanguage()
+	}
+	if language != "" {
+		client, err := manager.ForLanguage(ctx, language)
+		if err != nil {
+			return nil, language, err
+		}
+		server := client.Name()
+		if server == "" {
+			server = language
+		}
+		return client, server, nil
+	}
+	servers := manager.Servers()
+	if len(servers) == 0 {
+		return nil, "", semantic.ErrNoServer
+	}
+	client, err := manager.Client(ctx, servers[0])
+	return client, servers[0], err
+}
+
+// requestLanguage finds a language id in a path-like focus or question token.
+// A bare symbol name deliberately yields no language: the provider then uses
+// the workspace default rather than guessing from the symbol spelling.
+func requestLanguage(req Request) string {
+	for _, field := range []string{req.Focus, req.Question} {
+		for _, token := range strings.Fields(field) {
+			token = strings.Trim(token, "`'\"()[]{}.,:;")
+			if language := languageID(token); language != "" {
+				return language
+			}
+		}
+	}
+	return ""
 }
 
 // semanticQuery selects the text a language server should resolve.
@@ -234,16 +296,30 @@ func languageID(rel string) string {
 	switch strings.ToLower(filepath.Ext(rel)) {
 	case ".go":
 		return "go"
-	case ".ts":
+	case ".ts", ".mts", ".cts":
 		return "typescript"
 	case ".tsx":
 		return "typescriptreact"
-	case ".js":
+	case ".js", ".mjs", ".cjs":
 		return "javascript"
-	case ".py":
+	case ".jsx":
+		return "javascriptreact"
+	case ".py", ".pyi":
 		return "python"
 	case ".rs":
 		return "rust"
+	case ".java":
+		return "java"
+	case ".c", ".h":
+		return "c"
+	case ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx":
+		return "cpp"
+	case ".rb":
+		return "ruby"
+	case ".cs":
+		return "csharp"
+	case ".kt", ".kts":
+		return "kotlin"
 	default:
 		return ""
 	}

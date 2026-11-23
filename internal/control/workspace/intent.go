@@ -528,6 +528,28 @@ func IsExecutionFollowUp(text string) bool {
 	}
 }
 
+// IsDepthFollowUp reports whether a bare request deepens the open task's
+// own subject instead of naming a new objective.
+//
+// "More info" after an informational answer asks for more of the same
+// understanding: routing it as a new objective archives the live task with
+// its facts and starts an empty one, which repeats the investigation the
+// user asked to extend. The vocabulary is deliberately bare — a request that
+// names any subject ("more info about the auth flow") states a new objective
+// and builds its own contract. Like the other follow-up predicates this
+// decides attachment only; it grants no authority, and the gate still
+// admits every tool.
+func IsDepthFollowUp(text string) bool {
+	switch normalizeRequest(text) {
+	case "more", "more info", "more information", "more detail", "more details",
+		"tell me more", "go deeper", "dig deeper", "elaborate", "elaborate on that",
+		"expand on that", "say more", "keep explaining", "continue explaining":
+		return true
+	default:
+		return false
+	}
+}
+
 // isTaskFollowUpCore reports a short request whose object is the open task's
 // own result.
 func isTaskFollowUpCore(normalized string) bool {

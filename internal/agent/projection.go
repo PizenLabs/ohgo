@@ -137,6 +137,11 @@ type ProjectionReport struct {
 	// action for. It is audit data and the correction request's vocabulary:
 	// a premature answer must name the evidence frontier it did not close.
 	Missing []string `json:"missing,omitempty"`
+	// Facets is the required-facet verdict for a relationship-shaped task,
+	// formatted as "facet=STATE". Empty when the task declares no facets.
+	Facets []string `json:"facets,omitempty"`
+	// FacetCoverage is the satisfied/total facet count, e.g. "2/4".
+	FacetCoverage string `json:"facet_coverage,omitempty"`
 	// Provenance summarizes what kind of evidence the answer may rely on:
 	// observed implementation, documentation, or external content. Completion
 	// uses it to keep documentation claims distinguishable from observed facts.

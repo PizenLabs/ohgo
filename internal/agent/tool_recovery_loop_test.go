@@ -60,7 +60,7 @@ func TestSession224InvalidSelectorRecovers(t *testing.T) {
 	answer := "According to the README, the project is a Go service with an API gateway " +
 		"and an order backend. The structural inventory contains backend/cmd/api and " +
 		"backend/internal/order. The inspected backend/cmd/api/main.go starts an HTTP " +
-		"listener."
+		"listener, and backend/internal/order/service.go defines the checkout operation."
 
 	badArgs := map[string]any{"path": "backend"}
 	result := runFailureLoop(t, prompt, []agent.Tool{structure, read, list}, []ai.AssistantMessage{
@@ -81,6 +81,7 @@ func TestSession224InvalidSelectorRecovers(t *testing.T) {
 				toolCall("corrected", "structure", map[string]any{"view": "files", "path": "backend"}),
 				toolCall("readme", "read", map[string]any{"path": "README.md"}),
 				toolCall("main", "read", map[string]any{"path": "backend/cmd/api/main.go"}),
+				toolCall("order", "read", map[string]any{"path": "backend/internal/order/service.go"}),
 			},
 			StopReason: ai.StopToolUse,
 		},
@@ -266,7 +267,6 @@ func TestMixedProviderHealthPreservesSuccessfulObservations(t *testing.T) {
 			Content: []ai.ContentBlock{
 				toolCall("readme", "read", map[string]any{"path": "README.md"}),
 				toolCall("main", "read", map[string]any{"path": "backend/cmd/api/main.go"}),
-				toolCall("order", "read", map[string]any{"path": "backend/internal/order/service.go"}),
 			},
 			StopReason: ai.StopToolUse,
 		},

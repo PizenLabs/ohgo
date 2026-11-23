@@ -313,6 +313,30 @@ func (v *livePainter) assistantBlock(s State, i int, pal *Palette, layout Layout
 		return nil, nil
 	}
 	lines := liveMarkdownLines(string(rest), pal, layout)
+	// A provisional answer has not been classified by the runtime yet. It
+	// may be withdrawn as tool narration or a rejected draft, and output-first
+	// scrollback cannot be rewritten, so it stays in the live region until the
+	// accept/discard event settles it. A long provisional block is a viewport
+	// onto its tail, not a commit: the settlement frame commits the complete
+	// text in paragraph order.
+	if s.Entries[i].Provisional {
+		if budget > 0 && len(lines) > budget {
+			// Keep a markdown-safe suffix: a paragraph boundary outside any
+			// fence. A raw row cut can begin inside a fenced block and render
+			// the remaining code as prose.
+			if cut := suffixCut(rest, budget, pal, layout); cut > 0 {
+				return nil, liveMarkdownLines(string(rest[cut:]), pal, layout)
+			}
+			if containsFenceLine(rest) {
+				// A single long fenced block has no safe internal cut. Showing
+				// the whole provisional block may exceed the live budget, but
+				// cutting it would render the code body as prose.
+				return nil, lines
+			}
+			return nil, lines[len(lines)-budget:]
+		}
+		return nil, lines
+	}
 	if budget <= 0 || len(lines) <= budget {
 		return nil, lines
 	}
@@ -355,16 +379,71 @@ func liveMarkdownLines(text string, pal *Palette, layout Layout) []string {
 // leading blank intact, and joining the two reproduces the whole-document
 // render exactly.
 func commitCut(rest []rune, budget int, pal *Palette, layout Layout) int {
-	for scanned, i := 0, len(rest)-1; i > 0 && scanned < liveCommitWalk; i-- {
-		if !isParagraphEnd(rest, i) {
+	return suffixCut(rest, budget, pal, layout)
+}
+
+// suffixCut returns the latest paragraph boundary outside a fence whose
+// remainder fits the budget. It is used both to commit an accepted answer and
+// to choose the provisional viewport, so the two paths share one definition of
+// a safe markdown cut.
+func suffixCut(rest []rune, budget int, pal *Palette, layout Layout) int {
+	cuts := paragraphCutsOutsideFences(rest)
+	for scanned, k := 0, len(cuts)-1; k >= 0 && scanned < liveCommitWalk; k-- {
+		scanned++
+		i := cuts[k]
+		if i <= 0 {
 			continue
 		}
-		scanned++
 		if len(liveMarkdownLines(string(rest[i:]), pal, layout)) <= budget {
 			return i
 		}
 	}
 	return -1
+}
+
+// containsFenceLine reports a fenced block in the provisional text.
+func containsFenceLine(rest []rune) bool {
+	lineStart := 0
+	for i := 0; i <= len(rest); i++ {
+		if i < len(rest) && rest[i] != '\n' {
+			continue
+		}
+		if isFenceDelimiter(strings.TrimSpace(string(rest[lineStart:i]))) {
+			return true
+		}
+		lineStart = i + 1
+	}
+	return false
+}
+
+// paragraphCutsOutsideFences returns the rune offsets at which a prefix can
+// be sealed without splitting a fenced block. A blank line inside a fence is
+// not a paragraph boundary: committing there would put the opening fence in
+// scrollback and render the remainder as prose, which is a different document
+// from the one the model wrote.
+func paragraphCutsOutsideFences(rest []rune) []int {
+	var cuts []int
+	inFence := false
+	var marker byte
+	lineStart := 0
+	for i := 0; i <= len(rest); i++ {
+		if i < len(rest) && rest[i] != '\n' {
+			continue
+		}
+		trimmed := strings.TrimSpace(string(rest[lineStart:i]))
+		switch {
+		case !inFence && isFenceDelimiter(trimmed):
+			marker, _, _, _ = fenceStyle(trimmed)
+			inFence = true
+		case inFence && isClosingFence(trimmed, marker):
+			inFence = false
+		}
+		if !inFence && i > 0 && i < len(rest) && isParagraphEnd(rest, i) {
+			cuts = append(cuts, i)
+		}
+		lineStart = i + 1
+	}
+	return cuts
 }
 
 // isParagraphEnd reports whether the newline at i ends a blank line.
@@ -424,6 +503,17 @@ func firstUnstable(s State) int {
 	now := s.presentationAt()
 	if open := s.openAssistant(); open >= 0 {
 		first = open
+	}
+	// A provisional answer may be replaced, so it is never sealed even when a
+	// later block (a reasoning trace) sits below it.
+	for i, entry := range s.Entries {
+		if i >= first {
+			break
+		}
+		if entry.Kind == EntryAssistant && entry.Provisional && !entry.Discarded {
+			first = i
+			break
+		}
 	}
 	if open := s.openReasoning(); open >= 0 && open < first {
 		first = open
@@ -504,7 +594,14 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		return userPromptLines(e.UserText, s.Status.User, pal, layout)
 
 	case EntryAssistant:
-		lines := liveMarkdownLines(e.AssistantText, pal, layout)
+		text, label := assistantDisplay(e)
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		lines := liveMarkdownLines(text, pal, layout)
+		if label != "" {
+			lines = append([]string{pal.Warning.Render(label)}, lines...)
+		}
 		now := s.presentationAt()
 		if !entryFading(e, now) {
 			if age, ok := assistantFinalLineAge(e, now); ok && age < fadeFinalAt && len(lines) > 0 {
@@ -892,6 +989,12 @@ func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
 	width := displayWidth(s, layout)
+	if hasProvisionalAssistant(s) {
+		// Output-first has no stable row above the streamed block, so the
+		// draft state lives in the telemetry line. Full-screen marks the block
+		// itself; both modes say the same thing exactly once.
+		parts = append(parts, "draft · answer review pending")
+	}
 	// Shutting down is the one non-idle state no active telemetry row claims:
 	// the turn is already leaving, so the footer keeps the phase word.
 	if runtime := DeriveRuntime(s); runtime == RuntimeShuttingDown {
@@ -1061,4 +1164,17 @@ func liveHintsFor(s State, layout Layout) string {
 // the live region so the terminal scrolls them into its scrollback.
 func printTranscript(lines []string) tea.Cmd {
 	return tea.Println(strings.Join(lines, "\n"))
+}
+
+// hasProvisionalAssistant reports a streamed answer the review has not
+// settled. It is a status query, not authority: the block remains provisional
+// until AssistantReconcile accepts or withdraws it.
+func hasProvisionalAssistant(s State) bool {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := s.Entries[i]
+		if entry.Kind == EntryAssistant && entry.Provisional && !entry.Discarded {
+			return true
+		}
+	}
+	return false
 }

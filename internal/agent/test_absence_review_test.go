@@ -48,3 +48,59 @@ func TestTestFileCountDoesNotRewriteUnrelatedAbsenceReasons(t *testing.T) {
 		t.Fatalf("reason = %q, want the readme claim, not the test count", reason)
 	}
 }
+
+// Session 970: the answer said "no test scripts declared" (supported by the
+// observed package.json) and later "No tests exist" (not supported by the
+// static inventory). The review must name the unsupported sentence, not the
+// first occurrence of the word "test".
+func TestTestAbsenceReviewPointsAtTheUnsupportedSentence(t *testing.T) {
+	answer := "**Scripts**: `dev`, `build`, `start`, `lint` — no test scripts declared.\n\n" +
+		"No tests exist, and runtime behavior was not executed."
+	turns := []Turn{{Results: []ToolOutcome{
+		claimStructureTests(0, true),
+	}}}
+	assessment := AssessGrounding(claimContract(), turns, answer)
+	if assessment.Pass() {
+		t.Fatal("an unsupported test absence was accepted")
+	}
+	if len(assessment.Issues) == 0 {
+		t.Fatal("no issue was reported")
+	}
+	location := assessment.Issues[0].Location
+	if !strings.Contains(location, "No tests exist") || strings.Contains(location, "Scripts") {
+		t.Fatalf("location = %q, want the unsupported sentence", location)
+	}
+	if reason := strings.ToLower(assessment.Reason()); !strings.Contains(reason, "static") {
+		t.Fatalf("reason = %q, want the static-inventory boundary", assessment.Reason())
+	}
+	directive := completionRepairDirective("{{repairs}}", "", assessment.Reason(), assessment.Repairs(), 0)
+	if !strings.Contains(directive, "No tests exist") || strings.Contains(directive, "Scripts") {
+		t.Fatalf("directive = %q, want the unsupported sentence", directive)
+	}
+}
+
+// A statement about a manifest's declaration list is not a repository-wide
+// existence claim. The observed package.json is the evidence for "no test
+// scripts declared"; reviewing it for source coverage points the model at a
+// sentence it already supported.
+func TestManifestScriptAbsenceIsNotARepositoryAbsence(t *testing.T) {
+	for _, answer := range []string{
+		"**Scripts**: `dev`, `build`, `start`, `lint` — no test scripts declared.",
+		"package.json declares no test script.",
+		"No test scripts are in `package.json`.",
+	} {
+		if claims := negativeClaims(answer); len(claims) != 0 {
+			t.Fatalf("a manifest declaration was read as a repository absence: %q -> %+v", answer, claims)
+		}
+	}
+}
+
+// A declaration verb alone does not make a repository absence a manifest
+// declaration. Without a manifest noun or a scripts field, the claim still
+// needs coverage.
+func TestRepositoryDeclarationAbsenceStillNeedsCoverage(t *testing.T) {
+	answer := "The repository declares no tests."
+	if claims := negativeClaims(answer); len(claims) == 0 {
+		t.Fatal("a repository-wide declaration was treated as a manifest inventory")
+	}
+}

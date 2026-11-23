@@ -105,6 +105,10 @@ type TaskShape struct {
 	// NeedsRelationshipNavigation reports that the task asks about imports,
 	// references, callers, callees, or dependency impact.
 	NeedsRelationshipNavigation bool `json:"needsRelationshipNavigation,omitempty"`
+	// RequiredFacets are the evidence facets the intent requires before an
+	// answer boundary. They are derived deterministically from the shape, never
+	// from a model proposal.
+	RequiredFacets []FacetRequirement `json:"requiredFacets,omitempty"`
 	// RequiredKnowledge is the evidence the task needs to make progress.
 	RequiredKnowledge []KnowledgeNeed `json:"requiredKnowledge,omitempty"`
 	// Constraints are explicit limits the request states.
@@ -516,6 +520,7 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 	shape.VCSInspection = vcsInspection(shape.Objective)
 	shape.NeedsCodeNavigation = needsCodeNavigation(shape.Objective, intent)
 	shape.NeedsRelationshipNavigation = needsRelationshipNavigation(shape.Objective)
+	shape.RequiredFacets = deriveRequiredFacets(shape, intent)
 	shape.StructuralDepth = deriveStructuralDepth(shape)
 	// An explicit Gry/MCP request is structural by definition.
 	if strings.Contains(strings.ToLower(shape.Objective), "gry") ||
@@ -642,6 +647,13 @@ func (s TaskShape) Summary() string {
 	}
 	if s.NeedsRelationshipNavigation {
 		parts = append(parts, "relationships=yes")
+	}
+	if len(s.RequiredFacets) > 0 {
+		facets := make([]string, 0, len(s.RequiredFacets))
+		for _, facet := range s.RequiredFacets {
+			facets = append(facets, string(facet.Facet))
+		}
+		parts = append(parts, "facets="+strings.Join(facets, ","))
 	}
 	if s.External.Required {
 		parts = append(parts, "external=yes")
@@ -832,6 +844,12 @@ func containsAnyWord(normalized string, words []string) bool {
 // intent router: broad repository account -> overview, relationship question
 // -> impact, symbol/package navigation -> targeted, otherwise none.
 func deriveStructuralDepth(shape TaskShape) StructuralDepth {
+	// A relationship intent with required facets has already decided that
+	// structural evidence is mandatory. Do not let the broad-account branch
+	// downgrade it to an overview that can close without an edge.
+	if len(shape.RequiredFacets) > 0 {
+		return StructuralImpact
+	}
 	// A broad account is answered from metadata first even when the request
 	// also uses structural vocabulary ("architecture", "overview"). Impact is
 	// for a named relationship question, not for asking what the project is.
@@ -860,10 +878,11 @@ func needsCodeNavigation(objective string, intent contract.IntentContract) bool 
 	for _, word := range []string{
 		"debug", "bug", "defect", "failing", "failure", "test", "tests",
 		"refactor", "rename", "function", "symbol", "implementation",
-		"caller", "callee", "package", "module", "interface", "struct",
+		"caller", "callee", "calls", "package", "module", "interface", "struct",
 		"stack trace", "compile", "build error",
 		"explore", "exploring", "architecture", "structure", "overview",
 		"graph", "dependency", "dependencies", "index", "indexed", "gry", "mcp",
+		"request flow", "data flow", "call chain",
 	} {
 		if strings.Contains(normalized, " "+word+" ") {
 			return true
@@ -890,9 +909,11 @@ func needsRelationshipNavigation(objective string) bool {
 	for _, phrase := range []string{
 		"import", "imports", "imported", "dependency", "dependencies",
 		"caller", "callers", "callee", "callees", "reference", "references",
-		"call graph", "graph", "who calls", "impact", "affected",
+		"call graph", "graph", "who calls", "calls", "impact", "affected",
 		"architecture", "structure", "overview", "gry", "mcp",
-		"model context protocol",
+		"interface", "interfaces", "implementation", "implements", "adapter", "adapters",
+		"model context protocol", "request flow", "data flow",
+		"call chain", "reaches", "end-to-end", "end to end",
 	} {
 		if strings.Contains(normalized, " "+phrase+" ") {
 			return true
@@ -1378,6 +1399,12 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 	if shape.External.Required {
 		add("external_observation", "the request explicitly requires knowledge from an external capability")
 	}
+	// Mandatory intent facets come before direct and supporting claims so the
+	// repair loop spends its next observation on the relationship the task is
+	// actually about, not on a secondary implementation detail.
+	for _, facet := range shape.RequiredFacets {
+		add(facet.Key, facet.Reason)
+	}
 	// A conditional mutation starts with an investigation. Its literal targets
 	// describe the later change branch, not evidence the investigation phase
 	// must acquire first; requiring them here would report a future change as a
@@ -1453,7 +1480,7 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		if shape.RepositoryScope && (!shape.VCSInspection || structuralAnalysisRequested(shape.Objective)) {
 			add("repository_overview", "the answer is about the repository")
 			if shape.BroadRepositoryAnalysis {
-				add("repository_survey", "a broad overview needs a second content observation or the repository's structure")
+				add("repository_survey", "a broad overview needs source content and either a followed dependency or the repository's parsed structure")
 			}
 		}
 		if shape.VCSInspection {

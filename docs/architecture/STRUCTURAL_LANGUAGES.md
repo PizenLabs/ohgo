@@ -9,17 +9,19 @@ in [`STRUCTURAL_INTELLIGENCE.md`](STRUCTURAL_INTELLIGENCE.md). Topology and owne
 
 ## Build variants
 
-- **Go-only (`CGO_ENABLED=0`)** — the native `go/ast` backend is always present.
-  Every other supported extension is inventory metadata marked `UNSUPPORTED`;
-  it is never parsed by a second lexical parser and never counted as structural
-  completeness.
-- **Multi-language (`CGO_ENABLED=1`)** — the pinned tree-sitter grammars in
-  `github.com/smacker/go-tree-sitter` compile into the binary. No grammar is
-  downloaded or loaded at runtime.
+- **Multi-language (default)** — `make build` uses the host toolchain. With a
+  C compiler the pinned tree-sitter grammars in
+  `github.com/smacker/go-tree-sitter` compile into the binary; no grammar is
+  downloaded or loaded at runtime. `make build-multilang` is the explicit cgo
+  target and fails loudly without a toolchain.
+- **Portable (`CGO_ENABLED=0`)** — `make build-portable` keeps the native
+  `go/ast` backend only. Every other supported extension is inventory metadata
+  marked `UNSUPPORTED`; it is never parsed by a second lexical parser and never
+  counted as structural completeness.
 
-The dependency is pinned in `go.mod`; grammar versions are fixed by that module
-revision. The release matrix stays CGO-free for portability; use
-`make build-multilang` for the complete adapter build.
+The release publishes both variants for every supported platform. `install.sh`
+prefers the multi-language artifact, and `ohgo update` selects the artifact
+matching the running binary so an update never silently removes adapters.
 
 ## Project scope
 
@@ -48,6 +50,7 @@ appear covered.
 | Rust | `.rs` | yes | yes | name-resolved | trait impl | `#[test]` and `tests/` | `main` |
 | Kotlin | `.kt`, `.kts` | yes | yes | name-resolved | delegation clauses | `@Test` and test paths | `main` |
 | Ruby | `.rb` | yes | require/load | name-resolved | superclass/mixins | RSpec/Minitest conventions | script guard |
+| Python | `.py`, `.pyi` | yes | import/from | name-resolved | base classes | `test_*` and test paths | `__main__` guard |
 | C | `.c`, `.h` | yes | include | name-resolved | unsupported | common test macros | `main` |
 | C++ | `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx` | yes | include | name-resolved | base clauses | common test macros | `main` |
 
@@ -143,8 +146,15 @@ The same counts are available as machine fields: `truncated`, `reason`, and the
 - Test associations are static references/calls, never behavioral coverage.
 - `graph` remains the Go package-import graph; use `structure`/`refs` for
   language-neutral relationships.
-- The semantic activation level is reserved and fails explicitly. No language
-  server, compiler, or network parser is launched.
+- The semantic activation level is optional. `investigate` starts the language
+  server discovered for the request's language (or the workspace's dominant
+  supported language), bounded by the investigation budget; a missing server is
+  `UNAVAILABLE`, not proof of absence. AST remains the baseline provider.
+- Python `from package import name` resolves the package module. When the name
+  is also a submodule (`package/name.py`) and the package itself exists, the
+  package edge is kept; the submodule is not guessed from the name alone.
+- Python annotations are references, but type resolution, overloads, and
+  metaclass effects are outside the syntax model.
 - The generated grammar for C# is upstream-marked incomplete; partial syntax
   errors are reported in `facts.Issues` and keep the snapshot structurally
   incomplete.

@@ -16,6 +16,7 @@ type semanticCase struct {
 	prompt string
 	repo   bool
 	survey bool
+	facets bool
 }
 
 // informationalShape returns the shape a fresh ASK turn would build.
@@ -103,7 +104,7 @@ func TestBroadRepositoryObjectiveMatrix(t *testing.T) {
 		// symbol target; the shape must not widen them into a survey.
 		{name: "file target", prompt: "What does index.html do?", repo: false, survey: false},
 		{name: "source target", prompt: "Read internal/agent/loop.go and explain the retry logic", repo: false, survey: false},
-		{name: "symbol target", prompt: "Who calls parseConfig?", repo: false, survey: false},
+		{name: "symbol target", prompt: "Who calls parseConfig?", repo: false, survey: false, facets: true},
 
 		// Ambiguous and general-knowledge forms stay conservative. A question
 		// without a repository subject must not trigger a survey.
@@ -129,12 +130,16 @@ func TestBroadRepositoryObjectiveMatrix(t *testing.T) {
 			if !tc.repo && hasNeed(shape, "repository_overview") {
 				t.Fatalf("%q unnecessarily required repository evidence", tc.prompt)
 			}
+			if got := len(shape.RequiredFacets) > 0; got != tc.facets {
+				t.Fatalf("required facets(%q) = %v, want %v; needs=%+v",
+					tc.prompt, got, tc.facets, shape.RequiredKnowledge)
+			}
 
-			// Empty evidence: a repository question is insufficient; a general
-			// question can answer immediately.
+			// Empty evidence: a repository question or a mandatory structural
+			// facet is insufficient; a general question can answer immediately.
 			empty := NewEvidenceState()
 			suff := EvaluateSufficiency(shape, empty, ExecutionState{}, false)
-			if tc.repo {
+			if tc.repo || tc.facets {
 				if suff.State != Insufficient || suff.Stage != StageExplore {
 					t.Fatalf("empty evidence: sufficiency = %s/%s, want INSUFFICIENT/explore", suff.State, suff.Stage)
 				}
@@ -159,6 +164,11 @@ func TestBroadRepositoryObjectiveMatrix(t *testing.T) {
 			case tc.repo:
 				if suffOne.State != Sufficient || suffOne.Stage != StageAnswer {
 					t.Fatalf("one read: sufficiency = %s/%s, want SUFFICIENT/answer for a targeted question",
+						suffOne.State, suffOne.Stage)
+				}
+			case tc.facets:
+				if suffOne.State != Insufficient || suffOne.Stage != StageExplore {
+					t.Fatalf("one read: sufficiency = %s/%s, want INSUFFICIENT/explore for a structural facet",
 						suffOne.State, suffOne.Stage)
 				}
 			}

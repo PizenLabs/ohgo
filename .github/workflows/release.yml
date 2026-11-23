@@ -1,7 +1,9 @@
 name: release
 
-# CD only. Every job runs on ubuntu-latest and Go cross-compiles from GOOS and
-# GOARCH, so publishing never schedules a non-Linux runner.
+# CD only. The portable artifacts are cross-compiled on ubuntu-latest. The
+# multi-language artifacts compile C grammars, so they are built on a native
+# runner for each platform (darwin on macOS, linux/arm64 with the cross
+# toolchain); cgo has no portable cross-compiler.
 on:
   push:
     tags: ["v*"]
@@ -97,9 +99,73 @@ jobs:
           path: dist/ohgo-*.tar.gz
           if-no-files-found: error
 
+  build-multilang:
+    name: build multilang ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # cgo needs a native target compiler. The darwin entries cross-build
+        # between the two macOS architectures with the universal SDK; the
+        # linux arm64 entry uses the distro cross toolchain.
+        include:
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-latest
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-latest
+            cc: aarch64-linux-gnu-gcc
+          - goos: darwin
+            goarch: amd64
+            runner: macos-14
+          - goos: darwin
+            goarch: arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install the linux arm64 cross compiler
+        if: matrix.cc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc || 'cc' }}
+          VARIANT: multilang
+          VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+        run: ./scripts/release-target.sh
+      - name: Verify the artifact sees non-Go adapters
+        run: |
+          set -eu
+          dir=$(mktemp -d)
+          tar -xzf dist/ohgo-*-multilang.tar.gz -C "$dir"
+          binary=$(find "$dir" -type f -name ohgo | head -n 1)
+          # Doctor exits non-zero when unrelated checks fail on a bare runner;
+          # the adapter row is the fact this job must prove before publishing.
+          "$binary" doctor 2>&1 | grep -q "tree-sitter-typescript"
+          "$binary" version
+      - name: Upload archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: ohgo-${{ matrix.goos }}-${{ matrix.goarch }}-multilang
+          path: dist/ohgo-*-multilang.tar.gz
+          if-no-files-found: error
+
   publish:
     name: publish
-    needs: build
+    needs: [build, build-multilang]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

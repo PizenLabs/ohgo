@@ -509,6 +509,10 @@ func boundaryHints(path string) ([]string, []Language) {
 			languages[LanguageKotlin] = true
 		case "Gemfile", "Rakefile":
 			languages[LanguageRuby] = true
+		case "pyproject.toml", "requirements.txt", "setup.py", "Pipfile":
+			languages[LanguagePython] = true
+		case "package.json", "tsconfig.json", "jsconfig.json":
+			languages[LanguageTypeScript] = true
 		case "CMakeLists.txt":
 			languages[LanguageC] = true
 			languages[LanguageCpp] = true
@@ -520,7 +524,7 @@ func boundaryHints(path string) ([]string, []Language) {
 	out := make([]Language, 0, len(languages))
 	for _, language := range []Language{
 		LanguageGo, LanguageJava, LanguageCSharp, LanguageRust,
-		LanguageKotlin, LanguageRuby, LanguageC, LanguageCpp,
+		LanguageKotlin, LanguageRuby, LanguagePython, LanguageC, LanguageCpp,
 	} {
 		if languages[language] {
 			out = append(out, language)
@@ -1337,16 +1341,33 @@ func relKey(root, path string) string {
 	return filepath.ToSlash(mustRelPath(root, path))
 }
 
+// BuiltinExcludedDir reports a directory that is dependency, build, or tool
+// cache output rather than repository source. File discovery and the
+// structural index share this list so a path excluded from search cannot be
+// silently parsed into the graph.
+func BuiltinExcludedDir(name string) bool {
+	switch name {
+	case ".git", "node_modules", "vendor",
+		".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache",
+		".ruff_cache", ".tox", "target", "dist", ".next", ".nuxt",
+		".svelte-kit", ".turbo", ".cache", ".parcel-cache", "coverage",
+		".nyc_output", ".terraform":
+		return true
+	default:
+		return false
+	}
+}
+
 // shouldSkipIndexDir reports directories that are never useful to index.
 //
 // testdata is skipped because the Go toolchain does not treat it as package
 // source; indexing it would report declarations the compiler never sees.
 // .github is the one hidden directory with structural configuration facts.
 func shouldSkipIndexDir(name string) bool {
-	switch name {
-	case ".git", "node_modules", "vendor", "testdata":
+	if name == "testdata" || BuiltinExcludedDir(name) {
 		return true
-	case ".github":
+	}
+	if name == ".github" {
 		return false
 	}
 	return strings.HasPrefix(name, ".") && name != "." && name != ".."
@@ -1659,7 +1680,7 @@ func (idx *Index) adapterLanguageSupported(language Language) (Adapter, bool) {
 func unsupportedSourceExtension(rel string) string {
 	ext := strings.ToLower(pathExt(rel))
 	switch ext {
-	case ".py", ".pyi", ".swift", ".php", ".scala", ".sc", ".sh", ".bash", ".zsh",
+	case ".swift", ".php", ".scala", ".sc", ".sh", ".bash", ".zsh",
 		".lua", ".ex", ".exs", ".dart", ".vue", ".svelte", ".m", ".mm", ".fs",
 		".fsx", ".pl", ".pm", ".r", ".jl", ".zig", ".sol", ".groovy", ".clj",
 		".cljs", ".hs", ".ml", ".mli", ".elm", ".cl", ".adb", ".ads", ".asm",

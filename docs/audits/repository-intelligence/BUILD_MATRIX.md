@@ -4,27 +4,26 @@
 
 | Target | Command | CGO | Artifact | Structural adapters |
 |---|---|---|---:|---|
-| Portable | `make build` | 0 | `./ohgo` | Go only |
+| Default | `make build` | host default | `./ohgo` | all compiled adapters (Go + 10 Tree-sitter with a C toolchain) |
+| Portable | `make build-portable` | 0 | `./ohgo-portable` | Go only |
 | Multi-language | `make build-multilang` | 1 | `./ohgo-multilang` | Go + 10 Tree-sitter adapters |
-| Release | `make release` / `scripts/release-target.sh` | 0 | `dist/ohgo-<version>-<os>-<arch>.tar.gz` | Go only |
+| Portable release | `scripts/release-target.sh` | 0 | `dist/ohgo-<version>-<os>-<arch>.tar.gz` | Go only |
+| Multi-language release | `VARIANT=multilang scripts/release-target.sh` | 1 | `dist/ohgo-<version>-<os>-<arch>-multilang.tar.gz` | Go + 10 Tree-sitter adapters |
 | Docker | `docker build .` | 0 | distroless image | Go only |
 | `go install` | default environment | host default | `$GOBIN/ohgo` | host default; not a pinned matrix entry |
 
-Both local builds succeed with Go 1.27.4 and Apple clang 21.0.0. Final
-artifacts: portable 22,377,890 bytes (`sha256
-b7b925d1fbb5f7a2d3ed905aadcbc928e95d69360c1cb8251764e99e7b337568`),
-multi-language 42,939,090 bytes (`sha256
-f4f8e0fcd137258e6fb7fc3e4374f1636802d4c3c8c051838c0ba06f4600e52e`).
-The version string is identical (`v0.1.2-9-gade60d9`), and the Go build
-metadata does not expose CGO. Capability must be asked of the binary, not
-inferred from the filename.
+The Go build metadata does not expose CGO. Capability must be asked of the
+binary (`ohgo doctor`), not inferred from the filename. The 2026-11-20 audit
+measured the portable artifact at 22,377,890 bytes and the multi-language
+artifact at 42,939,090 bytes; those sizes are historical and change with the
+grammar and dependency revisions.
 
 ## Post-fix doctor output
 
 Portable:
 
 ```text
-ok  structural  1 adapter (go); portable build: other language adapters are unsupported
+ok  structural  1 adapter (go); portable build: TypeScript/TSX/JavaScript, Java, C#, Rust, Kotlin, Ruby, C, and C++ are not compiled in; rebuild with `make build` (needs a C toolchain)
 ```
 
 Multi-language:
@@ -78,10 +77,13 @@ claim symbols, references, calls, or tests; those are printed as unobservable.
 
 ## Release and update behavior
 
-The release and Docker paths are intentionally portable. `ohgo update` now
-refuses to replace a non-development multi-language binary with a portable
-release artifact, because that would silently remove ten adapters while
-reporting a successful version update. `ohgo update --check` remains allowed.
+The Docker path remains intentionally portable. The release publishes both
+artifact sets; `install.sh` prefers the multi-language artifact and
+`ohgo update` selects the artifact matching the running binary. A release that
+lacks the matching multi-language artifact fails the update rather than
+silently removing ten adapters. (The 2026-11-20 audit predates the
+multi-language release artifact; its portable-only release decision was
+superseded on 2026-11-22.)
 
 `make test` still runs the host default. The audit added
 `make test-portable` and `make test-multilang`; both pass. `make bench` was

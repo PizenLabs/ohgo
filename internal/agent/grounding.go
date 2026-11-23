@@ -52,6 +52,15 @@ var (
 		`(?i)^\s*(?:content\s+)?(?:(?:was|were|is|are|has\s+been|have\s+been|had\s+been|got)\s+)?` +
 			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited` +
 			`|read|inspected|examined|reviewed|opened|loaded|queried|searched|sampled|observed)\b`)
+	// runReportPattern names a coordinated report about what this run did:
+	// "no build, test, or runtime session was executed". The subject list ends
+	// at the passive run verb, so the ordinary changeReportPattern (anchored at
+	// the end of the negative match) cannot see it. It is a limitation of the
+	// run, not a claim that the repository contains no tests or builds.
+	runReportPattern = regexp.MustCompile(
+		`(?i)\b(?:build|builds|test|tests|runtime|command|commands|check|checks|execution|session|probe|probes)\b` +
+			`[^.;\n]{0,60}\b(?:was|were|is|are|has\s+been|have\s+been|had\s+been)\s+` +
+			`(?:executed|run|performed|started|launched|invoked|observed|queried)\b`)
 	globalScopePattern = regexp.MustCompile(
 		`(?i)\b(?:repository|repo|project|codebase|workspace)\b`)
 	// rootScopePattern names a location bounded to the top level of the tree.
@@ -326,12 +335,20 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 				detail = fmt.Sprintf(
 					"the answer treats %q as absent, but the observed inventory already reports %d test file(s); inspect them or bound the claim to what was inspected",
 					claim.Subject, coverage.testFiles)
+			} else if coverage.testInventoryObserved && strings.Contains(strings.ToLower(claim.Subject), "test") {
+				// A static inventory counts paths it can associate with tests.
+				// It cannot prove that a JS/TS project has no tests under
+				// another naming convention, so the claim must be bounded to
+				// what the inventory actually reported.
+				detail = fmt.Sprintf(
+					"the answer treats %q as absent, but the run's static test inventory reports %d test file(s); a static inventory is not proof that tests do not exist. Say \"0 test files were reported\" or remove the claim",
+					claim.Subject, coverage.testFiles)
 			}
 			addIssue(contract.GroundingIssue{
 				Code:        "unsupported_negative_conclusion",
 				Detail:      detail,
 				Claim:       claim.Subject,
-				Location:    claimLocation(answer, claim.Subject),
+				Location:    claimLocationAt(answer, claim.Start, claim.End),
 				Category:    "absence",
 				Requirement: "complete current inventory",
 				Reference:   claim.Subject,
@@ -352,6 +369,13 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 			addIssue(issue.groundingIssue())
 		}
 	}
+	// Coverage is not itself a claim. A project-wide answer is judged by the
+	// claims it makes and the evidence those claims require, not by whether it
+	// repeats a disclaimer about the repository. Requiring a disclosure here
+	// made "this project is X" fail unless the answer said "this is partial",
+	// which taught the model to add a generic limitation instead of obtaining
+	// the missing observation. The TUI footer still reports measured structural
+	// coverage, where it is presentation, not a completion veto.
 	// The explicit deliverable contract is separate from claim scope: an answer
 	// can avoid every unsupported claim and still omit the field the user asked
 	// for. The facet check owns that obligation.
@@ -436,6 +460,12 @@ type negativeClaim struct {
 	// Global reports a repository-wide claim. A local listing cannot establish
 	// it; a complete recursive file scan can, for a file subject.
 	Global bool
+	// Start and End delimit this specific occurrence. Re-finding the subject
+	// later would point the repair at the first "test" token in the answer,
+	// which may be a supported manifest statement rather than the unsupported
+	// sentence the audit rejected.
+	Start int
+	End   int
 }
 
 // negativeClaims returns the absence conclusions an answer asserts. An honest
@@ -443,7 +473,7 @@ type negativeClaim struct {
 // claim that X does not exist.
 func negativeClaims(answer string) []negativeClaim {
 	var out []negativeClaim
-	add := func(value string, global bool) {
+	add := func(value string, global bool, start, end int) {
 		value = cleanClaimSubject(value)
 		if value == "" || claimSubjectIsEvidenceGap(value) {
 			return
@@ -453,7 +483,7 @@ func negativeClaims(answer string) []negativeClaim {
 				return
 			}
 		}
-		out = append(out, negativeClaim{Subject: value, Global: global})
+		out = append(out, negativeClaim{Subject: value, Global: global, Start: start, End: end})
 	}
 	addMatches := func(pattern *regexp.Regexp, repositoryWide bool) {
 		for _, match := range pattern.FindAllStringSubmatchIndex(answer, -1) {
@@ -474,7 +504,8 @@ func negativeClaims(answer string) []negativeClaim {
 			// claim. "No files were modified" is a no-op report: a file scan
 			// can never cover it, and review here would punish an honest
 			// account of an untouched workspace.
-			if changeReportPattern.MatchString(answer[match[1]:]) {
+			if changeReportPattern.MatchString(answer[match[1]:]) ||
+				runReportFollowsNegative(answer, match[1]) {
 				continue
 			}
 			if claimIsEvidenceGap(answer, match[3]) {
@@ -484,9 +515,16 @@ func negativeClaims(answer string) []negativeClaim {
 				// answer for being explicit about what it did not observe.
 				continue
 			}
+			// "No test scripts declared" is a statement about a manifest's
+			// declaration list, not a repository-wide absence. The observed
+			// package.json is its evidence; asking for source coverage here
+			// points the model at a sentence it already supported.
+			if manifestDeclarationAbsence(answer, match[0], match[1]) {
+				continue
+			}
 			value := answer[match[2]:match[3]]
 			global := repositoryWide || claimContextIsGlobal(answer, match[0], match[1])
-			add(value, global)
+			add(value, global, match[0], match[1])
 		}
 	}
 	addMatches(negativeRepositoryPattern, true)
@@ -497,6 +535,66 @@ func negativeClaims(answer string) []negativeClaim {
 	addMatches(negativeMissingPattern, false)
 	addMatches(negativeAbsenceOfPattern, false)
 	return out
+}
+
+// manifestDeclarationAbsence reports a negative about what a manifest
+// declares ("no test scripts declared", "package.json declares no test
+// script"), not a claim that the repository contains no such thing. A
+// declaration list is an inventory fact about an observed file; this audit
+// owns repository absence, so treating the two as one claim makes a supported
+// sentence block publication and hides the unsupported sentence.
+func manifestDeclarationAbsence(answer string, start, end int) bool {
+	if start < 0 || end <= start || end > len(answer) {
+		return false
+	}
+	tail := answer[end:]
+	if sentences := claimSentenceBoundary.Split(tail, -1); len(sentences) > 0 {
+		tail = sentences[0]
+	}
+	if manifestDeclarationTailPattern.MatchString(strings.ToLower(strings.ReplaceAll(tail, "`", ""))) {
+		return true
+	}
+	// The declaration verb can precede the negation: "package.json declares
+	// no test script". Only the clause before the match matters.
+	lead := answer[max(0, start-80):start]
+	if sentences := claimSentenceBoundary.Split(lead, -1); len(sentences) > 0 {
+		lead = sentences[len(sentences)-1]
+	}
+	// A manifest mention earlier in the same sentence does not govern a later
+	// clause: "`package.json` has no test script, so the project has no tests"
+	// is a manifest fact followed by a repository conclusion.
+	if cut := strings.LastIndexAny(lead, ",;"); cut >= 0 {
+		lead = lead[cut+1:]
+	}
+	return manifestDeclarationLeadPattern.MatchString(strings.ToLower(strings.ReplaceAll(lead, "`", "")))
+}
+
+var (
+	manifestDeclarationTailPattern = regexp.MustCompile(
+		`^\s+(?:(?:scripts?|commands?|entries|fields|keys|targets?)\s*(?:are|is|was|were)?\s*(?:declared|defined|listed|configured)\b|` +
+			`(?:scripts?|commands?|entries|fields|keys|targets?)\s*(?:are|is|was|were)?\s*(?:in|on|from)\s+(?:the\s+)?(?:package\.json|manifest)\b)`)
+	manifestDeclarationLeadPattern = regexp.MustCompile(
+		`(?:\b(?:package\.json|manifest|scripts?\s+(?:field|section|entry))\b|scripts?\s*:)[^.;\n]{0,60}$`)
+)
+
+// runReportFollowsNegative reports a coordinated run report whose passive verb
+// follows the negative noun span: "no build, test, or runtime session was
+// executed". The span is bounded to the sentence and to the text after the
+// negative match, so an unrelated run report in another clause is not used to
+// excuse a repository absence.
+func runReportFollowsNegative(answer string, end int) bool {
+	if end < 0 || end >= len(answer) {
+		return false
+	}
+	limit := end + 140
+	if limit > len(answer) {
+		limit = len(answer)
+	}
+	tail := answer[end:limit]
+	if cut := strings.IndexAny(tail, ".;\n"); cut >= 0 {
+		tail = tail[:cut]
+	}
+	return runReportPattern.MatchString(tail)
 }
 
 // conditionalAbsenceForm reports an absence phrase inside a behavior
@@ -586,6 +684,24 @@ func claimContextIsGlobal(answer string, start, end int) bool {
 	window := parenthesesPattern.ReplaceAllString(answer[begin:finish], " ")
 	window = rootScopePattern.ReplaceAllString(window, " ")
 	return globalScopePattern.MatchString(window)
+}
+
+// claimLocationAt returns the sentence containing one specific claim
+// occurrence. The match offsets are authoritative; searching for the subject
+// again would locate the first occurrence, which may be a different claim.
+func claimLocationAt(answer string, start, end int) string {
+	if start < 0 || end <= start || end > len(answer) {
+		return ""
+	}
+	left := start
+	for left > 0 && !strings.ContainsRune(".!?\n", rune(answer[left-1])) {
+		left--
+	}
+	right := end
+	for right < len(answer) && !strings.ContainsRune(".!?\n", rune(answer[right])) {
+		right++
+	}
+	return strings.TrimSpace(answer[left:right])
 }
 
 // externalClaims returns the assertions an answer makes about state outside the
@@ -830,6 +946,11 @@ type groundingCoverage struct {
 	// narrow Go test-file claim, but only when scope, inventory, and structural
 	// completeness all hold.
 	structuralTestAbsence bool
+	// testInventoryObserved reports that the run queried the structural test
+	// inventory. Zero test files is a measurement, not proof of concept
+	// absence, so the repair detail must name the inventory rather than asking
+	// for a completeness proof the audit cannot accept.
+	testInventoryObserved bool
 	// testFiles is the largest test-file count any observed structure snapshot
 	// reported. A positive count contradicts an absence claim even when the
 	// snapshot is not complete enough to prove zero, and the review should say
@@ -1198,6 +1319,9 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 				}
 			case "structure":
 				structureDetails, _ := outcome.Result.Details.(map[string]any)
+				if detailValueString(structureDetails, "view") == "tests" {
+					coverage.testInventoryObserved = true
+				}
 				if count := detailValueInt(structureDetails, "test_files"); count > coverage.testFiles {
 					coverage.testFiles = count
 				}
