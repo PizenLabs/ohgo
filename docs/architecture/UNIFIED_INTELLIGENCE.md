@@ -519,9 +519,11 @@ Internal iterations are not user-visible turns. One task has one answer
 transaction: `INVESTIGATING → FINALIZING → COMMITTED`, with `REVIEW` when the
 publication audit refuses the candidate and `ABORTED` when no answer was
 accepted. Drafts may be rejected and replaced; only the committed text reaches
-the host transcript as an answer. A rejected candidate may remain as a labelled
-withdrawn draft, and a streamed candidate is labelled provisional, so the
-display never passes a draft off as committed text. `Loop.LastResponseAudit`
+the host transcript as an answer. A candidate superseded by a correction is
+internal repair context and is never displayed; only a terminal review refusal
+may remain as one labelled withdrawn draft, and a streamed candidate is
+labelled provisional, so the display never passes a draft off as committed
+text. `Loop.LastResponseAudit`
 records the drafts, rejections,
 tool calls, reused observations, retries, redundant identical calls, and the
 final claim audit; a second commit for the same run is a no-op.

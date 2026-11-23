@@ -6278,11 +6278,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// double-counted.
 	var seenIn, seenOut int
 	p.loop.SetTurnHook(func(turn agent.Turn) {
-		// A rejected answer candidate is kept as a labelled draft: it already
-		// streamed as a normal block, and silently deleting it was
-		// indistinguishable from losing a committed answer. Prose that
-		// continued into a tool call is narration, so it is withdrawn outright.
+		// Only a terminal review verdict may leave a labelled draft. A
+		// candidate superseded by a correction is internal: it already
+		// streamed as a provisional preview, and keeping it as a visible
+		// artifact would turn the review loop into a conversation. Prose that
+		// continued into a tool call is narration, withdrawn outright.
 		switch {
+		case turn.Superseded:
+			p.publishCritical(AssistantReconcile{Discard: true, At: time.Now(), Seq: seq})
 		case turn.Suppressed:
 			p.publishCritical(AssistantReconcile{
 				Discard:   true,

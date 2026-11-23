@@ -404,14 +404,11 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// instruction instead of narrowing it.
 	state := renderState(shape, p.Evidence, execution, suff, candidates,
 		options.StateBlockBytes, options.StateBlockItems, !req.Correcting)
-	if correcting {
-		// The budget is runtime state, not a suggestion: the loop refuses the
-		// call after it is spent. Naming it beside the reopened surface keeps
-		// the model from planning a second investigation.
-		state += fmt.Sprintf("Correction budget: %d tool call(s) remaining; repair only the named claims and keep the rest of the answer.\n", req.CorrectionBudget)
-	}
 	if correctionSpent {
-		state += "Correction budget exhausted: the repair allowance is spent. Answer from the evidence already observed; qualify or remove any claim that remains unsupported.\n"
+		// The allowance is enforced before execution. State the consequence,
+		// not the control-plane counter: a model told how many calls remain
+		// spends reasoning on the budget instead of the evidence.
+		state += "The repair window is closed. Answer from the evidence already observed; qualify or remove any claim that remains unsupported.\n"
 	}
 	if len(advice.Hints) > 0 {
 		state = appendExperienceHints(state, advice.Hints, options.StateBlockBytes)

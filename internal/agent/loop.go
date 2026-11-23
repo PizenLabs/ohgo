@@ -76,6 +76,13 @@ type Turn struct {
 	// but it is not a publication: hosts must hide it from the transcript,
 	// persistence, and plain output. Only the accepted final answer is shown.
 	Suppressed bool
+	// Superseded marks a rejected candidate that a bounded correction
+	// replaces. It is model context, not a user-visible artifact: the run is
+	// still investigating and the next candidate is the only one a host may
+	// present. Tool outcomes in the same turn remain real work and stay
+	// visible; only the prose is internal. Unlike Suppressed, this is not a
+	// terminal review verdict.
+	Superseded bool
 }
 
 // ToolOutcome records what happened to one tool call.
@@ -1162,9 +1169,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if !last.SuppressText || l.cfg.AnswerReview != nil {
 			l.noteDraft()
 		}
-		// suppress withdraws the candidate text. Tool results in the same turn
-		// are real work: hiding them from the transcript would erase calls the
-		// user watched run, so only the prose is withheld.
+		// suppress withdraws the candidate text. Tool results in the same
+		// turn are real work: hiding them from the transcript would erase
+		// calls the user watched run, so only the prose is withheld.
 		suppress := func() {
 			if len(last.Results) > 0 {
 				last.SuppressText = true
@@ -1172,6 +1179,16 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				return
 			}
 			last.Suppressed = true
+		}
+		// supersede withdraws an intermediate candidate that a correction
+		// replaces. It must not become a user-visible answer artifact: the
+		// user watched a provisional preview, not a result. The model still
+		// sees the text in the live conversation, so it can repair the named
+		// claims. Tool outcomes remain visible.
+		supersede := func() {
+			last.Superseded = true
+			last.Suppressed = false
+			last.SuppressText = false
 		}
 		finish := func() { reportTurn() }
 		reason := l.answerReviewReason(turns)
@@ -1185,7 +1202,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if answerCorrections < MaxAnswerCorrections && key != lastRepairKey &&
 				len(turns) < l.cfg.MaxTurns {
 				if directive := l.correctionDirective(turns, reason); directive != "" {
-					suppress()
+					supersede()
 					l.noteRejected()
 					if answerCorrections == 0 {
 						// The tool allowance belongs to the answer
@@ -2731,8 +2748,8 @@ func (l *Loop) execute(
 	if l.correctionActive.Load() && call.Name != "conclude" {
 		limit := int64(l.correctionToolBudget())
 		if used := l.correctionCalls.Add(1); used > limit {
-			return failClass(ToolFailureCorrectionBudget, fmt.Sprintf(
-				"correction budget exhausted: this repair may use at most %d tool call(s). Answer with the evidence already observed; qualify or remove any claim that remains unsupported", limit))
+			return failClass(ToolFailureCorrectionBudget,
+				"the repair window is closed. Answer with the evidence already observed; qualify or remove any claim that remains unsupported")
 		}
 	}
 	// Authority has admitted the operation; budget now decides whether the

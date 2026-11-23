@@ -108,17 +108,17 @@ func TestAnswerReviewCorrectsMissingFacetOnce(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("turns = %d, want the rejected answer plus one correction", len(turns))
 	}
-	if len(reported) != 2 || !reported[0].Suppressed || reported[1].Suppressed {
-		t.Fatalf("reported turns = %+v, want the candidate suppressed before publication", reported)
+	if len(reported) != 2 || !reported[0].Superseded || reported[1].Superseded || reported[1].Suppressed {
+		t.Fatalf("reported turns = %+v, want the candidate superseded before publication", reported)
 	}
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "Tests: 4") {
 		t.Fatalf("final answer = %q, want the corrected facet", got)
 	}
-	if !turns[0].Suppressed {
-		t.Fatal("the rejected candidate was not suppressed")
+	if !turns[0].Superseded || turns[0].Suppressed {
+		t.Fatal("the rejected candidate was not superseded")
 	}
-	if turns[len(turns)-1].Suppressed {
-		t.Fatal("the accepted answer was suppressed")
+	if turns[len(turns)-1].Suppressed || turns[len(turns)-1].Superseded {
+		t.Fatal("the accepted answer was withheld")
 	}
 }
 

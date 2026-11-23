@@ -671,11 +671,13 @@ user's request before execution and the evidence the runtime observed.
   sentence and publishes a bounded limitation instead; a draft is never the
   user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A streamed
   candidate is labelled provisional until the response transaction commits it.
-  A rejected candidate is removed from the answer projection but may remain in
-  the transcript as a labelled withdrawn draft, so a streamed answer cannot
-  vanish without a trace. Committed text is never withdrawn. A request
-  that explicitly required external knowledge also
-  needs a successful external observation; a local answer does not satisfy it.
+  A candidate superseded by a bounded correction is internal repair context:
+  it is removed from the answer projection and never becomes a transcript
+  artifact. Only a terminal review refusal may remain as one labelled
+  withdrawn draft, so the final answer cannot vanish without a trace while the
+  review loop stays out of the conversation. Committed text is never
+  withdrawn. A request that explicitly required external knowledge also needs
+  a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from
   observed implementation facts: a term that appears only in README/docs, never
   in a source or structural observation, must be attributed ("the README
@@ -906,9 +908,12 @@ the model said. Two properties keep the loop honest and small:
   can span several model turns, and a later turn that no longer sees the named
   claims follows an unrelated state-block frontier instead.
   When the allowance is spent (`ProjectionRequest.CorrectionBudget` is zero),
-  the projection closes the surface again and states that the repair allowance
-  is exhausted, so the next visible text is the candidate answer rather than a
-  call the loop would refuse. A correction also withholds the generic evidence
+  the projection closes the surface again and states that the repair window is
+  closed, so the next visible text is the candidate answer rather than a call
+  the loop would refuse. The allowance is enforced, not narrated: the runtime
+  block names the closed window but never the remaining call count, because a
+  model told the counter reasons about the control plane instead of the
+  evidence. A correction also withholds the generic evidence
   frontier: the review's named claims are the actionable list, and an unrelated
   component list spends a bounded repair on work the answer audit did not
   request.
@@ -917,11 +922,11 @@ the model said. Two properties keep the loop honest and small:
   (claim, location, category, required evidence, reference, permitted action).
   The loop's `AnswerRepairs` planner is a projection of the same audit, never a
   second check, and `ClaimRepairRequest` renders at most
-  `MaxRepairInstructions` claims with a tool-call allowance. The correction
-  keeps the initial conversation and evidence; the directive asks first for the
-  missing observation and forbids only a repeat whose result already contains
-  the required evidence. A reused observation is answered from the loop's
-  replay cache and does not consume the correction allowance.
+  `MaxRepairInstructions` claims. The correction keeps the initial conversation
+  and evidence; the directive asks first for the missing observation and
+  forbids only a repeat whose result already contains the required evidence. A
+  reused observation is answered from the loop's replay cache and does not
+  consume the correction allowance.
   `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 4) is enforced
   before tool execution and survives concurrent batches; calls beyond it fail
   closed with `ToolFailureCorrectionBudget` and the model must answer with the

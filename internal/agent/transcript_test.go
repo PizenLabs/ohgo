@@ -110,6 +110,35 @@ func TestTranscriptTurnHidesSuppressedCandidate(t *testing.T) {
 	}
 }
 
+// A candidate superseded by a bounded correction is internal repair context,
+// not an answer a host may display or persist. Its tool outcomes are still
+// real work and stay in the transcript.
+func TestTranscriptTurnHidesSupersededCandidateButKeepsItsWork(t *testing.T) {
+	turn := Turn{
+		Assistant: ai.AssistantMessage{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: "The first, unsupported answer."},
+				ai.ToolCall{ID: "read", Name: "read", Arguments: map[string]any{"path": "a.go"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+		Superseded: true,
+		Results: []ToolOutcome{
+			{CallID: "read", ToolName: "read", Result: Result{Text: "package a"}},
+		},
+	}
+	got := TranscriptTurn(turn)
+	if text := got.Assistant.Text(); text != "" {
+		t.Fatalf("superseded answer reached the transcript: %q", text)
+	}
+	if len(got.Results) != 1 || got.Results[0].CallID != "read" {
+		t.Fatalf("superseded turn lost its tool outcome: %+v", got.Results)
+	}
+	if messages := ConversationMessages([]Turn{turn}); len(messages) != 2 {
+		t.Fatalf("superseded turn projection = %+v, want the call and its result", messages)
+	}
+}
+
 // Prose followed by a tool call is investigation, not a conclusion. The call
 // and its evidence stay; the abandoned answer text does not.
 func TestTranscriptTurnDropsProseBeforeToolCall(t *testing.T) {

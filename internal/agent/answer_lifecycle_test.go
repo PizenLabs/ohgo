@@ -109,10 +109,11 @@ func TestCorrectedAnswerIsReviewedBeforeCommit(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("turns = %d, want the candidate plus one correction", len(turns))
 	}
-	for index, turn := range turns {
-		if !turn.Suppressed {
-			t.Fatalf("turn %d was published after a failed review", index)
-		}
+	if !turns[0].Superseded || turns[0].Suppressed {
+		t.Fatalf("turn 0 = %+v, want an internal candidate superseded by the correction", turns[0])
+	}
+	if !turns[1].Suppressed || turns[1].Superseded {
+		t.Fatalf("turn 1 = %+v, want the terminal review refusal", turns[1])
 	}
 	audit := loop.LastResponseAudit()
 	if audit.State != agent.ResponseReview {
@@ -157,8 +158,8 @@ func TestAcceptedCorrectionCommitsOnce(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
-	if len(turns) != 2 || !turns[0].Suppressed || turns[1].Suppressed {
-		t.Fatalf("turns = %+v, want one suppressed draft and one accepted answer", turns)
+	if len(turns) != 2 || !turns[0].Superseded || turns[1].Suppressed || turns[1].Superseded {
+		t.Fatalf("turns = %+v, want one internal draft and one accepted answer", turns)
 	}
 	if got := turns[1].Assistant.Text(); got != "Supported final answer." {
 		t.Fatalf("final answer = %q", got)
@@ -218,8 +219,8 @@ func TestCorrectionCompletesWhenTheClaimSetChanges(t *testing.T) {
 	if len(turns) != 3 {
 		t.Fatalf("turns = %d, want two corrections and the accepted answer", len(turns))
 	}
-	if !turns[0].Suppressed || !turns[1].Suppressed || turns[2].Suppressed {
-		t.Fatalf("turns = %+v, want two suppressed drafts and one accepted answer", turns)
+	if !turns[0].Superseded || !turns[1].Superseded || turns[2].Superseded || turns[2].Suppressed {
+		t.Fatalf("turns = %+v, want two internal drafts and one accepted answer", turns)
 	}
 	audit := loop.LastResponseAudit()
 	if audit.State != agent.ResponseCommitted {
@@ -278,8 +279,8 @@ func TestFacetOnlyRejectionStillPublishesTheHonestAnswer(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
-	if len(turns) != 2 || !turns[0].Suppressed || turns[1].Suppressed {
-		t.Fatalf("turns = %+v, want the correction and one published honest answer", turns)
+	if len(turns) != 2 || !turns[0].Superseded || turns[1].Suppressed {
+		t.Fatalf("turns = %+v, want the internal candidate and one published honest answer", turns)
 	}
 	if got := turns[1].Assistant.Text(); got != answer {
 		t.Fatalf("published answer = %q", got)

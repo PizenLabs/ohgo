@@ -136,7 +136,7 @@ const CompletionReviewRequest = `Runtime completion review: the previous answer 
 // transcript.
 const ClaimRepairRequest = `Runtime completion review: {{count}} claim(s) in the previous answer are not supported by the evidence observed so far. This is a repair turn, not a rewrite: keep every supported sentence, section, and structural detail exactly as it is. The action surface is open for this repair.
 
-For each claim below, first obtain the missing observation its requirement/action names. The answer lifecycle allows {{budget}} tool call(s) in total; the runtime state reports how many remain. Read the exact coordinate the claim is about when the prior observation did not cover it; do not repeat an observation that already contains the required evidence.
+For each claim below, first obtain the missing observation its requirement/action names. Use the reopened surface only for those observations; the runtime enforces a small allowance and refuses a call past it. Read the exact coordinate the claim is about when the prior observation did not cover it; do not repeat an observation that already contains the required evidence.
 
 Only if those calls cannot establish the claim: remove that claim or qualify that sentence specifically. Do not add a general coverage or uncertainty disclaimer; it does not repair a different claim and will be rejected.
 

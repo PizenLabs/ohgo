@@ -67,8 +67,10 @@ func TranscriptTurn(turn Turn) Turn {
 		return Turn{}
 	}
 	// A turn that continued into a tool call published investigation, not a
-	// conclusion. Keep the call and its result; drop the prose.
-	if turn.SuppressText {
+	// conclusion. Keep the call and its result; drop the prose. A superseded
+	// answer candidate is the same boundary for a different reason: a bounded
+	// correction replaces it, so only the final answer may reach a host.
+	if turn.SuppressText || turn.Superseded {
 		// Build a new backing slice: Turn is a value, but its Content shares
 		// the loop's live conversation. Reusing the capacity would overwrite
 		// the turn the completion authority still needs to read.

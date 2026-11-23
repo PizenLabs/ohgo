@@ -100,8 +100,8 @@ func TestPrematureInformationalAnswerIsCorrectedBeforeCommit(t *testing.T) {
 	if len(turns) != 3 {
 		t.Fatalf("turns = %d, want 3", len(turns))
 	}
-	if !turns[0].Suppressed {
-		t.Fatal("the premature answer was not suppressed")
+	if !turns[0].Superseded || turns[0].Suppressed {
+		t.Fatal("the premature answer was not superseded by the correction")
 	}
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "controlled runtime") {
 		t.Fatalf("final answer = %q, want the evidence-backed answer", got)

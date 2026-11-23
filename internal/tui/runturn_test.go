@@ -262,14 +262,18 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 			if got := p.state.AssistantText(); got != "This project is a Go coding agent." {
 				t.Fatalf("answer projection = %q, want only the committed answer", got)
 			}
-			withdrawn := ""
+			var rendered strings.Builder
 			for _, entry := range p.state.Entries {
-				if entry.Kind == EntryAssistant && entry.Discarded {
-					withdrawn = entry.WithdrawnText
+				if entry.Kind == EntryAssistant && entry.Discarded && strings.TrimSpace(entry.WithdrawnText) != "" {
+					t.Fatalf("a correction-bound candidate leaked as a visible draft: %q", entry.WithdrawnText)
 				}
+				renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
 			}
-			if !strings.Contains(withdrawn, "no database") {
-				t.Fatalf("rejected candidate was not preserved as a withdrawn draft: %q", withdrawn)
+			if strings.Contains(rendered.String(), "draft withdrawn") {
+				t.Fatalf("the review loop leaked a withdrawn-draft block:\n%s", rendered.String())
+			}
+			if !strings.Contains(rendered.String(), "This project is a Go coding agent.") {
+				t.Fatalf("the committed answer is missing from the transcript:\n%s", rendered.String())
 			}
 			return
 		case <-timeout:

@@ -35,10 +35,12 @@ immutable.
   projection of the same audit, `ClaimRepairRequest` names at most five claims,
   and the loop renders only those instead of a full-answer correction reason.
 - A per-answer-lifecycle tool budget (`CorrectionToolCalls`, default 4). The
-  loop enforces it before tool execution across concurrent batches, reports the
-  remaining allowance in the correction runtime block, and fails closed with
-  `ToolFailureCorrectionBudget`; reused observations do not consume it. A
-  second repair pass does not reset the allowance.
+  loop enforces it before tool execution across concurrent batches and fails
+  closed with `ToolFailureCorrectionBudget`; reused observations do not consume
+  it. A second repair pass does not reset the allowance. The runtime does not
+  narrate a remaining-call counter: it states only that the repair window is
+  open or closed, so the model reasons about the evidence instead of the
+  control-plane budget.
 - The pre-answer review now runs the documentation-only provenance audit when
   the host supplies the last projection summary, so a documented claim is
   attributed or verified before completion rather than after it.
@@ -230,11 +232,15 @@ immutable.
 
 ### Fixed
 
-- A rejected answer no longer disappears from the TUI. A streamed candidate is
-  labelled `draft · answer review pending`; a candidate the review or
-  publication audit refuses keeps its text under `draft withdrawn · <reason>`
-  as display-only history. The withdrawn text is excluded from the answer
-  projection, copy, and persistence, and committed answers are never retracted.
+- Answer review no longer turns its internal candidate revisions into
+  conversation. A streamed candidate is labelled `draft · answer review
+  pending`; a candidate superseded by a bounded correction is withdrawn when
+  the correction starts and never becomes a transcript artifact. Only the
+  candidate that ends the review loop — accepted, or refused by the terminal
+  review or publication audit — can appear. A terminal refusal keeps its text
+  under `draft withdrawn · <reason>` as display-only history; withdrawn text is
+  excluded from the answer projection, copy, and persistence, and committed
+  answers are never retracted.
 - The verified footer counts successful `check` and `verify` outcomes as
   checks. A passing `check` run no longer sits beside "no checks run", which
   made a verified turn contradict its own evidence.

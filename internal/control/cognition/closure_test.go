@@ -233,11 +233,11 @@ func TestSpentCorrectionClosesTheSurface(t *testing.T) {
 		t.Fatal("spent correction left the answer ineligible despite closing every tool")
 	}
 	runtime := strings.Join(projected.Runtime, "\n")
-	if !strings.Contains(runtime, "Correction budget exhausted") {
-		t.Fatalf("spent correction did not state the exhausted allowance:\n%s", runtime)
+	if !strings.Contains(runtime, "The repair window is closed") {
+		t.Fatalf("spent correction did not state the closed window:\n%s", runtime)
 	}
-	if strings.Contains(runtime, "tool call(s) remaining") {
-		t.Fatalf("spent correction still advertised a remaining allowance:\n%s", runtime)
+	if strings.Contains(runtime, "budget") || strings.Contains(runtime, "tool call(s)") {
+		t.Fatalf("spent correction leaked a control-plane allowance:\n%s", runtime)
 	}
 	if len(projected.Report.Excluded) == 0 {
 		t.Fatal("spent correction withheld the tools without a reason")
@@ -277,7 +277,7 @@ func TestCorrectionSuppressesTheGenericEvidenceFrontier(t *testing.T) {
 	if strings.Contains(runtime, "Evidence frontier:") {
 		t.Fatalf("correction kept the unrelated component frontier:\n%s", runtime)
 	}
-	if !strings.Contains(runtime, "Correction budget: 4") {
-		t.Fatalf("correction lost its bounded allowance:\n%s", runtime)
+	if strings.Contains(runtime, "budget") || strings.Contains(runtime, "tool call(s)") {
+		t.Fatalf("correction leaked a control-plane allowance:\n%s", runtime)
 	}
 }
