@@ -28,6 +28,7 @@ func TestTranscriptTurnRemovesAnswerRequiredControlRefusals(t *testing.T) {
 				CandidateRejected: true, AnswerRequired: true,
 			}},
 		},
+		Answer: AnswerCommitted,
 	}
 
 	got := TranscriptTurn(turn)

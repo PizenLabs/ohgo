@@ -7,6 +7,20 @@ immutable.
 
 ### Added
 
+- Claim-preserving answer lifecycle. A candidate is now an internal
+  `agent.AnswerDraft` with sentence-sized claims, provenance, a version, and a
+  `SUPERSEDES` link. Review marks only the refused claims `REPAIR_REQUIRED`;
+  independently supported claims keep their state. A revision that drops them
+  is reported as preservation loss, and the committed answer is composed from
+  the strongest draft with only the refused claims removed. `ResponseAudit`
+  records the draft lineage, preserved-claim count, and removed-claim count.
+- The correction request names what must survive: the failed claims, their
+  required evidence, the already supported claims, and the permitted actions
+  (`VERIFY`, `ATTRIBUTE`, `WEAKEN`, `REMOVE`). It carries no remaining-call
+  counter.
+- Answer prose is no longer streamed as a candidate in the full-screen TUI or
+  output-first live surface. Reasoning and tool activity remain live; the first
+  user-visible answer prose is the committed artifact, published once.
 - Python structural coverage. The multi-language build registers
   `tree-sitter-python` over `.py`/`.pyi`: classes (including base classes),
   functions/methods, module variables, `import`/`from` resolution,

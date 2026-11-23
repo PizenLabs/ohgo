@@ -6073,25 +6073,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// at construction, because the program is the only thing that can turn
 	// it into UI events.
 	//
-	// Visible model text is forwarded the same way: each delta publishes as
-	// it arrives, so the answer reveals sequentially while the stream is
-	// open instead of dumping as one block when the turn completes. The exact
-	// committed value is settled after Run, so a dropped delta is repaired
-	// rather than silently lost.
+	// Visible model text is not forwarded while the stream is open. Answer
+	// prose is a candidate until the Control Plane commits it; publishing
+	// deltas would make the transcript show a draft, and later withdraw it,
+	// before the claim review finished. Reasoning and tool activity still
+	// stream, so the turn remains observable while the answer is internal.
+	// The committed value is published once after Run.
+	p.loop.SetTextDeltaHook(nil)
 	var liveThinking strings.Builder
-	// Visible model text streams as it arrives. Deltas are a provisional
-	// preview: the stream-end hook withdraws prose that belonged to a tool
-	// round, and the turn hook withdraws a rejected draft. The exact committed
-	// answer is settled once after Run, so a dropped delta or a finalized
-	// rewrite can never leave a partial or duplicated transcript block.
-	p.loop.SetTextDeltaHook(func(delta string) {
-		if delta == "" {
-			return
-		}
-		for _, chunk := range splitAssistantChunks(delta) {
-			p.publish(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
-		}
-	})
 	// A stream with tool calls is investigation narration, not an answer. The
 	// provisional preview is withdrawn before the tool card opens so the two
 	// never read as competing output.

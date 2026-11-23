@@ -667,16 +667,19 @@ user's request before execution and the evidence the runtime observed.
   readiness, at least one check passed against it while it was alive, and it
   did not exit mid-verification. An informational objective needs
   non-empty visible assistant text in the final turn, and that text must pass
-  the claim/evidence audit before publication. The audit withholds a rejected
-  sentence and publishes a bounded limitation instead; a draft is never the
-  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. Every turn's
-  prose carries one runtime disposition (`UNIFIED_INTELLIGENCE.md` §12.7):
+  the claim/evidence audit before publication. The audit removes or repairs
+  only the refused claim while preserving the independently supported claims
+  around it; a draft is never the user-visible answer. Empty or whitespace
+  text is `NEEDS_REVIEW`. Every turn's prose carries one runtime disposition
+  (`UNIFIED_INTELLIGENCE.md` §12.7):
   narration and superseded candidates are withheld, a terminal refusal leaves
   one labelled draft with the control-plane reason, and only a committed
   answer is the answer. A provisional preview is never promoted by a turn
   boundary; an interrupted preview is labelled as interrupted, not published.
-  Committed text is never
-  withdrawn. A request that explicitly required external knowledge also needs
+  The full-screen TUI and output-first live surface do not publish answer
+  deltas at all: the first answer prose a host may render is the committed
+  artifact, published once. Committed text is never withdrawn. A request that
+  explicitly required external knowledge also needs
   a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from
   observed implementation facts: a term that appears only in README/docs, never
@@ -917,16 +920,30 @@ the model said. Two properties keep the loop honest and small:
   frontier: the review's named claims are the actionable list, and an unrelated
   component list spends a bounded repair on work the answer audit did not
   request.
+- **Answer review is claim-preserving.** A candidate is an internal
+  `AnswerDraft`, not an answer. The audit attaches each issue to the
+  sentence-sized `AnswerClaim` it names; only that claim becomes
+  `REPAIR_REQUIRED`, while every other claim keeps its provenance and text. A
+  revision that drops an independently supported claim is measured against the
+  strongest draft (`AnswerPreservationLost`). If preservation is lost, or the
+  correction allowance is spent, the runtime composes the committed answer from
+  the strongest draft with only the refused claims removed. A facet gap is a
+  completion gap, not a false claim, so it never invalidates a sentence. This is
+  the invariant: a failed claim may be verified, attributed, weakened,
+  replaced, or removed, but independently supported claims and their evidence
+  must survive candidate revision.
 - **A correction is proportional to its rejected claims.** The answer audit
   projects each repairable issue into the shared `GroundingIssue` contract
   (claim, location, category, required evidence, reference, permitted action).
   The loop's `AnswerRepairs` planner is a projection of the same audit, never a
   second check, and `ClaimRepairRequest` renders at most
-  `MaxRepairInstructions` claims. The correction keeps the initial conversation
-  and evidence; the directive asks first for the missing observation and
-  forbids only a repeat whose result already contains the required evidence. A
-  reused observation is answered from the loop's replay cache and does not
-  consume the correction allowance.
+  `MaxRepairInstructions` claims. The request also names the valid claims the
+  revision must keep and the permitted actions (`VERIFY`, `ATTRIBUTE`,
+  `WEAKEN`, `REMOVE`); it never exposes a remaining-call counter. The
+  correction keeps the initial conversation and evidence; the directive asks
+  first for the missing observation and forbids only a repeat whose result
+  already contains the required evidence. A reused observation is answered
+  from the loop's replay cache and does not consume the correction allowance.
   `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 4) is enforced
   before tool execution and survives concurrent batches; calls beyond it fail
   closed with `ToolFailureCorrectionBudget` and the model must answer with the

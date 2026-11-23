@@ -651,14 +651,20 @@ the same rejection terminates at `NEEDS_REVIEW`. `MaxAnswerCorrections` bounds
 the passes. This is a convergence rule, not a retry loop: an unchanged claim set
 earns no further turn.
 
-A candidate that a correction supersedes is internal repair context. It is
-removed from the answer projection and is never rendered as a draft the user
-must read; only the candidate that ends the review loop can be shown. When
-correction is exhausted, the final candidate is not published. The response
-transaction records `REVIEW` and the host removes the provisional stream from
-the answer projection; it may keep that one terminal candidate as a labelled
-withdrawn draft so a streamed answer does not vanish without a trace. The
-uncertified claims are carried as `ReviewIssues` into `NEEDS_REVIEW`. A
+A correction is claim-preserving. The candidate carries an `AnswerDraft` whose
+claims are individually `PROVEN`, `DOCUMENTED`, or `REPAIR_REQUIRED`; only the
+refused claims enter the repair request, and the independently supported claims
+are named as preserved context. A revision that drops them is not published as
+a poorer answer: the runtime commits the strongest draft with only the refused
+claims removed. A candidate that a correction supersedes is internal repair
+context. It is removed from the answer projection and is never rendered as a
+draft the user must read; only the candidate that ends the review loop can be
+shown. When correction is exhausted and no valid text remains, the final
+candidate is not published. The response transaction records `REVIEW` and the
+host removes the provisional stream from the answer projection; it may keep
+that one terminal candidate as a labelled withdrawn draft so a streamed answer
+does not vanish without a trace. The uncertified claims are carried as
+`ReviewIssues` into `NEEDS_REVIEW`. A
 facet-only rejection is the exception: the answer may honestly state the
 missing deliverable, so the finalizer publishes it and completion records the
 facet gap. Deleting sentences and appending a runtime-authored "Evidence

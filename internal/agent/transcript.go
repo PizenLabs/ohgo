@@ -104,8 +104,10 @@ func TranscriptTurn(turn Turn) Turn {
 	// A turn that continued into a tool call published investigation, not a
 	// conclusion. Keep the call and its result; drop the prose. A superseded
 	// answer candidate is the same boundary for a different reason: a bounded
-	// correction replaces it, so only the final answer may reach a host.
-	if turn.Answer == AnswerNarration || turn.Answer == AnswerSuperseded {
+	// correction replaces it, so only the final answer may reach a host. An
+	// unclassified turn is not a publication either: no response transaction
+	// committed it, and a host must not promote non-empty prose on its own.
+	if turn.Answer == AnswerNarration || turn.Answer == AnswerSuperseded || turn.Answer == AnswerUnclassified {
 		// Build a new backing slice: Turn is a value, but its Content shares
 		// the loop's live conversation. Reusing the capacity would overwrite
 		// the turn the completion authority still needs to read.

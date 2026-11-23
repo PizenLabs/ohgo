@@ -140,6 +140,10 @@ For each claim below, first obtain the missing observation its requirement/actio
 
 Only if those calls cannot establish the claim: remove that claim or qualify that sentence specifically. Do not add a general coverage or uncertainty disclaimer; it does not repair a different claim and will be rejected.
 
+Allowed repair actions: {{actions}}.
+
+{{preserved}}
+
 {{repairs}}
 
 Audit reason: {{reason}}`

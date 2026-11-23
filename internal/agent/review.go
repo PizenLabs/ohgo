@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // ReviewInformationalAnswer is the answer-level gate a host installs on the
@@ -96,17 +97,63 @@ func (l *Loop) answerRepairs(turns []Turn) []contract.GroundingIssue {
 	return l.cfg.AnswerRepairs(turns, answer)
 }
 
+// answerPassesReview evaluates a candidate text without mutating the run's
+// turns. It is used when a fallback repair restores valid claims from the
+// strongest draft: the restored text must pass the same audit before commit.
+func (l *Loop) answerPassesReview(turns []Turn, text string) bool {
+	if len(turns) == 0 {
+		return false
+	}
+	candidate := append([]Turn(nil), turns...)
+	candidate[len(candidate)-1].Assistant = replaceAssistantText(
+		candidate[len(candidate)-1].Assistant, text)
+	reason := l.answerReviewReason(candidate)
+	if strings.TrimSpace(reason) == "" {
+		return true
+	}
+	return !blocksPublication(l.answerRepairs(candidate))
+}
+
+// adoptAnswerText replaces the candidate prose in both the turn and the live
+// conversation. The model's next request and the host's projection must see the
+// same semantic answer; otherwise a repair could be reviewed as one text and
+// replayed as another.
+func adoptAnswerText(turns []Turn, live *[]Message, text string) {
+	if len(turns) == 0 {
+		return
+	}
+	last := &turns[len(turns)-1]
+	last.Assistant = replaceAssistantText(last.Assistant, text)
+	replaceLiveAssistant(live, last.Assistant)
+}
+
+// replaceLiveAssistant updates the most recent assistant message in the live
+// conversation. A turn that executed tools has tool results after its assistant
+// message, so replacing the slice's last element would overwrite evidence.
+func replaceLiveAssistant(live *[]Message, message ai.AssistantMessage) {
+	if live == nil {
+		return
+	}
+	for index := len(*live) - 1; index >= 0; index-- {
+		if _, ok := (*live)[index].(AssistantMessage); ok {
+			(*live)[index] = AssistantMessage{Message: message}
+			return
+		}
+	}
+}
+
 // correctionDirective renders the one bounded correction for a rejected
 // answer. It prefers the claim-level list and falls back to the prose reason.
-func (l *Loop) correctionDirective(turns []Turn, reason string) string {
+func (l *Loop) correctionDirective(turns []Turn, reason string, preserved []string) string {
 	if l == nil {
 		return ""
 	}
-	return completionRepairDirective(
+	return completionRepairDirectiveWithPreserved(
 		l.cfg.RepairRequest,
 		l.cfg.CompletionReviewRequest,
 		reason,
 		l.answerRepairs(turns),
+		preserved,
 		l.correctionToolBudget(),
 	)
 }
@@ -231,6 +278,80 @@ func answerRepairKey(issues []contract.GroundingIssue, reason string) string {
 	return strings.Join(parts, "\x01")
 }
 
+// RepairRequest is the bounded semantic repair contract for one answer
+// revision. It is the only repair state a model receives: the target claims,
+// why they failed, the claims that are already valid, and the permitted
+// actions. Scheduler counters and candidate identifiers stay out of it.
+type RepairRequest struct {
+	// TargetClaims are the review findings that must be repaired.
+	TargetClaims []contract.GroundingIssue
+	// Reason is the audit's own prose boundary.
+	Reason string
+	// PreservedClaims are independently supported sentences the revision must
+	// keep. They are context, not new evidence.
+	PreservedClaims []string
+	// AllowedActions are the permitted repair operations.
+	AllowedActions []string
+}
+
+// RepairActions returns the permitted actions named by a repair list. VERIFY is
+// always available: every other action is a weaker alternative when evidence
+// cannot be acquired.
+func RepairActions(repairs []contract.GroundingIssue) []string {
+	actions := []string{"VERIFY"}
+	seen := map[string]bool{"VERIFY": true}
+	for _, repair := range repairs {
+		action := strings.ToUpper(strings.TrimSpace(repair.Action))
+		switch {
+		case strings.Contains(action, "ATTRIBUT") || repair.Category == "attribution":
+			action = "ATTRIBUTE"
+		case strings.Contains(action, "WEAKEN") || strings.Contains(action, "QUALIF") ||
+			strings.Contains(action, "NARROW") || strings.Contains(action, "BOUND"):
+			action = "WEAKEN"
+		case strings.Contains(action, "REMOVE") || strings.Contains(action, "DELETE"):
+			action = "REMOVE"
+		default:
+			continue
+		}
+		if !seen[action] {
+			seen[action] = true
+			actions = append(actions, action)
+		}
+	}
+	// REMOVE is always permitted: an unsupported assertion the bounded
+	// investigation cannot establish must never be published.
+	if !seen["REMOVE"] {
+		actions = append(actions, "REMOVE")
+	}
+	return actions
+}
+
+// PreservedClaimsBlock renders the valid claims a revision must keep. It is
+// bounded like the repair list: preservation is a contract over the answer's
+// assertions, not a request to repeat the entire draft.
+func PreservedClaimsBlock(claims []string) string {
+	lines := make([]string, 0, len(claims))
+	seen := map[string]bool{}
+	for _, claim := range claims {
+		claim = strings.Join(strings.Fields(claim), " ")
+		if claim == "" || seen[claim] {
+			continue
+		}
+		seen[claim] = true
+		lines = append(lines, "- "+boundRepair(claim, 180))
+		if len(lines) >= MaxPreservedClaims {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Already supported claims that must survive this repair:\n" + strings.Join(lines, "\n")
+}
+
+// MaxPreservedClaims bounds the preservation contract carried to the model.
+const MaxPreservedClaims = 12
+
 // completionRepairDirective renders the claim-level correction. It falls back
 // to the prose directive when the run has no structured repairs or the host did
 // not install a repair template.
@@ -240,6 +361,13 @@ func answerRepairKey(issues []contract.GroundingIssue, reason string) string {
 // original reason is retained at the end: it is the audit's own wording and the
 // fallback if the model ignores the structured list.
 func completionRepairDirective(template, fallback, reason string, repairs []contract.GroundingIssue, budget int) string {
+	return completionRepairDirectiveWithPreserved(template, fallback, reason, repairs, nil, budget)
+}
+
+// completionRepairDirectiveWithPreserved renders the same directive with the
+// valid claims a revision must carry forward. The model sees semantic repair
+// requirements, never a scheduler allowance.
+func completionRepairDirectiveWithPreserved(template, fallback, reason string, repairs []contract.GroundingIssue, preserved []string, budget int) string {
 	reason = strings.TrimSpace(reason)
 	repairs = usableRepairs(repairs)
 	if reason == "" || len(repairs) == 0 {
@@ -256,6 +384,8 @@ func completionRepairDirective(template, fallback, reason string, repairs []cont
 		"{{count}}", strconv.Itoa(len(repairs)),
 		"{{budget}}", strconv.Itoa(budget),
 		"{{repairs}}", RepairInstructions(repairs),
+		"{{preserved}}", PreservedClaimsBlock(preserved),
+		"{{actions}}", strings.Join(RepairActions(repairs), ", "),
 		"{{reason}}", reason,
 	).Replace(template)
 }

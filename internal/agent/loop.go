@@ -128,6 +128,12 @@ type Turn struct {
 	// names the review finding, never a scheduler counter, candidate number,
 	// or internal state id. A host shows it verbatim.
 	AnswerReview string
+	// Draft is the internal claim-preserving version of this turn's prose. It
+	// is audit and repair state, never a host projection: only the turn's
+	// Answer disposition decides what may be shown. A superseded draft stays
+	// on its turn so lineage records which valid claims a revision had to
+	// preserve.
+	Draft *AnswerDraft
 }
 
 // ToolOutcome records what happened to one tool call.
@@ -1179,6 +1185,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// statement that the answer may be premature, not a model judgement.
 	lastEvidenceReview := ""
 	turns = nil
+	// ledger is the per-run claim-preserving draft history. A review failure
+	// scopes to claims, and a revision that drops an independently supported
+	// claim cannot displace the stronger draft.
+	ledger := answerLedger{}
 	// nudges are the one-shot runtime directives for the next request only:
 	// the answer request, the execution-intent recovery, and the protocol
 	// recovery. They are not conversation content — a stale "no tool is
@@ -1191,9 +1201,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// classified it. A host sees AnswerNarration, AnswerSuperseded,
 	// AnswerRejected, or AnswerCommitted and never has to infer the decision
 	// from event order.
+	reportedTurn := -1
 	reportTurn := func() {
 		if l.cfg.OnTurn != nil && len(turns) > 0 {
 			l.cfg.OnTurn(turns[len(turns)-1])
+		}
+		if len(turns) > 0 {
+			reportedTurn = len(turns) - 1
 		}
 	}
 	// acceptAnswer is the one publication gate for an assistant candidate. It
@@ -1212,6 +1226,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return true
 		}
 		last := &turns[len(turns)-1]
+		text := last.Assistant.Text()
 		if last.Answer != AnswerNarration || l.cfg.AnswerReview != nil {
 			l.noteDraft()
 		}
@@ -1229,26 +1244,85 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			last.AnswerReview = review
 		}
 		// supersede marks an intermediate candidate that a correction
-		// replaces. It must not become a user-visible answer artifact: the
-		// user watched a provisional preview, not a result. The model still
-		// sees the text in the live conversation, so it can repair the named
-		// claims. Tool outcomes remain visible.
+		// replaces. It must not become a user-visible answer artifact. The
+		// model still sees the text in the live conversation, so it can repair
+		// the named claims. Tool outcomes remain visible.
 		supersede := func() {
 			last.Answer = AnswerSuperseded
 			last.AnswerReview = ""
 		}
-		finish := func() { reportTurn() }
+		finish := func() {
+			l.recordDraftLineage(ledger.summaries(), ledger.preservedCount(), ledger.removedCount())
+			// A correction can reclassify the same turn after a continuation
+			// path already reported it; the final disposition is published
+			// exactly once.
+			if len(turns)-1 != reportedTurn {
+				reportTurn()
+			}
+		}
+		// commitSalvage publishes the strongest draft with only the refused
+		// claims removed. It still crosses the finalizer, so a fallback repair
+		// cannot publish text the same publication gate would refuse.
+		commitSalvage := func(salvagedText string, salvaged AnswerDraft, reviewFailed bool) bool {
+			adoptAnswerText(turns, &live, salvagedText)
+			if !l.finalizeResponse(turns, &live, lastEvidenceReview) {
+				return false
+			}
+			if reviewFailed {
+				l.noteRejected()
+			}
+			last = &turns[len(turns)-1]
+			// The fallback composes a new semantic version from the strongest
+			// draft: it supersedes the latest revision, not the draft it was
+			// recovered from.
+			finalText := last.Assistant.Text()
+			composed := newAnswerDraft(ledger.newVersion(), ledger.last.Version, finalText, nil)
+			// Preserve the removed-claim states: the audit must be able to say
+			// that the committed answer dropped an unsupported assertion rather
+			// than silently looking as if it never existed.
+			composed.Claims = append([]AnswerClaim(nil), salvaged.Claims...)
+			committed := ledger.commit(composed)
+			last.Draft = &committed
+			last.Answer = AnswerCommitted
+			last.AnswerReview = ""
+			finish()
+			return true
+		}
+		if strings.TrimSpace(text) == "" {
+			finish()
+			return true
+		}
+
 		reason := l.answerReviewReason(turns)
+		repairs := l.answerRepairs(turns)
+		// Track only candidates that can carry claims. A prose-only rejection
+		// (a plan or a missing evidence boundary) has no claim list and cannot
+		// be repaired sentence by sentence.
+		var draft AnswerDraft
+		haveDraft := false
+		if reason == "" || len(repairs) > 0 {
+			draft = ledger.observe(text, repairs)
+			draft.State = AnswerDraftUnderReview
+			last.Draft = &draft
+			haveDraft = true
+		}
+
 		if reason != "" {
-			repairs := l.answerRepairs(turns)
 			key := answerRepairKey(repairs, reason)
 			// One correction cannot repair a claim the repair itself
 			// introduced. A second pass is admitted only when the review
 			// names a different claim set; repeating the same rejection
-			// terminates at review instead of spinning.
+			// terminates at review instead of spinning. Claim-level repairs
+			// are the only ones that preserve valid work; a prose-only
+			// rejection keeps the generic bounded correction.
 			if answerCorrections < MaxAnswerCorrections && key != lastRepairKey &&
 				len(turns) < l.cfg.MaxTurns {
-				if directive := l.correctionDirective(turns, reason); directive != "" {
+				if directive := l.correctionDirective(turns, reason, ledger.preserved()); directive != "" {
+					if haveDraft {
+						draft.State = AnswerDraftSuperseded
+						ledger.supersede(draft.Version)
+						last.Draft = &draft
+					}
 					supersede()
 					l.noteRejected()
 					if answerCorrections == 0 {
@@ -1267,13 +1341,28 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				}
 			}
 			// The correction allowance is spent, the claim set did not
-			// change, or the host authorized no correction. A factual claim
-			// the same review refuses is not a final answer: keep it for
-			// completion's claim list, but never publish it. A facet gap is
-			// different: the answer may honestly state the missing
-			// deliverable, and the finalizer's Approved gate decides whether
-			// the text is publishable while completion carries the gap.
+			// change, or the host authorized no correction. Before refusing
+			// the whole answer, remove only the claims the review refused.
+			// Independently supported claims and their structure survive.
+			if haveDraft {
+				if salvagedText, salvaged, ok := ledger.salvage(); ok &&
+					l.answerPassesReview(turns, salvagedText) &&
+					commitSalvage(salvagedText, salvaged, true) {
+					return true
+				}
+			}
+			// A factual claim the same review refuses is not a final answer:
+			// keep it for completion's claim list, but never publish it. A
+			// facet gap is different: the answer may honestly state the
+			// missing deliverable, and the finalizer's Approved gate decides
+			// whether the text is publishable while completion carries the
+			// gap.
 			if blocksPublication(repairs) {
+				if haveDraft {
+					ledger.reject(draft.Version)
+					draft.State = AnswerDraftRejectedTerminal
+					last.Draft = &draft
+				}
 				withhold(answerRejectionReason(reason, repairs))
 				l.noteRejected()
 				l.markResponseReview(repairs)
@@ -1289,10 +1378,26 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			finish()
 			return true
 		}
+		// A revision may pass review but be materially poorer than the
+		// strongest draft it replaced. Prefer the strong draft with only its
+		// unsupported claims removed over a rewrite that discarded valid
+		// cognitive work.
+		if haveDraft && draft.PreservationLost {
+			if salvagedText, salvaged, ok := ledger.salvage(); ok &&
+				l.answerPassesReview(turns, salvagedText) &&
+				commitSalvage(salvagedText, salvaged, false) {
+				return true
+			}
+		}
 		if !l.finalizeResponse(turns, &live, lastEvidenceReview) {
 			// The finalizer's own audit is authoritative. It refused the
 			// candidate, so the host must not publish it. The raw turn stays
 			// available to completion, which reports the exact claims.
+			if haveDraft {
+				ledger.reject(draft.Version)
+				draft.State = AnswerDraftRejectedTerminal
+				last.Draft = &draft
+			}
 			audit := l.LastResponseAudit().Answer
 			withhold(answerRejectionReason("", audit.Issues))
 			l.noteRejected()
@@ -1304,6 +1409,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 		last.Answer = AnswerCommitted
 		last.AnswerReview = ""
+		if haveDraft {
+			if finalText := last.Assistant.Text(); finalText != draft.Text {
+				draft = newAnswerDraft(draft.Version, draft.Supersedes, finalText, nil)
+			}
+			committed := ledger.commit(draft)
+			last.Draft = &committed
+		}
 		finish()
 		return true
 	}
@@ -1823,14 +1935,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 
 		turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
 		turns = append(turns, turn)
-		if l.cfg.OnTurn != nil {
-			l.cfg.OnTurn(turn)
-		}
 		// The turn is complete and its evidence is intact. Return the budget
 		// stop now rather than asking the model for another turn it cannot
 		// afford: the work so far is resumable, and completion evaluation can
 		// still inspect exactly what happened.
 		if admissionErr != nil {
+			reportTurn()
 			return turns, admissionErr
 		}
 		// A terminal projection has closed the task. If the model used the
@@ -1839,12 +1949,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// rediscovering that no action is available.
 		if terminal {
 			if strings.TrimSpace(assistant.Text()) != "" {
+				// Prose produced on a terminal surface is still an answer
+				// candidate, not a published result. It crosses the same
+				// claim-preserving publication gate as any other turn.
+				if !acceptAnswer() {
+					continue
+				}
 				return turns, nil
 			}
 			reason := strings.TrimSpace(stopReason)
 			if reason == "" {
 				reason = "the runtime closed the task because no further action can make progress"
 			}
+			reportTurn()
 			return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
 		}
 
@@ -1880,6 +1997,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 		if executed > 0 {
 			unproductiveTurns = 0
+			reportTurn()
 			continue
 		}
 		// Nothing ran. A generic refusal is control feedback the model has not
@@ -1892,16 +2010,29 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// so there is no other action to choose and the text is the candidate
 		// answer. Every other refusal gets one bounded recovery request.
 		if answerRequired(outcomes) && strings.TrimSpace(assistant.Text()) != "" {
+			// The calls were refused only because the surface was closed, so
+			// the accompanying prose is the candidate answer, not narration.
+			turns[len(turns)-1].Answer = AnswerUnclassified
+			if !acceptAnswer() {
+				continue
+			}
 			return turns, nil
 		}
 		unproductiveTurns++
 		if unproductiveTurns < maxUnproductiveTurns {
+			reportTurn()
 			continue
 		}
 		// The model received the refusal and still produced nothing actionable.
 		// If it also produced text, that text is the best candidate available;
 		// the publication gate and completion decide whether it is sufficient.
 		if strings.TrimSpace(assistant.Text()) != "" {
+			// No call executed, so the prose is the best candidate available,
+			// not a preamble to work that happened.
+			turns[len(turns)-1].Answer = AnswerUnclassified
+			if !acceptAnswer() {
+				continue
+			}
 			return turns, nil
 		}
 		// Nothing can execute, so a further tool turn cannot make progress.
@@ -1916,9 +2047,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// model one bounded corrected attempt before asking for prose; the
 			// modified invocation is a different proposal and may execute.
 			if allFailureRejected(outcomes) && unproductiveTurns <= maxUnproductiveTurns {
+				reportTurn()
 				continue
 			}
 			forceAnswer = true
+			reportTurn()
 			continue
 		}
 		reason := strings.TrimSpace(stopReason)
@@ -1932,6 +2065,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				reason = "the runtime refused every proposed action and the model did not answer"
 			}
 		}
+		reportTurn()
 		return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
 	}
 }

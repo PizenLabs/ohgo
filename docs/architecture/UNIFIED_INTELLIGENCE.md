@@ -531,15 +531,28 @@ The runtime classifies every turn's assistant prose once, as
 | `AnswerRejected` | The publication review terminally refused the candidate. | Exactly one labelled draft, or the plain output's `answer withheld` line. `AnswerReview` carries the control-plane reason verbatim. |
 | `AnswerCommitted` | The response transaction accepted the answer. | The one answer, settled with its exact text. |
 
-A streamed candidate is labelled provisional until `AnswerCommitted` settles
-it. The renderer does not infer a disposition from event order, empty text,
-stream completion, or its own audit read: an unclassified preview at a turn
-boundary is withdrawn, not promoted. A cancelled stream keeps its partial text
-as one display-only draft labelled with the interruption, never as an answer.
-`Loop.LastResponseAudit`
-records the drafts, rejections,
-tool calls, reused observations, retries, redundant identical calls, and the
-final claim audit; a second commit for the same run is a no-op.
+No answer prose is normally user-visible before `AnswerCommitted`. The TUI
+does not publish answer deltas while a candidate can still be rejected or
+superseded; reasoning and tool activity remain live, and the committed answer
+is published once. The renderer does not infer a disposition from event order,
+empty text, stream completion, or its own audit read: an unclassified preview
+at a turn boundary is withdrawn, not promoted. A cancelled stream keeps its
+partial text as one display-only draft labelled with the interruption, never as
+an answer.
+
+A candidate is an internal `agent.AnswerDraft`, with a version, a
+`SUPERSEDES` link, and a sentence-sized claim ledger. Review is claim-scoped:
+only the claims an issue names become `REPAIR_REQUIRED`; the rest keep their
+`PROVEN`/`DOCUMENTED` state. A revision that drops an independently supported
+claim is reported as preservation loss, and the runtime commits the strongest
+draft with only the refused claims removed rather than the poorer rewrite. A
+draft's lifecycle is `CANDIDATE`, `UNDER_REVIEW`, `REPAIR_REQUIRED`,
+`SUPERSEDED`, `REJECTED_TERMINAL`, or `COMMITTED`. Only `COMMITTED` is a
+user-visible answer; `SUPERSEDED` is internal history, never a withdrawal.
+`Loop.LastResponseAudit` records the drafts, lineage, preserved and removed
+claims, rejections, tool calls, reused observations, retries, redundant
+identical calls, and the final claim audit; a second commit for the same run is
+a no-op.
 `UnsupportedClaims` counts material claims the deterministic audit could not
 certify, while `UnresolvedFacets` counts requested deliverables the answer
 honestly reports as unverified. The second is still a completion gap; it is not

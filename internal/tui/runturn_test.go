@@ -123,8 +123,8 @@ func TestRunTurnPublishesReusedOutcomeBeforeFinalAnswer(t *testing.T) {
 			if e.ID == "r2" {
 				reusedFinished = true
 			}
-		case AssistantDelta:
-			if strings.Contains(e.Text, "the answer") {
+		case AssistantReconcile:
+			if e.Answer == agent.AnswerCommitted && strings.Contains(e.Text, "the answer") {
 				answerSeen = true
 				answerBeforeReused = answerBeforeReused || !reusedFinished
 			}

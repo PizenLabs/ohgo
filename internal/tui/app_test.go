@@ -136,6 +136,7 @@ func TestRebaseDropsCompactedHistory(t *testing.T) {
 		Results: []agent.ToolOutcome{{
 			CallID: "c1", ToolName: "read", Result: agent.Result{Text: "contents"},
 		}},
+		Answer: agent.AnswerCommitted,
 	}}
 
 	history := rebase(request, turns)

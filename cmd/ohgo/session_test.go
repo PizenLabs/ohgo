@@ -158,6 +158,54 @@ func TestPersistTurnWritesTheTranscript(t *testing.T) {
 	}
 }
 
+// Historical replay must reconstruct only committed answers. A superseded or
+// terminal candidate is internal history, not a visible turn the user can
+// scroll back to or the model can replay as its own answer.
+func TestReplayDoesNotResurrectInternalAnswerCandidates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	sess, err := store.Create("/tmp", "anthropic/claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistTurn(store, sess, agent.Turn{
+		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "superseded draft"}}},
+		Answer:    agent.AnswerSuperseded,
+	})
+	persistTurn(store, sess, agent.Turn{
+		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "refused draft"}}},
+		Answer:    agent.AnswerRejected, AnswerReview: "the evidence did not support it",
+	})
+	persistTurn(store, sess, agent.Turn{
+		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "committed answer"}}},
+		Answer:    agent.AnswerCommitted,
+	})
+
+	stored, err := store.Messages(sess.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("persisted %d messages, want only the committed answer", len(stored))
+	}
+	history, err := session.Replay(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("replayed %d messages, want one", len(history))
+	}
+	assistant, ok := history[0].(agent.AssistantMessage)
+	if !ok || assistant.Message.Text() != "committed answer" {
+		t.Fatalf("replayed answer = %+v, want the committed turn", history[0])
+	}
+}
+
 // A newly opened session receives its deterministic title from the submitted
 // prompt before any provider work. The title is durable and readable through a
 // fresh store handle, so the Session Manager never waits for a model.

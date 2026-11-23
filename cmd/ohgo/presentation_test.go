@@ -28,6 +28,7 @@ func TestPrintTurnOmitsAnswerRequiredControlRefusals(t *testing.T) {
 				CandidateRejected: true, AnswerRequired: true,
 			}},
 		},
+		Answer: agent.AnswerCommitted,
 	}
 
 	var out bytes.Buffer
@@ -64,6 +65,22 @@ func TestPrintTurnMarksTerminalRejection(t *testing.T) {
 	if !strings.Contains(text, "answer withheld") ||
 		!strings.Contains(text, "the answer asserts a claim the run did not observe") {
 		t.Fatalf("output = %q, want the terminal refusal artifact", text)
+	}
+}
+
+// A turn no publication transaction committed is not an answer. Non-empty
+// assistant prose alone must not reach stdout.
+func TestPrintTurnDoesNotPublishUncommittedProse(t *testing.T) {
+	turn := agent.Turn{
+		Assistant: ai.AssistantMessage{
+			Content: []ai.ContentBlock{ai.TextContent{Text: "a candidate that was never committed"}},
+		},
+		Answer: agent.AnswerUnclassified,
+	}
+	var out bytes.Buffer
+	printTurn(&out, turn)
+	if got := out.String(); got != "" {
+		t.Fatalf("uncommitted prose reached the plain transcript: %q", got)
 	}
 }
 
