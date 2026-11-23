@@ -6278,11 +6278,18 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// double-counted.
 	var seenIn, seenOut int
 	p.loop.SetTurnHook(func(turn agent.Turn) {
-		// A rejected candidate and prose that continued into a tool call are
-		// investigation, not conclusions. Their provisional preview is
-		// withdrawn immediately; the exact committed answer is settled after
-		// Run, when the publication transaction is final.
-		if turn.Suppressed || turn.SuppressText {
+		// A rejected answer candidate is kept as a labelled draft: it already
+		// streamed as a normal block, and silently deleting it was
+		// indistinguishable from losing a committed answer. Prose that
+		// continued into a tool call is narration, so it is withdrawn outright.
+		switch {
+		case turn.Suppressed:
+			p.publishCritical(AssistantReconcile{
+				Discard:   true,
+				Withdrawn: "answer review requested changes",
+				At:        time.Now(), Seq: seq,
+			})
+		case turn.SuppressText:
 			p.publishCritical(AssistantReconcile{Discard: true, At: time.Now(), Seq: seq})
 		}
 		seenIn += turn.Assistant.Usage.Input
@@ -6560,11 +6567,23 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			})
 		}
 	}
-	// The publication transaction committed exactly one answer, if any. This
-	// is the only assistant-text value the live transcript may keep; the
-	// provisional stream is replaced here rather than appended to.
-	if committedAnswer != "" {
+	// The publication transaction is the only authority for assistant text.
+	// A run that produced a candidate but did not commit it (the claim audit
+	// refused publication, or the run ended before finalization) must not leave
+	// that candidate on screen as the answer. The provisional stream is
+	// withdrawn instead; the terminal footer carries the review boundary.
+	if audit := p.loop.LastResponseAudit(); audit.State == agent.ResponseCommitted && committedAnswer != "" {
 		p.publishCritical(AssistantReconcile{Text: committedAnswer, At: time.Now(), Seq: seq})
+	} else {
+		// This also covers a committed run whose finalizer withheld all text:
+		// the provisional preview must not survive as an answer no transaction
+		// accepted, but the last candidate stays inspectable under a withdrawn
+		// label unless the turn hook already preserved it.
+		p.publishCritical(AssistantReconcile{
+			Discard:   true,
+			Withdrawn: "the runtime did not approve this answer",
+			At:        time.Now(), Seq: seq,
+		})
 	}
 	// The durable task transition lands after the turn's answer text, so the
 	// user reads the model's own words before the verdict that judges them.
