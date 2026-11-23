@@ -165,10 +165,10 @@ func TestRunTurnPublishesReusedOutcomeBeforeFinalAnswer(t *testing.T) {
 	}
 }
 
-// The TUI must publish exactly one assistant answer for a task even when the
-// model produces a rejected draft, acquires evidence, and answers again. The
-// draft may exist in the internal provider context; it must never become a
-// transcript delta.
+// The TUI must settle exactly one assistant answer for a task even when the
+// model streams a rejected preview, acquires evidence, and answers again.
+// Provisional deltas may be visible, but they must not survive reconciliation
+// as the committed transcript answer.
 func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 	read := &orderReadTool{}
 	index := 0
