@@ -210,7 +210,9 @@ func TestVerifyToolRunsBrowserCheckWhenAvailable(t *testing.T) {
 	defer server.Close()
 	root := t.TempDir()
 	browser := filepath.Join(root, "fake-browser")
-	if err := os.WriteFile(browser, []byte("#!/bin/sh\necho '<html><body>rendered portfolio</body></html>'\n"), 0o755); err != nil {
+	document := "<html><head><title>not page text</title></head><body>" +
+		"<span>rendered</span><span>portfolio</span></body></html>"
+	if err := os.WriteFile(browser, []byte("#!/bin/sh\nprintf '%s' '"+document+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	tool := NewVerifyTool(root)
@@ -238,6 +240,33 @@ func TestVerifyToolRunsBrowserCheckWhenAvailable(t *testing.T) {
 	})
 	if !completion.Complete() {
 		t.Fatalf("passing service + browser verification did not prove the objective: %s", completion.Reason)
+	}
+}
+
+func TestVerifyToolBrowserCheckIgnoresMarkupOnlyText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "<html>ignored raw body</html>")
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	browser := filepath.Join(root, "fake-browser")
+	document := "<html><head><script>secret marker</script></head><body>visible page</body></html>"
+	if err := os.WriteFile(browser, []byte("#!/bin/sh\nprintf '%s' '"+document+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewVerifyTool(root)
+	tool.BrowserPath = browser
+	result := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{
+		"service": map[string]any{"command": advertisingService(server.URL)},
+		"checks": []any{map[string]any{
+			"kind": "browser", "contains": []any{"secret marker"},
+		}},
+	})
+	if !result.IsError || result.Verifies {
+		t.Fatalf("markup-only text was accepted as visible page content: %+v", result)
+	}
+	if !strings.Contains(result.Text, "rendered page text does not contain") {
+		t.Fatalf("failure did not identify the page-text mismatch: %s", result.Text)
 	}
 }
 

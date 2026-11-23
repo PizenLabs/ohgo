@@ -15,6 +15,12 @@ var (
 	// ErrNoModelOutput means the provider produced no tool call and no visible
 	// assistant text, so there is nothing to dispatch and nothing to answer.
 	ErrNoModelOutput = errors.New("agent: NO_MODEL_OUTPUT")
+	// ErrOutputTruncated means the provider stopped at the completion budget
+	// before the model produced a complete tool call or visible answer. It is
+	// distinct from ErrNoModelOutput: the model did produce output, but the
+	// runtime cut it off, so the cause is the configured budget or a single
+	// turn that exceeds the model's own output ceiling — not a silent model.
+	ErrOutputTruncated = errors.New("agent: OUTPUT_TRUNCATED")
 	// ErrExecutionIntentWithoutTool means the model announced an action it was
 	// about to take but emitted no tool call, even after the bounded protocol
 	// recovery request. The prose is never executed.

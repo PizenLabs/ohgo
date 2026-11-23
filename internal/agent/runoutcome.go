@@ -130,6 +130,7 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 		return RunNeedsReview, reason, nil
 	case errors.Is(err, ErrNoModelOutput), errors.Is(err, ErrExecutionIntentWithoutTool),
 		errors.Is(err, ErrToolNormalizationFailed), errors.Is(err, ErrToolCallIncomplete),
+		errors.Is(err, ErrOutputTruncated),
 		errors.Is(err, ErrProviderStalled), errors.Is(err, ai.ErrStreamStalled):
 		// These are model/protocol/transport lifecycle failures before any
 		// requested action executed. They are non-terminal: the task identity,

@@ -292,7 +292,10 @@ type Config struct {
 	CorrectionToolCalls int
 	// Tools are offered to the model.
 	Tools []Tool
-	// MaxTokens caps each completion.
+	// MaxTokens caps each completion. Zero means "use the model's own output
+	// ceiling": the loop must not substitute a flat budget, because a
+	// reasoning model can spend a small one on hidden reasoning and stop
+	// before it emits a single action. The provider resolves the ceiling.
 	MaxTokens int
 	// Reasoning enables extended thinking.
 	Reasoning bool
@@ -749,8 +752,8 @@ func New(cfg Config) (*Loop, error) {
 	if cfg.Stream == nil {
 		return nil, errors.New("agent: Stream is required")
 	}
-	if cfg.MaxTokens <= 0 {
-		cfg.MaxTokens = defaultMaxTokens
+	if cfg.MaxTokens < 0 {
+		cfg.MaxTokens = 0
 	}
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = DefaultMaxTurns
@@ -861,9 +864,6 @@ func boundObservationText(text string) (string, bool) {
 	}
 	return strings.TrimSpace(text[:cut]), true
 }
-
-// defaultMaxTokens caps a completion when the caller did not pick a budget.
-const defaultMaxTokens = 8192
 
 // SetToolProgressHook installs the progress reporter after construction.
 //
@@ -1175,6 +1175,17 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// asks for a concrete next output; a second reasoning-only turn is a
 	// recoverable lifecycle stop, not a deliberate finish.
 	reasoningRetried := false
+	// outputLimitRetried bounds the recovery for a turn the provider cut off
+	// at the completion output ceiling before any call or visible text. A
+	// retry at the same budget truncates identically, so the recovery raises
+	// the budget to the model ceiling once; a second truncation is reported.
+	outputLimitRetried := false
+	// completionBudget is the per-request output ceiling. It starts at the
+	// configured cap and is raised once when evidence proves that cap cannot
+	// produce an action for this model. It stays raised for the run because
+	// the same reasoning scale governs every later turn; the run's turn and
+	// wall-clock budgets remain the outer bound.
+	completionBudget := l.cfg.MaxTokens
 	// answerCorrections and correctionPending implement the bounded
 	// completion-review correction. The next request reopens the constructed
 	// tool surface so the model can acquire the missing evidence instead of
@@ -1738,7 +1749,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			System:          requestSystem,
 			Tools:           specs,
 			ToolChoice:      toolChoice,
-			MaxTokens:       l.cfg.MaxTokens,
+			MaxTokens:       completionBudget,
 			Reasoning:       l.cfg.Reasoning,
 			ReasoningEffort: l.cfg.ReasoningEffort,
 			SessionID:       l.cfg.SessionID,
@@ -1763,6 +1774,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					strings.TrimSpace(l.cfg.ToolArgumentRecoveryRequest) != "" &&
 					len(turns) < l.cfg.MaxTurns {
 					argumentRecoveryAttempted = true
+					// A payload cut off by the output ceiling will truncate
+					// again at the same budget. Raise the ceiling once so the
+					// re-emission has room; a malformed (not truncated)
+					// payload keeps the configured budget.
+					if argumentErr.OutputLimit {
+						completionBudget = l.escalateCompletionBudget(completionBudget)
+					}
 					nudges = append(nudges, l.cfg.ToolArgumentRecoveryRequest)
 					continue
 				}
@@ -1867,6 +1885,38 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				reportTurn()
 				return turns, fmt.Errorf("%w: the model announced an execution it never emitted as a tool call",
 					ErrExecutionIntentWithoutTool)
+			}
+			// A turn the provider cut off at the output ceiling produced no
+			// complete action and no visible text: the model was still writing
+			// when the budget ran out. That is not a deliberate stop, so
+			// repeating the request at the same budget truncates identically.
+			// The one recovery raises the completion ceiling to the model's
+			// own ceiling and asks for the concrete next output. A second
+			// truncation is reported as a budget stop, not as a silent model.
+			if strings.TrimSpace(assistant.Text()) == "" &&
+				assistant.StopReason == ai.StopMaxTokens &&
+				len(turns) < l.cfg.MaxTurns {
+				if !outputLimitRetried && strings.TrimSpace(l.cfg.OutputRecoveryRequest) != "" {
+					outputLimitRetried = true
+					completionBudget = l.escalateCompletionBudget(completionBudget)
+					// A truncated turn has no replayable form: the partial
+					// reasoning is dropped and the request restarts from the
+					// last conversational turn plus the directive.
+					live = live[:len(live)-1]
+					origins = origins[:len(origins)-1]
+					if closed || forceAnswer {
+						if strings.TrimSpace(l.cfg.AnswerRequest) != "" {
+							nudges = append(nudges, l.cfg.AnswerRequest)
+						}
+					} else {
+						nudges = append(nudges, l.cfg.OutputRecoveryRequest)
+					}
+					reportTurn()
+					continue
+				}
+				reportTurn()
+				return turns, fmt.Errorf("%w: the response reached the %d-token completion ceiling before emitting a tool call or answer",
+					ErrOutputTruncated, completionBudget)
 			}
 			// A model can stop without any visible text immediately after a
 			// refusal-only turn. The refusal is feedback it has not answered
@@ -2317,6 +2367,28 @@ func (l *Loop) model() ai.Model {
 		return l.cfg.ModelFn()
 	}
 	return l.cfg.Model
+}
+
+// escalateCompletionBudget raises a proven-insufficient completion cap to the
+// model's own output ceiling.
+//
+// A turn that stopped at the cap before emitting any call or text cannot be
+// recovered by repeating the identical request: the model's reasoning alone
+// consumed the budget. The model ceiling is a bound, not a target — the model
+// still stops when it is done and the run's turn budget remains the outer
+// limit — so using it for the recovery is the same budget the provider would
+// apply to a caller that never set a cap. When the model publishes no ceiling,
+// doubling the current budget is the only evidence-based step; a zero budget
+// already means "provider ceiling" and cannot be raised.
+func (l *Loop) escalateCompletionBudget(current int) int {
+	ceiling := l.model().MaxOutputTokens
+	if ceiling > current {
+		return ceiling
+	}
+	if current > 0 {
+		return current * 2
+	}
+	return current
 }
 
 // system returns the system prompt for the next request: exactly the stable

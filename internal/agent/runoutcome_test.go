@@ -147,6 +147,7 @@ func TestClassifyRunEvidenceDecidesWithoutAStop(t *testing.T) {
 func TestClassifyRunPreservesProtocolFailureStage(t *testing.T) {
 	for _, sentinel := range []error{
 		ErrNoModelOutput,
+		ErrOutputTruncated,
 		ErrExecutionIntentWithoutTool,
 		ErrToolNormalizationFailed,
 	} {

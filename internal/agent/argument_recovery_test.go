@@ -334,6 +334,193 @@ func TestReasoningOnlyTurnWithoutDirectiveStopsRecoverably(t *testing.T) {
 	}
 }
 
+// A turn cut off at the completion ceiling produced no action and no text.
+// Retrying at the same budget truncates identically, so the one recovery must
+// raise the ceiling to the model's own output ceiling and ask for the action.
+func TestTruncatedTurnRaisesTheBudgetAndRecovers(t *testing.T) {
+	tool := newScriptedTool("write", "wrote")
+	model := catalog.MustResolve("anthropic/claude-sonnet-4-5")
+	var (
+		mu       sync.Mutex
+		requests []ai.Request
+		attempt  int
+	)
+	streamFn := func(ctx context.Context, req ai.Request) (*ai.Stream, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		position := attempt
+		attempt++
+		mu.Unlock()
+		switch position {
+		case 0:
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content:    []ai.ContentBlock{ai.ThinkingContent{Thinking: "planning the whole site"}},
+				StopReason: ai.StopMaxTokens,
+			}), nil
+		case 1:
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content:    []ai.ContentBlock{ai.ToolCall{ID: "call-1", Name: "write", Arguments: map[string]any{"value": "styles.css"}}},
+				StopReason: ai.StopToolUse,
+			}), nil
+		default:
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content:    []ai.ContentBlock{ai.TextContent{Text: "the site is ready"}},
+				StopReason: ai.StopEndTurn,
+			}), nil
+		}
+	}
+	loop, err := New(Config{
+		Model:                 model,
+		Stream:                streamFn,
+		Tools:                 []Tool{tool},
+		MaxTurns:              5,
+		MaxTokens:             1024,
+		OutputRecoveryRequest: "emit the concrete next output",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "build the site"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(turns) == 0 || turns[len(turns)-1].Assistant.Text() != "the site is ready" {
+		t.Fatalf("turns = %+v, want the answer produced after recovery", turns)
+	}
+	if got := len(tool.invoked()); got != 1 {
+		t.Fatalf("tool invocations = %d, want the recovered call", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("requests = %d, want the truncated turn, the recovery, and the answer", len(requests))
+	}
+	if requests[0].MaxTokens != 1024 {
+		t.Fatalf("first request budget = %d, want the configured 1024", requests[0].MaxTokens)
+	}
+	if requests[1].MaxTokens != model.MaxOutputTokens {
+		t.Fatalf("recovery budget = %d, want the model ceiling %d", requests[1].MaxTokens, model.MaxOutputTokens)
+	}
+	if !requestContainsRuntimeText(requests[1], "emit the concrete next output") {
+		t.Fatal("the recovery request did not carry the directive")
+	}
+}
+
+// Without a recovery directive a truncated turn is still a truthful budget
+// stop, distinct from a model that produced nothing at all.
+func TestTruncatedTurnWithoutDirectiveIsOutputTruncated(t *testing.T) {
+	model := catalog.MustResolve("anthropic/claude-sonnet-4-5")
+	streamFn := func(ctx context.Context, req ai.Request) (*ai.Stream, error) {
+		return ai.NewCompletedStream(ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.ThinkingContent{Thinking: "still planning"}},
+			StopReason: ai.StopMaxTokens,
+		}), nil
+	}
+	loop, err := New(Config{
+		Model:     model,
+		Stream:    streamFn,
+		Tools:     []Tool{newScriptedTool("read", "package main")},
+		MaxTurns:  5,
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "build the site"}})
+	if !errors.Is(err, ErrOutputTruncated) {
+		t.Fatalf("err = %v, want %v", err, ErrOutputTruncated)
+	}
+	verdict, reason, _ := ClassifyRun(err, CompletionInput{Turns: turns}, false)
+	if verdict != RunNeedsReview {
+		t.Fatalf("verdict = %s, want review", verdict)
+	}
+	if !strings.Contains(reason, "OUTPUT_TRUNCATED") {
+		t.Fatalf("reason = %q, want the truncation class", reason)
+	}
+}
+
+// The recovery is bounded: a second truncation at the model ceiling is a
+// truthful stop, not another identical request.
+func TestTruncatedTurnStaysBoundedAfterRecovery(t *testing.T) {
+	model := catalog.MustResolve("anthropic/claude-sonnet-4-5")
+	var (
+		mu       sync.Mutex
+		requests []ai.Request
+	)
+	streamFn := func(ctx context.Context, req ai.Request) (*ai.Stream, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		return ai.NewCompletedStream(ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.ThinkingContent{Thinking: "still planning"}},
+			StopReason: ai.StopMaxTokens,
+		}), nil
+	}
+	loop, err := New(Config{
+		Model:                 model,
+		Stream:                streamFn,
+		Tools:                 []Tool{newScriptedTool("read", "package main")},
+		MaxTurns:              5,
+		MaxTokens:             1024,
+		OutputRecoveryRequest: "emit the concrete next output",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = loop.Run(context.Background(), []Message{UserMessage{Text: "build the site"}})
+	if !errors.Is(err, ErrOutputTruncated) {
+		t.Fatalf("err = %v, want %v", err, ErrOutputTruncated)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want the truncated turn and exactly one recovery", len(requests))
+	}
+	if requests[1].MaxTokens != model.MaxOutputTokens {
+		t.Fatalf("recovery budget = %d, want the model ceiling %d", requests[1].MaxTokens, model.MaxOutputTokens)
+	}
+}
+
+// A zero completion budget means "provider decides from the model ceiling".
+// The loop must not substitute a flat default: a reasoning model can spend it
+// on hidden reasoning and stop before any action.
+func TestZeroMaxTokensIsNotReplacedByAFlatDefault(t *testing.T) {
+	model := catalog.MustResolve("anthropic/claude-sonnet-4-5")
+	var (
+		mu       sync.Mutex
+		requests []ai.Request
+	)
+	streamFn := func(ctx context.Context, req ai.Request) (*ai.Stream, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		return ai.NewCompletedStream(ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.TextContent{Text: "done"}},
+			StopReason: ai.StopEndTurn,
+		}), nil
+	}
+	loop, err := New(Config{
+		Model:    model,
+		Stream:   streamFn,
+		Tools:    []Tool{newScriptedTool("read", "package main")},
+		MaxTurns: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loop.cfg.MaxTokens != 0 {
+		t.Fatalf("configured budget = %d, want 0 (model ceiling)", loop.cfg.MaxTokens)
+	}
+	if _, err := loop.Run(context.Background(), []Message{UserMessage{Text: "build the site"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 1 || requests[0].MaxTokens != 0 {
+		t.Fatalf("request budget = %d, want 0 so the provider resolves the model ceiling", requests[0].MaxTokens)
+	}
+}
+
 func requestContainsRuntimeText(req ai.Request, want string) bool {
 	for _, msg := range req.Messages {
 		state, ok := msg.(ai.RuntimeStateMessage)
