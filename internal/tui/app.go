@@ -89,19 +89,17 @@ type tickMsg time.Time
 // faster than this.
 const spinnerInterval = 90 * time.Millisecond
 
-// frameInterval is the presentation clock: 30 FPS (~33ms). It is faster than
-// the spinner so a three-phase fade and a 150ms dwell can actually be painted
-// on distinct frames, while the spinner is advanced only once per
-// spinnerInterval.
-const frameInterval = 33 * time.Millisecond
+// frameInterval is the presentation clock. The 60 Hz cadence gives color
+// transitions enough distinct frames to read as a fade; the spinner still
+// advances only once per spinnerInterval.
+const frameInterval = time.Second / 60
 
 // renderFPS is the viewport paint ceiling. Token deltas can arrive hundreds of
 // times a second, but the terminal only needs a coherent frame: the renderer
 // keeps the latest View and paints at this rate, so stream bursts are folded
-// into one repaint instead of racing the emulator with partial rows. 30 Hz is
-// fast enough to read as continuous text while leaving headroom for the
-// spinner's 90ms tick.
-const renderFPS = 30
+// into one repaint instead of racing the emulator with partial rows. 60 Hz
+// keeps the short color ramps fluid without coupling paints to token arrival.
+const renderFPS = 60
 
 // Program drives the interactive session.
 //
@@ -179,7 +177,7 @@ type Program struct {
 	mouseReports int
 	// eventsApplied and viewsRendered are cadence diagnostics: one Update
 	// can fold many runtime events into one state transition, while Bubble
-	// Tea's renderer paints at its own 60 Hz cadence from the latest View.
+	// Tea's renderer paints at its own cadence from the latest View.
 	// They are never rendered.
 	eventsApplied int
 	viewsRendered int
@@ -1030,8 +1028,8 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if at.IsZero() {
 			at = time.Now()
 		}
-		// The frame clock drives fade phases and dwell floors. It runs faster
-		// than the spinner so a block can step through three visible phases.
+		// The frame clock drives color fades and dwell floors. It runs faster
+		// than the spinner so presentation can ease independently of activity.
 		p.state.Apply(FrameTick{At: at})
 		// The commit activity shares the one spinner cadence. Advancing it
 		// keeps the elapsed clocks and the label sweep moving without a
@@ -6073,13 +6071,17 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// at construction, because the program is the only thing that can turn
 	// it into UI events.
 	//
-	// Visible model text is not forwarded while the stream is open. Answer
-	// prose is a candidate until the Control Plane commits it; publishing
-	// deltas would make the transcript show a draft, and later withdraw it,
-	// before the claim review finished. Reasoning and tool activity still
-	// stream, so the turn remains observable while the answer is internal.
-	// The committed value is published once after Run.
-	p.loop.SetTextDeltaHook(nil)
+	// Answer deltas are shown only as a labelled provisional preview. The
+	// reducer keeps them out of the committed answer contract, and the exact
+	// committed value (or withdrawal) replaces that preview after Run.
+	// Loop.drain sanitizes each delta before this hook, so streaming the preview
+	// observes the same runtime-state boundary as the settled answer.
+	p.loop.SetTextDeltaHook(func(delta string) {
+		for _, chunk := range splitAssistantChunks(delta) {
+			p.publishOK(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
+		}
+	})
+	defer p.loop.SetTextDeltaHook(nil)
 	var liveThinking strings.Builder
 	// A stream with tool calls is investigation narration, not an answer. The
 	// provisional preview is withdrawn before the tool card opens so the two
