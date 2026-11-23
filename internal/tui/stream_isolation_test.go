@@ -37,9 +37,15 @@ func TestLiveTranscriptWithholdsRuntimeState(t *testing.T) {
 	for {
 		select {
 		case event := <-p.events:
+			p.state.Apply(event)
 			switch e := event.(type) {
 			case AssistantDelta:
-				t.Fatalf("candidate prose was published before commit: %q", e.Text)
+				live += e.Text
+				for _, forbidden := range []string{"Runtime state", "Sufficiency:", "Available actions:"} {
+					if strings.Contains(live, forbidden) {
+						t.Fatalf("provisional preview leaked %q: %q", forbidden, live)
+					}
+				}
 			case AssistantReconcile:
 				if e.Answer != agent.AnswerCommitted {
 					continue
