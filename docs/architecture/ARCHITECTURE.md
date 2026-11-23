@@ -669,13 +669,13 @@ user's request before execution and the evidence the runtime observed.
   non-empty visible assistant text in the final turn, and that text must pass
   the claim/evidence audit before publication. The audit withholds a rejected
   sentence and publishes a bounded limitation instead; a draft is never the
-  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A streamed
-  candidate is labelled provisional until the response transaction commits it.
-  A candidate superseded by a bounded correction is internal repair context:
-  it is removed from the answer projection and never becomes a transcript
-  artifact. Only a terminal review refusal may remain as one labelled
-  withdrawn draft, so the final answer cannot vanish without a trace while the
-  review loop stays out of the conversation. Committed text is never
+  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. Every turn's
+  prose carries one runtime disposition (`UNIFIED_INTELLIGENCE.md` §12.7):
+  narration and superseded candidates are withheld, a terminal refusal leaves
+  one labelled draft with the control-plane reason, and only a committed
+  answer is the answer. A provisional preview is never promoted by a turn
+  boundary; an interrupted preview is labelled as interrupted, not published.
+  Committed text is never
   withdrawn. A request that explicitly required external knowledge also needs
   a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from

@@ -105,7 +105,8 @@ When a candidate answer fails the answer-level review:
 5. An exhausted or repeated rejection returns to the host, which reports
    `NEEDS_REVIEW`. A candidate superseded by a correction is internal and is
    never displayed; only the terminal candidate may remain as one labelled
-   withdrawn draft.
+   withdrawn draft, carrying the control-plane review reason verbatim. The
+   renderer never invents or substitutes a reason.
 
 The correction is not a completion bypass: it cannot mark the task complete,
 widen authority, or turn an unsupported claim into evidence. An empty
