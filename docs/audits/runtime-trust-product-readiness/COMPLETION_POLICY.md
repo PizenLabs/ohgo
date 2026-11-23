@@ -102,11 +102,14 @@ When a candidate answer fails the answer-level review:
    remaining-call counter.
 4. It re-runs the same review on the corrected answer. A further pass is
    admitted only when the review names a different claim set.
-5. An exhausted or repeated rejection returns to the host, which reports
-   `NEEDS_REVIEW`. A candidate superseded by a correction is internal and is
-   never displayed; only the terminal candidate may remain as one labelled
-   withdrawn draft, carrying the control-plane review reason verbatim. The
-   renderer never invents or substitutes a reason.
+5. An exhausted or repeated rejection is claim-scoped first: the runtime
+   composes the answer from the strongest draft with only the refused claims
+   removed, and publishes it if that composed text passes the same audit. Only
+   when no valid text remains does the host report `NEEDS_REVIEW`. A candidate
+   superseded by a correction is internal and is never displayed; only the
+   terminal candidate may remain as one labelled withdrawn draft, carrying the
+   control-plane review reason verbatim. The renderer never invents or
+   substitutes a reason.
 
 The correction is not a completion bypass: it cannot mark the task complete,
 widen authority, or turn an unsupported claim into evidence. An empty
