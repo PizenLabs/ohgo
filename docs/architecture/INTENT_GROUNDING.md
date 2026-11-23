@@ -248,6 +248,14 @@ form includes passive voice (“could not be read”), and a qualifier does not 
 a category into a file coordinate: “no Go source files” is still a category
 absence, not a concrete file claim.
 
+A manifest declaration ("no test scripts declared", "package.json declares no
+test script") reports what the observed declaration list contains; it is not a
+repository-wide existence claim, and the source-coverage gate does not review
+it. It is also not proof that tests do not exist: a static test inventory
+reports "0 test files", which is a measurement of what the inventory could
+associate, not a concept absence. A frontend test absence remains unproven
+because naming is convention-based.
+
 A report scoped to what the probes surfaced is not a repository-wide absence
 claim. “No test files were surfaced in the probes — worth verifying” describes
 this run's observations and names the limitation; it completes. The same
@@ -290,7 +298,10 @@ claim, and completes. The same holds for a comparison or report the run cannot
 offer (“there is no static-vs-runtime comparison to report”, “no runtime
 behavior to describe”): the noun names the missing analysis, not a repository
 artifact. “I make no claim about test coverage” is the same kind of limit, not a
-statement that the repository has no tests. The same is true of a negated
+statement that the repository has no tests. The same applies to a named
+identifier the answer explicitly disowns (“No claim is made about
+`cart.domain.Product`”): the name is the subject of the disclaimer, not an
+assertion about the repository. The same is true of a negated
 event: “no server/database was executed” reports non-occurrence, not use. A
 negator that introduces a coordinated subject list distributes over every item,
 so “no tests, server, or binary were executed” reports what the run did not do.
@@ -472,7 +483,8 @@ read as the conclusion (“No JWT, RabbitMQ client code, …”); a bare “no X
 elsewhere in the sentence stays with the inventory facts.
 
 A concrete line count needs the file's read `totalLines`, a whole-file shell
-read, or a line-count command. A paged shell read reports the page, not the
+read, or a line-count command. A `wc -l` measurement is bound to the path on
+the same output line; another file's count cannot satisfy the claim. A paged shell read reports the page, not the
 file total, and a phrase such as "first ~90 lines" is a read window rather than
 a total. A count inside a parenthetical annotation belongs to the path that
 introduces the parenthesis ("`order_factory.go` (read, 97 lines) and
