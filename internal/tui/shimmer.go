@@ -11,7 +11,7 @@ import (
 )
 
 // The wave is a continuous coordinate, not a discrete highlight cell: the view
-// advances one frame at the presentation clock's 30 FPS and the head slides a
+// advances one frame at the presentation clock's 60 Hz and the head slides a
 // fraction of a cell per frame, so the cosine falloff is sampled smoothly.
 // A busy window of five cells on each side keeps the glow local while still
 // letting neighbouring characters brighten before the peak reaches them.
@@ -22,9 +22,8 @@ const (
 	// The peak plus roughly two neighbours cross it at radius 5.
 	shimmerBoldAt = 0.65
 	// shimmerHeadStep is how many cells the wave head travels per frame.
-	// At the 33ms presentation frame this is one cell every ~94ms, matching
-	// the spinner's readable cadence without stepping the gradient.
-	shimmerHeadStep = 0.35
+	// At 60 Hz this keeps the previous gentle speed of one cell every ~95ms.
+	shimmerHeadStep = 0.175
 	// shimmerPauseCells parks the head past the label between sweeps so the
 	// wave reads as a pass rather than a permanent glow.
 	shimmerPauseCells = 4.0
@@ -41,7 +40,7 @@ func ShimmerText(label string, tick int) string {
 // light appearance the highlight moves from muted slate toward body text
 // rather than toward a near-white that would disappear on a bright screen.
 //
-// tick is a presentation frame, not a spinner step: callers pass the 30 FPS
+// tick is a presentation frame, not a spinner step: callers pass the 60 Hz
 // frame clock so the float coordinate advances at the designed cadence.
 //
 // It is pure: the same label, tick, and theme always produce the same bytes,
