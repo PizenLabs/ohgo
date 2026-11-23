@@ -61,7 +61,7 @@ func TestCancelledRunDoesNotCommitARejectedDraft(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
-	if len(turns) != 1 || !turns[0].Superseded || turns[0].Suppressed {
+	if len(turns) != 1 || turns[0].Answer != AnswerSuperseded {
 		t.Fatalf("turns = %+v, want one internal draft superseded by the correction", turns)
 	}
 	audit := loop.LastResponseAudit()
@@ -178,6 +178,32 @@ func TestRepeatedSuccessfulObservationIsAuditedAsRedundant(t *testing.T) {
 	}
 	if audit.RedundantToolCalls != 1 {
 		t.Fatalf("redundant calls = %d, want 1", audit.RedundantToolCalls)
+	}
+}
+
+// A revised answer turn may have tool results after its assistant message. The
+// live conversation rewrite must update the assistant block, never overwrite
+// the evidence a later request still needs.
+func TestAdoptAnswerTextRewritesTheAssistantNotTheLastToolResult(t *testing.T) {
+	turns := []Turn{{
+		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "candidate"}}},
+		Results: []ToolOutcome{{
+			CallID: "c1", ToolName: "read", Result: Result{Text: "evidence"},
+		}},
+	}}
+	live := []Message{
+		AssistantMessage{Message: turns[0].Assistant},
+		ToolResultMessage{ToolCallID: "c1", ToolName: "read", Content: []ai.ContentBlock{ai.TextContent{Text: "evidence"}}},
+	}
+	adoptAnswerText(turns, &live, "repaired answer")
+	if got := turns[0].Assistant.Text(); got != "repaired answer" {
+		t.Fatalf("turn text = %q, want the repaired answer", got)
+	}
+	if got := live[0].(AssistantMessage).Message.Text(); got != "repaired answer" {
+		t.Fatalf("live assistant = %q, want the repaired answer", got)
+	}
+	if got := live[1].(ToolResultMessage).Text(); got != "evidence" {
+		t.Fatalf("tool result = %q, want the evidence preserved", got)
 	}
 }
 

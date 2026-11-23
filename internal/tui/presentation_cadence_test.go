@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 // completedToolStream builds a transcript of finished calls.
@@ -33,7 +35,7 @@ func TestConsecutiveToolsRenderAsOneCompactStream(t *testing.T) {
 	s.Apply(AssistantDelta{Text: "The project is a Go service."})
 	// This fixture is about tool grouping, so settle the answer; a provisional
 	// block carries its own draft label by design.
-	s.Apply(AssistantReconcile{Text: "The project is a Go service."})
+	s.Apply(AssistantReconcile{Text: "The project is a Go service.", Answer: agent.AnswerCommitted})
 	// The batch becomes eligible for its footer only after every member has
 	// cleared the minimum dwell floor.
 	s.Apply(FrameTick{At: time.Now().Add(toolMinDwell)})

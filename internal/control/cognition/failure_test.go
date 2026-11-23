@@ -56,6 +56,33 @@ func blockedBy(state *EvidenceState, shape TaskShape) bool {
 	return suff.State == Blocked && suff.Kind == BlockCapabilityFailure
 }
 
+// A persisted execution-class failure for a capability is recovered once that
+// capability succeeds with a different invocation: the tool is demonstrably
+// working, so the old "failed capability" briefing must not survive a resume.
+func TestDifferentSuccessRecoversAPersistedExecutionFailure(t *testing.T) {
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "c1", ToolName: "bash",
+		Args: map[string]any{"command": "git log --oneline -5"},
+		Result: agent.Result{
+			Text: "boom", IsError: true,
+			FailureClass: agent.ToolFailureRuntime,
+			Executes:     true, Finished: true,
+		},
+	})
+	if records := state.FailureState().Records; len(records) != 1 {
+		t.Fatalf("records = %+v, want the execution failure recorded", records)
+	}
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "c2", ToolName: "bash",
+		Args:   map[string]any{"command": "ls -la"},
+		Result: agent.Result{Text: "index.html", Executes: true, Finished: true},
+	})
+	if records := state.FailureState().Records; len(records) != 0 {
+		t.Fatalf("records = %+v, want the capability failure recovered by a later success", records)
+	}
+}
+
 // A non-retryable failure refuses the identical call after one execution, then
 // closes the task when the model repeats it. The second proposal never runs.
 func TestNonRetryableFailureRefusesRepeatThenBlocks(t *testing.T) {

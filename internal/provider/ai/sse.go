@@ -224,21 +224,5 @@ func newHTTPError(status int, body string, header http.Header) *httpError {
 	return failure
 }
 
-// decodeJSONArgs decodes accumulated tool-call argument fragments.
-//
-// It returns a non-nil map for an empty or whitespace-only payload, because a
-// tool with no parameters legitimately streams no argument text.
-func decodeJSONArgs(raw string) (map[string]any, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return map[string]any{}, nil
-	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-		return nil, fmt.Errorf("ai: decode tool arguments: %w", err)
-	}
-	if args == nil {
-		args = map[string]any{}
-	}
-	return args, nil
-}
+// decodeJSONArgs lives in toolargs.go: one decoder classifies complete,
+// incomplete, and malformed payloads for every provider.

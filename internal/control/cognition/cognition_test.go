@@ -1106,6 +1106,44 @@ func TestSummarizeExecutionIgnoresRefusedCalls(t *testing.T) {
 	}
 }
 
+// A command that ran and exited non-zero is an observation, not a capability
+// failure. It must not enter the durable failure ledger (which would tell the
+// model "do not repeat an identical call") and must not count as a failed
+// action. A failed check keeps the opposite behaviour.
+func TestCommandExitStatusIsNotACapabilityFailure(t *testing.T) {
+	observation := agent.ToolOutcome{
+		CallID: "bash-1", ToolName: "bash",
+		Args: map[string]any{"command": "git status --short && git log --oneline -5"},
+		Result: agent.Result{
+			Text:    "fatal: your current branch 'main' does not have any commits yet\n[exit code 128]",
+			IsError: true, Executes: true, Finished: true,
+			FailureClass: agent.ToolFailureCommand,
+		},
+	}
+	state := NewEvidenceState()
+	state.ObserveOutcome(observation)
+	if records := state.FailureState().Records; len(records) != 0 {
+		t.Fatalf("a completed command entered the failure ledger: %+v", records)
+	}
+	execution := SummarizeExecution([]agent.Turn{{Results: []agent.ToolOutcome{observation}}})
+	if execution.FailedActions != 0 || len(execution.PendingFailures) != 0 {
+		t.Fatalf("execution = %+v, want no failed action for a command result", execution)
+	}
+
+	failedCheck := observation
+	failedCheck.Result.FailureClass = agent.ToolFailureVerification
+	failedCheck.Result.Text = "--- FAIL: TestX\n[exit code 1]"
+	failed := NewEvidenceState()
+	failed.ObserveOutcome(failedCheck)
+	if records := failed.FailureState().Records; len(records) != 1 {
+		t.Fatalf("a failed check did not enter the failure ledger: %+v", records)
+	}
+	checkExecution := SummarizeExecution([]agent.Turn{{Results: []agent.ToolOutcome{failedCheck}}})
+	if checkExecution.FailedActions != 1 || checkExecution.PendingFailures["bash"] != 1 {
+		t.Fatalf("execution = %+v, want the failed check counted", checkExecution)
+	}
+}
+
 func TestSummarizeExecutionRequiresVerificationAfterExecution(t *testing.T) {
 	turns := []agent.Turn{{Results: []agent.ToolOutcome{
 		{CallID: "bash-1", ToolName: "bash", Result: agent.Result{Text: "ok", Executes: true, Finished: true}},

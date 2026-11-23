@@ -236,7 +236,7 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool, journalCaptured b
 				// late continuation downgrade a proof the runtime already
 				// holds; the missing-evidence rules still decide the objective
 				// on its own terms.
-				if !outcome.Refused() && !outcome.Result.ObservedAbsence && !outcome.Result.Rejected() {
+				if !outcome.Refused() && !outcome.Result.NegativeObservation() && !outcome.Result.Rejected() {
 					evidence.pendingFailures[outcome.ToolName]++
 					if class := strings.TrimSpace(outcome.Result.FailureClass); class != "" {
 						evidence.pendingFailureClasses[outcome.ToolName] = class

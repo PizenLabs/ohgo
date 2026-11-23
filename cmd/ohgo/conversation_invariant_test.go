@@ -118,9 +118,11 @@ func malformedContentParts(body []byte) []string {
 
 // The production REPL is the end-to-end path: the real loop, provider adapter,
 // rebase, and transcript persistence. A reasoning-only answer must not poison
-// the next user request.
+// the next user request, and it must not end the turn with no result: the loop
+// spends one bounded recovery request for a concrete answer, and the next user
+// turn sees that answer instead of an empty assistant message.
 func TestReplContinuesAfterAReasoningOnlyTurn(t *testing.T) {
-	server := newConversationServer(t, reasoningOnlyStream, ackStream)
+	server := newConversationServer(t, reasoningOnlyStream, ackStream, ackStream)
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 
 	registry := ai.NewRegistry()
@@ -141,29 +143,45 @@ func TestReplContinuesAfterAReasoningOnlyTurn(t *testing.T) {
 	}
 	t.Logf("repl output:\n%s", out.String())
 
-	if server.requests != 2 {
-		t.Fatalf("provider requests = %d, want 2", server.requests)
+	// One request per user turn plus the bounded reasoning recovery.
+	if server.requests != 3 {
+		t.Fatalf("provider requests = %d, want 3", server.requests)
 	}
 	if len(server.invalid) > 0 {
 		t.Fatalf("provider received malformed content: %v", server.invalid)
 	}
 
-	// The second request carries the first user turn plus the new one, and no
-	// assistant message produced by the reasoning-only turn.
+	// The recovery request carries the directive and no reasoning-only
+	// assistant message.
+	var recovery struct {
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(server.bodies[1]), &recovery); err != nil {
+		t.Fatalf("decode recovery request: %v", err)
+	}
+	for index, message := range recovery.Messages {
+		if message.Role == "assistant" {
+			t.Fatalf("recovery request message %d is an empty assistant turn: %s", index, server.bodies[1])
+		}
+	}
+
+	// The second user turn carries the recovered answer, never the empty
+	// reasoning-only assistant turn.
 	var second struct {
 		Messages []struct {
 			Role string `json:"role"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal([]byte(server.bodies[1]), &second); err != nil {
+	if err := json.Unmarshal([]byte(server.bodies[2]), &second); err != nil {
 		t.Fatalf("decode second request: %v", err)
 	}
-	if len(second.Messages) != 2 {
-		t.Fatalf("second request messages = %d, want two user turns: %s", len(second.Messages), server.bodies[1])
+	roles := make([]string, 0, len(second.Messages))
+	for _, message := range second.Messages {
+		roles = append(roles, message.Role)
 	}
-	for index, message := range second.Messages {
-		if message.Role != "user" {
-			t.Fatalf("message %d role = %q, want user: %s", index, message.Role, server.bodies[1])
-		}
+	if strings.Join(roles, ",") != "user,assistant,user" {
+		t.Fatalf("second request roles = %v, want user, assistant, user: %s", roles, server.bodies[2])
 	}
 }

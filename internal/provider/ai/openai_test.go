@@ -241,6 +241,76 @@ data: [DONE]
 	}
 }
 
+func TestOpenAIIncompleteToolArgumentsAreClassifiedNotExecutable(t *testing.T) {
+	// A large write can hit the output ceiling mid-JSON. The transport
+	// succeeded, so this is not a generic stream failure and not an execution
+	// failure: it is a tool call that must never be dispatched, classified so
+	// the runtime can ask for a smaller or split action.
+	body := `data: {"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"path\":\"index.html\",\"content\":\"<!doctype html>"}}]}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}
+
+data: [DONE]
+
+`
+	server, _ := sseServer(t, body, 0)
+	provider := &OpenAIProvider{APIKey: "sk-test", BaseURL: server.URL}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     testOpenAIModel(),
+		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "write a page"}}}},
+		MaxTokens: 64,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	msg, err := stream.Result()
+	if err == nil {
+		t.Fatalf("Result succeeded with an incomplete call: %+v", msg.ToolCalls())
+	}
+	var argumentErr *ToolCallArgumentError
+	if !errors.As(err, &argumentErr) {
+		t.Fatalf("error = %T %v, want *ToolCallArgumentError", err, err)
+	}
+	if !argumentErr.Incomplete {
+		t.Error("truncated JSON was not classified as incomplete")
+	}
+	if !argumentErr.OutputLimit {
+		t.Error("a length-terminated response was not classified as the output limit")
+	}
+	if argumentErr.Tool != "write" {
+		t.Errorf("tool = %q, want write", argumentErr.Tool)
+	}
+}
+
+func TestToolArgumentDecoderSeparatesTruncatedFromMalformed(t *testing.T) {
+	cases := []struct {
+		name       string
+		raw        string
+		incomplete bool
+	}{
+		{"truncated", `{"path":"a.go","content":"unfinished`, true},
+		{"malformed", `{"path":}`, false},
+		{"trailing data", `{"path":"a.go"}{"path":"b.go"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := decodeJSONArgs(tc.raw)
+			var argumentErr *ToolCallArgumentError
+			if !errors.As(err, &argumentErr) {
+				t.Fatalf("error = %v, want *ToolCallArgumentError", err)
+			}
+			if argumentErr.Incomplete != tc.incomplete {
+				t.Errorf("incomplete = %v, want %v", argumentErr.Incomplete, tc.incomplete)
+			}
+		})
+	}
+	if args, err := decodeJSONArgs("  "); err != nil || args == nil {
+		t.Fatalf("empty arguments = %v, %v; want an empty map", args, err)
+	}
+}
+
 func TestOpenAIStreamKeepsInterleavedToolCallsInDistinctBlocks(t *testing.T) {
 	// Two tool calls with text between them exercise the content-index
 	// tracking: a positional write would clobber the first call.

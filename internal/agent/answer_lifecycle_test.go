@@ -51,14 +51,23 @@ func TestUnapprovedAnswerIsNotCommitted(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("turns = %d, want one candidate", len(turns))
 	}
-	if !turns[0].Suppressed {
-		t.Fatal("the refused candidate was not suppressed")
+	if turns[0].Answer != agent.AnswerRejected {
+		t.Fatal("the refused candidate was not classified as a terminal rejection")
+	}
+	if strings.TrimSpace(turns[0].AnswerReview) == "" {
+		t.Fatal("the terminal rejection carries no control-plane reason")
+	}
+	if !strings.Contains(turns[0].AnswerReview, "htmx") {
+		t.Fatalf("the rejection reason does not name the refused claim: %q", turns[0].AnswerReview)
 	}
 	if got := agent.TranscriptTurn(turns[0]).Assistant.Text(); got != "" {
 		t.Fatalf("the refused candidate remained publishable: %q", got)
 	}
-	if len(reported) != 1 || !reported[0].Suppressed {
-		t.Fatalf("reported turns = %+v, want one suppressed candidate", reported)
+	if _, ok := turns[0].RejectedAnswer(); !ok {
+		t.Fatal("the terminal rejection has no accountable artifact")
+	}
+	if len(reported) != 1 || reported[0].Answer != agent.AnswerRejected {
+		t.Fatalf("reported turns = %+v, want one terminal rejection", reported)
 	}
 	audit := loop.LastResponseAudit()
 	if audit.State != agent.ResponseReview {
@@ -109,10 +118,10 @@ func TestCorrectedAnswerIsReviewedBeforeCommit(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("turns = %d, want the candidate plus one correction", len(turns))
 	}
-	if !turns[0].Superseded || turns[0].Suppressed {
+	if turns[0].Answer != agent.AnswerSuperseded {
 		t.Fatalf("turn 0 = %+v, want an internal candidate superseded by the correction", turns[0])
 	}
-	if !turns[1].Suppressed || turns[1].Superseded {
+	if turns[1].Answer != agent.AnswerRejected {
 		t.Fatalf("turn 1 = %+v, want the terminal review refusal", turns[1])
 	}
 	audit := loop.LastResponseAudit()
@@ -158,7 +167,7 @@ func TestAcceptedCorrectionCommitsOnce(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
-	if len(turns) != 2 || !turns[0].Superseded || turns[1].Suppressed || turns[1].Superseded {
+	if len(turns) != 2 || turns[0].Answer != agent.AnswerSuperseded || turns[1].Answer != agent.AnswerCommitted {
 		t.Fatalf("turns = %+v, want one internal draft and one accepted answer", turns)
 	}
 	if got := turns[1].Assistant.Text(); got != "Supported final answer." {
@@ -219,7 +228,7 @@ func TestCorrectionCompletesWhenTheClaimSetChanges(t *testing.T) {
 	if len(turns) != 3 {
 		t.Fatalf("turns = %d, want two corrections and the accepted answer", len(turns))
 	}
-	if !turns[0].Superseded || !turns[1].Superseded || turns[2].Superseded || turns[2].Suppressed {
+	if turns[0].Answer != agent.AnswerSuperseded || turns[1].Answer != agent.AnswerSuperseded || turns[2].Answer != agent.AnswerCommitted {
 		t.Fatalf("turns = %+v, want two internal drafts and one accepted answer", turns)
 	}
 	audit := loop.LastResponseAudit()
@@ -279,7 +288,7 @@ func TestFacetOnlyRejectionStillPublishesTheHonestAnswer(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
-	if len(turns) != 2 || !turns[0].Superseded || turns[1].Suppressed {
+	if len(turns) != 2 || turns[0].Answer != agent.AnswerSuperseded || turns[1].Answer != agent.AnswerCommitted {
 		t.Fatalf("turns = %+v, want the internal candidate and one published honest answer", turns)
 	}
 	if got := turns[1].Assistant.Text(); got != answer {

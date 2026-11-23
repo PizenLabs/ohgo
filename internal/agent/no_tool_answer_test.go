@@ -645,7 +645,7 @@ func TestPlanOnlyAnswerIsWithheldFromTheTranscript(t *testing.T) {
 		t.Fatalf("Run: %v", result.err)
 	}
 	last := result.turns[len(result.turns)-1]
-	if !last.SuppressText {
+	if last.Answer != agent.AnswerNarration {
 		t.Fatal("a plan-only answer was marked publishable")
 	}
 	if strings.TrimSpace(last.Assistant.Text()) == "" {

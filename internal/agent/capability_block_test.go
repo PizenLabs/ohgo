@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
@@ -80,6 +81,69 @@ func TestReadyProjectionStillReachesTheModel(t *testing.T) {
 	}
 	if got := len(requests()); got != 1 {
 		t.Fatalf("provider requests = %d, want 1", got)
+	}
+}
+
+// A proposal for a capability the task surface withholds is classified as a
+// capability rejection, not an execution failure, so completion does not count
+// it as a failed call.
+func TestWithheldToolRejectionNamesStageReasonAndAvailableActions(t *testing.T) {
+	visible := newScriptedTool("read", "visible result")
+	hidden := newScriptedTool("write", "should not run")
+	stream, _ := scriptedStream(
+		ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.ToolCall{ID: "call-1", Name: "write", Arguments: map[string]any{"value": "x"}}},
+			StopReason: ai.StopToolUse,
+		},
+		ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "done"}}, StopReason: ai.StopEndTurn},
+	)
+	loop, err := New(Config{
+		Model:  catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		Stream: stream,
+		Tools:  []Tool{visible, hidden},
+		Project: func(ProjectionRequest) ProjectionResult {
+			return ProjectionResult{
+				Tools: []Tool{visible},
+				Report: ProjectionReport{
+					Stage: "act",
+					Excluded: []CandidateExclusion{
+						{Tool: "write", Reason: "the task shape does not permit repository mutation"},
+					},
+				},
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "read only"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) == 0 || len(turns[0].Results) != 1 {
+		t.Fatalf("turns = %#v", turns)
+	}
+	result := turns[0].Results[0].Result
+	for _, want := range []string{
+		`Tool "write" is not offered`,
+		"stage: act",
+		"Runtime reason: the task shape does not permit repository mutation",
+		"Available actions: read",
+		"no state changed",
+	} {
+		if !strings.Contains(result.Text, want) {
+			t.Errorf("rejection text %q does not contain %q", result.Text, want)
+		}
+	}
+	details, ok := result.Details.(map[string]any)
+	if !ok {
+		t.Fatalf("details = %T, want a map", result.Details)
+	}
+	if got := details["state_changed"]; got != false {
+		t.Errorf("state_changed = %v, want false", got)
+	}
+	if got, ok := details["available_tools"].([]string); !ok || len(got) != 1 || got[0] != "read" {
+		t.Errorf("available_tools = %#v, want [read]", details["available_tools"])
 	}
 }
 

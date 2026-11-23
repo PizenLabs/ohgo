@@ -2052,7 +2052,10 @@ func assistantDisplay(entry Entry) (text, label string) {
 		}
 		reason := strings.TrimSpace(entry.WithdrawnReason)
 		if reason == "" {
-			reason = "the runtime did not accept this draft"
+			// The control plane always names a terminal refusal. If an older
+			// or hand-built event carried none, the label states only what is
+			// known; the renderer does not invent a review finding.
+			return entry.WithdrawnText, "draft withdrawn"
 		}
 		return entry.WithdrawnText, "draft withdrawn · " + reason
 	}

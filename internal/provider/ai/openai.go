@@ -598,7 +598,7 @@ func (a *openAIAccumulator) finalize() ([]ToolCall, error) {
 		}
 		args, err := decodeJSONArgs(call.argumentsJSON)
 		if err != nil {
-			return nil, err
+			return nil, classifyToolArgumentError(call.Name, a.msg.StopReason, err)
 		}
 		call.Arguments = args
 		call.argumentsJSON = ""

@@ -513,6 +513,27 @@ reports each `ProviderRequested`, `ProviderRetrying`, `ProviderFailed`, and
 so the UI names the measured status, attempt, and backoff instead of showing
 "preparing workspace" through a hidden retry window.
 
+Draining is mandatory for every stream consumer. `Stream.Result` alone blocks
+while a producer fills the event channel, so a consumer that waits for the
+final message without consuming `Events` deadlocks once a response exceeds the
+buffer. `ai.DrainStreamHooks` is the one implementation: it selects on both the
+event channel and the caller's context, so cancellation is observable even
+when no event is ready, and it applies `ai.DefaultStreamIdleTimeout` (five
+minutes of inactivity, not total generation time). A silent transport therefore
+ends in `PROVIDER_STALLED`, a recoverable review verdict, instead of an
+indefinite busy state. The context summarizer and every other production
+consumer use the same drain path.
+
+Streamed tool-call argument JSON is decoded once the call closes. A payload
+that ends before the JSON value does is not a generic transport error and not
+an execution failure: `ai.ToolCallArgumentError` records the tool, whether the
+payload was incomplete or malformed, and whether the provider reported its
+output ceiling. No call from that turn is dispatched. The agent loop spends one
+bounded recovery request asking for complete arguments, and the directive asks
+a truncated large payload to be split rather than repeated. If recovery is
+unavailable or spent, the run reports `TOOL_CALL_INCOMPLETE`, a non-terminal
+review, so earlier mutations and the task checkpoint remain authoritative.
+
 Native tool calls and serialized tool calls inside assistant text are two
 transport representations of the same logical intent. Both converge on
 `ai.ToolCall`. A recognized serialized envelope is converted at the boundary;
@@ -549,7 +570,11 @@ Recognition is an incremental, bounded state machine:
   bounded recovery request asking for the actual call. If the next turn still
   has no call, it reports `EXECUTION_INTENT_WITHOUT_TOOL`; the prose is never
   interpreted as a command. A turn with neither text nor a call reports
-  `NO_MODEL_OUTPUT`. Both are review verdicts, never execution evidence.
+  `NO_MODEL_OUTPUT`. A turn the provider stopped at the output ceiling before
+  any call or visible text reports `OUTPUT_TRUNCATED`: the model was still
+  writing when the budget ran out, so the one recovery raises the completion
+  budget to the model's own ceiling instead of repeating the truncated request.
+  All are review verdicts, never execution evidence.
 
 ### Outbound message contract
 
@@ -618,6 +643,14 @@ italic body, bounded so one long trace cannot displace the answer. The completed
 `AssistantMessage` keeps the same thinking block, so a resumed transcript
 renders it without re-parsing provider output.
 
+Reasoning is transient activity with the same convergence rule as a tool.
+Applying the answer disposition reconciles every open trace before the answer
+(or its withdrawal) becomes visible. `AssistantDone` and `TurnCancelled`
+reconcile any trace still open and terminalize any call that never reported an
+outcome, so a terminal run owns zero live activities. The renderer projects the
+stored lifecycle; it never infers completion from elapsed time, spinner state,
+prose, or the absence of deltas.
+
 ## Completion, task state, and exit status
 
 Completion is a state transition, not the model's stop reason. The one
@@ -667,16 +700,19 @@ user's request before execution and the evidence the runtime observed.
   readiness, at least one check passed against it while it was alive, and it
   did not exit mid-verification. An informational objective needs
   non-empty visible assistant text in the final turn, and that text must pass
-  the claim/evidence audit before publication. The audit withholds a rejected
-  sentence and publishes a bounded limitation instead; a draft is never the
-  user-visible answer. Empty or whitespace text is `NEEDS_REVIEW`. A streamed
-  candidate is labelled provisional until the response transaction commits it.
-  A candidate superseded by a bounded correction is internal repair context:
-  it is removed from the answer projection and never becomes a transcript
-  artifact. Only a terminal review refusal may remain as one labelled
-  withdrawn draft, so the final answer cannot vanish without a trace while the
-  review loop stays out of the conversation. Committed text is never
-  withdrawn. A request that explicitly required external knowledge also needs
+  the claim/evidence audit before publication. The audit removes or repairs
+  only the refused claim while preserving the independently supported claims
+  around it; a draft is never the user-visible answer. Empty or whitespace
+  text is `NEEDS_REVIEW`. Every turn's prose carries one runtime disposition
+  (`UNIFIED_INTELLIGENCE.md` §12.7):
+  narration and superseded candidates are withheld, a terminal refusal leaves
+  one labelled draft with the control-plane reason, and only a committed
+  answer is the answer. A provisional preview is never promoted by a turn
+  boundary; an interrupted preview is labelled as interrupted, not published.
+  The full-screen TUI and output-first live surface do not publish answer
+  deltas at all: the first answer prose a host may render is the committed
+  artifact, published once. Committed text is never withdrawn. A request that
+  explicitly required external knowledge also needs
   a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from
   observed implementation facts: a term that appears only in README/docs, never
@@ -917,16 +953,30 @@ the model said. Two properties keep the loop honest and small:
   frontier: the review's named claims are the actionable list, and an unrelated
   component list spends a bounded repair on work the answer audit did not
   request.
+- **Answer review is claim-preserving.** A candidate is an internal
+  `AnswerDraft`, not an answer. The audit attaches each issue to the
+  sentence-sized `AnswerClaim` it names; only that claim becomes
+  `REPAIR_REQUIRED`, while every other claim keeps its provenance and text. A
+  revision that drops an independently supported claim is measured against the
+  strongest draft (`AnswerPreservationLost`). If preservation is lost, or the
+  correction allowance is spent, the runtime composes the committed answer from
+  the strongest draft with only the refused claims removed. A facet gap is a
+  completion gap, not a false claim, so it never invalidates a sentence. This is
+  the invariant: a failed claim may be verified, attributed, weakened,
+  replaced, or removed, but independently supported claims and their evidence
+  must survive candidate revision.
 - **A correction is proportional to its rejected claims.** The answer audit
   projects each repairable issue into the shared `GroundingIssue` contract
   (claim, location, category, required evidence, reference, permitted action).
   The loop's `AnswerRepairs` planner is a projection of the same audit, never a
   second check, and `ClaimRepairRequest` renders at most
-  `MaxRepairInstructions` claims. The correction keeps the initial conversation
-  and evidence; the directive asks first for the missing observation and
-  forbids only a repeat whose result already contains the required evidence. A
-  reused observation is answered from the loop's replay cache and does not
-  consume the correction allowance.
+  `MaxRepairInstructions` claims. The request also names the valid claims the
+  revision must keep and the permitted actions (`VERIFY`, `ATTRIBUTE`,
+  `WEAKEN`, `REMOVE`); it never exposes a remaining-call counter. The
+  correction keeps the initial conversation and evidence; the directive asks
+  first for the missing observation and forbids only a repeat whose result
+  already contains the required evidence. A reused observation is answered
+  from the loop's replay cache and does not consume the correction allowance.
   `CorrectionToolCalls` (default `DefaultCorrectionToolCalls`, 4) is enforced
   before tool execution and survives concurrent batches; calls beyond it fail
   closed with `ToolFailureCorrectionBudget` and the model must answer with the
@@ -1148,9 +1198,11 @@ is structural, not advisory (`internal/agent/subagent.go`,
 `internal/execution/tools/task.go`):
 
 - The child inherits stream, model, tools, budget, approval, compaction,
-  summarizer. It drops `OnTurn`, `OnToolProgress`, `TransformContext`,
-  steering. It refuses: no system prompt (inheriting the parent's is an
-  identity leak), an empty task, a write tool under a read-only request.
+  summarizer, and the bounded protocol-recovery directives (serialized syntax,
+  execution intent, incomplete tool arguments, stream idle bound). It drops
+  `OnTurn`, `OnToolProgress`, `TransformContext`, steering. It refuses: no
+  system prompt (inheriting the parent's is an identity leak), an empty task,
+  a write tool under a read-only request.
 - The depth bound is baked into the tool set: a subagent at the cap is
   built without a task tool, so it cannot delegate however prompted.
   Default `--max-depth 1` means the top level may delegate once.
@@ -1197,7 +1249,10 @@ start cannot leave an orphaned server.
 HTTP targets are loopback-only. The browser check is optional: it discovers a
 headless Chromium/Chrome binary (`OHGO_CHROMIUM`/`OHGO_BROWSER` may override),
 runs it against the already-ready local URL, and reports unsupported when none
-is available. The core plan never requires Chromium.
+is available. Its `contains` assertions inspect extracted page text rather than
+serialized markup, normalize whitespace, and treat adjacent element text as
+separated words; attributes and head/script/style content cannot satisfy them.
+The core plan never requires Chromium.
 
 Plan arguments accept the equivalent shapes models routinely emit: a service
 `cwd` may be workspace-relative or an absolute path inside the workspace (an
@@ -1283,15 +1338,30 @@ observation. Discovery reports `TierRead`; execution reports `TierExec`.
 | Spent budget | `nil` error, turns returned | wall-clock deadline expiry |
 
 Protocol/lifecycle failures are classified before a generic verdict:
-`NO_MODEL_OUTPUT`, `EXECUTION_INTENT_WITHOUT_TOOL`, and
+`NO_MODEL_OUTPUT`, `OUTPUT_TRUNCATED`, `EXECUTION_INTENT_WITHOUT_TOOL`, and
 `TOOL_NORMALIZATION_FAILED` stop a run in which no requested action executed and
-are reported as review (non-terminal), preserving the task identity. Tool
+are reported as review (non-terminal), preserving the task identity. A turn that
+contains only hidden reasoning is the `NO_MODEL_OUTPUT` shape: one bounded
+recovery request asks for a concrete call or answer, and a second reasoning-only
+turn is a recoverable review, never a silent finish with no result. A turn the
+provider cut off at the completion ceiling is `OUTPUT_TRUNCATED`: the recovery
+raises the per-run budget to the model's own ceiling because the configured cap
+demonstrably produced no action, and a second truncation is truthful review. Tool
 outcomes carry a provider-agnostic `FailureClass` such as `tool_start_failed`,
-`tool_runtime_failed`, `tool_timeout`, `tool_cancelled`,
+`tool_runtime_failed`, `command_failed`, `tool_timeout`, `tool_cancelled`,
 `tool_authorization_denied`, `tool_capability_unavailable`,
 `verification_failed`, or `verification_insufficient`, so the UI can say whether
 failure happened before or after execution. A model claim, a tool emission, and a
 zero exit code remain distinct from verification and proof.
+
+A shell command that ran to completion and returned a non-zero status is
+`command_failed`, a negative observation rather than a capability failure: the
+process started, produced output, and reported a result. It stays an error for
+the model, but it does not enter the failure ledger, does not refuse an identical
+retry, and does not veto completion. A recognised check that exits non-zero is
+`verification_failed` instead, because it contradicts the final state the proof
+depends on. A proven empty namespace (`git log` on an unborn branch) is an
+absence observation even when git exits non-zero.
 
 An unavailable capability is its own terminal class. `agent.ErrCapabilityUnavailable`
 is returned before any provider request when the objective needs an operation no

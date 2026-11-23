@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 // assertLayoutMatchesDocument pins the retained projection to a fresh render
@@ -186,22 +188,29 @@ func TestStreamingToolEventsNeverRemoveCommittedRows(t *testing.T) {
 	}
 
 	commit(UserSubmitted{Text: "PROMPT-MARKER change the author"})
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		id := fmt.Sprintf("stream-%02d", i)
-		commit(AssistantDelta{Text: fmt.Sprintf("chunk-%02d ", i)})
+		commit(AssistantDelta{Text: fmt.Sprintf("narration-%02d ", i)})
 		commit(ToolStarted{ID: id, Name: "grep", Summary: fmt.Sprintf("grep marker-%02d", i)})
 		commit(ToolPreview{ID: id, Summary: fmt.Sprintf("grep marker-%02d (%d files)", i, i)})
 		commit(ToolFinished{ID: id, Summary: "3 lines", Text: "one\ntwo\nthree"})
 	}
+	commit(AssistantReconcile{Answer: agent.AnswerNarration})
 	commit(AssistantDone{})
 	commit(AssistantDelta{Text: "FINAL-MARKER done"})
+	commit(AssistantReconcile{Text: "FINAL-MARKER done", Answer: agent.AnswerCommitted})
 	commit(AssistantDone{})
 
 	rows := retained.AllRows()
-	for _, want := range []string{"PROMPT-MARKER", "chunk-00", "grep marker-00", "grep marker-19", "FINAL-MARKER"} {
+	for _, want := range []string{"PROMPT-MARKER", "grep marker-00", "grep marker-19", "FINAL-MARKER"} {
 		if !rowsContainText(rows, want) {
 			t.Fatalf("committed text %q is missing after streaming", want)
 		}
+	}
+	// The preamble was narration: it is not an answer artifact and must not
+	// survive the tool work that replaced it.
+	if rowsContainText(rows, "narration-00") {
+		t.Fatal("tool narration survived as committed text")
 	}
 }
 
@@ -351,6 +360,10 @@ func TestToolHeavyWorkloadKeepsEveryCompletedEvent(t *testing.T) {
 		assertLayoutMatchesDocument(t, p.state, p.transcriptIndex)
 	}
 	p.state.Apply(AssistantDelta{Text: "Updated the author to 'Jong Adam' in author.go and author_test.go."})
+	p.state.Apply(AssistantReconcile{
+		Text:   "Updated the author to 'Jong Adam' in author.go and author_test.go.",
+		Answer: agent.AnswerCommitted,
+	})
 	p.state.Apply(AssistantDone{})
 	p.syncTranscript()
 	assertLayoutMatchesDocument(t, p.state, p.transcriptIndex)

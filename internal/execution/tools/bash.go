@@ -332,8 +332,9 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	// A complete VCS enumeration, or an output that names an absence outright,
 	// is evidence the completion gate can trust. It is published from the
 	// observation rather than inferred later from the model's prose.
-	if absent := GitAbsenceNamespaces(command, combined, exitCode, t.Root); len(absent) > 0 {
-		details["git_absence"] = absent
+	gitAbsent := GitAbsenceNamespaces(command, combined, exitCode, t.Root)
+	if len(gitAbsent) > 0 {
+		details["git_absence"] = gitAbsent
 	}
 	if GitObservation(command, exitCode, t.Root) {
 		details["git_observation"] = true
@@ -342,17 +343,36 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	if exitCode != 0 {
 		absence := CommandAbsence(command, exitCode)
 		result := agent.Result{
-			Text:            text,
+			Text: text,
+			// A command that reported a proven empty namespace established an
+			// absence, not a broken capability. The exit status can be non-zero
+			// (git exits 128 on an unborn branch) while the observation itself
+			// is sound.
 			IsError:         true,
-			ObservedAbsence: absence,
+			ObservedAbsence: absence || len(gitAbsent) > 0,
 			Mutates:         mutates,
 			AffectedPaths:   affectedPaths,
 			Executes:        true,
 			Finished:        true,
 			Details:         details,
 		}
-		if !absence {
-			result.FailureClass = agent.ToolFailureRuntime
+		switch {
+		case absence || len(gitAbsent) > 0:
+			// Exit 1 from a search program, or a git invocation that named an
+			// empty namespace ("No commits yet"), is a successful empty result.
+		case VerificationForIn(t.Root, command) != nil:
+			// A recognised check that exits non-zero contradicts the final
+			// state it was meant to prove, so it stays a hard failure that
+			// requires a fix and a later successful check.
+			result.FailureClass = agent.ToolFailureVerification
+		default:
+			// The command ran to completion and returned a non-zero status.
+			// That is the command's own result, not a broken capability: the
+			// model reads the output and the status and regains the ability to
+			// use the shell. Classifying it as a runtime failure used to make
+			// one benign probe (git on an unborn branch, a missing optional
+			// tool) veto completion and refuse every identical retry.
+			result.FailureClass = agent.ToolFailureCommand
 		}
 		return result
 	}

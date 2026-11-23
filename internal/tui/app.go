@@ -5651,7 +5651,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if current, ok := p.terminalTaskContinuation(text); ok {
 		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 		p.publish(Notice{Text: terminalTaskNotice(current)})
-		p.publish(AssistantDone{Seq: seq})
+		p.publishCritical(AssistantDone{Seq: seq})
 		return
 	}
 
@@ -5697,7 +5697,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		case p.workspace.RestoreTaskAuthority != nil:
 			if err := p.workspace.RestoreTaskAuthority(); err != nil {
 				p.publish(Notice{Text: "task authority: " + err.Error()})
-				p.publish(AssistantDone{Seq: seq})
+				p.publishCritical(AssistantDone{Seq: seq})
 				return
 			}
 			if p.workspace.Current != nil {
@@ -5710,7 +5710,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			// its contract does not grant.
 			p.publish(Notice{Text: "task authority: the task runs under " + taskCurrent.Role +
 				" but no workspace owner can restore it"})
-			p.publish(AssistantDone{Seq: seq})
+			p.publishCritical(AssistantDone{Seq: seq})
 			return
 		}
 	}
@@ -5745,7 +5745,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			reason = "request refused by workspace authority"
 		}
 		p.publish(Notice{Text: reason})
-		p.publish(AssistantDone{Seq: seq})
+		p.publishCritical(AssistantDone{Seq: seq})
 		return
 	}
 
@@ -5796,7 +5796,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// cancelTurnNow, which is scoped to the active turn.
 	abortTurn := func(notice string) {
 		p.publish(Notice{Text: notice})
-		p.publish(AssistantDone{Seq: seq})
+		p.publishCritical(AssistantDone{Seq: seq})
 		p.mu.Lock()
 		p.cancelTurn = nil
 		p.mu.Unlock()
@@ -6073,31 +6073,20 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// at construction, because the program is the only thing that can turn
 	// it into UI events.
 	//
-	// Visible model text is forwarded the same way: each delta publishes as
-	// it arrives, so the answer reveals sequentially while the stream is
-	// open instead of dumping as one block when the turn completes. The exact
-	// committed value is settled after Run, so a dropped delta is repaired
-	// rather than silently lost.
+	// Visible model text is not forwarded while the stream is open. Answer
+	// prose is a candidate until the Control Plane commits it; publishing
+	// deltas would make the transcript show a draft, and later withdraw it,
+	// before the claim review finished. Reasoning and tool activity still
+	// stream, so the turn remains observable while the answer is internal.
+	// The committed value is published once after Run.
+	p.loop.SetTextDeltaHook(nil)
 	var liveThinking strings.Builder
-	// Visible model text streams as it arrives. Deltas are a provisional
-	// preview: the stream-end hook withdraws prose that belonged to a tool
-	// round, and the turn hook withdraws a rejected draft. The exact committed
-	// answer is settled once after Run, so a dropped delta or a finalized
-	// rewrite can never leave a partial or duplicated transcript block.
-	p.loop.SetTextDeltaHook(func(delta string) {
-		if delta == "" {
-			return
-		}
-		for _, chunk := range splitAssistantChunks(delta) {
-			p.publish(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
-		}
-	})
 	// A stream with tool calls is investigation narration, not an answer. The
 	// provisional preview is withdrawn before the tool card opens so the two
 	// never read as competing output.
 	p.loop.SetAssistantMessageHook(func(message ai.AssistantMessage) {
 		if len(message.ToolCalls()) > 0 {
-			p.publishCritical(AssistantReconcile{Discard: true, At: time.Now(), Seq: seq})
+			p.publishCritical(AssistantReconcile{Answer: agent.AnswerNarration, At: time.Now(), Seq: seq})
 		}
 	})
 	defer p.loop.SetAssistantMessageHook(nil)
@@ -6278,22 +6267,24 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// double-counted.
 	var seenIn, seenOut int
 	p.loop.SetTurnHook(func(turn agent.Turn) {
-		// Only a terminal review verdict may leave a labelled draft. A
-		// candidate superseded by a correction is internal: it already
-		// streamed as a provisional preview, and keeping it as a visible
-		// artifact would turn the review loop into a conversation. Prose that
-		// continued into a tool call is narration, withdrawn outright.
-		switch {
-		case turn.Superseded:
-			p.publishCritical(AssistantReconcile{Discard: true, At: time.Now(), Seq: seq})
-		case turn.Suppressed:
+		// The loop classified the turn before reporting it. Only a terminal
+		// review refusal may leave a labelled draft: a candidate superseded by
+		// a correction is internal and must not become a visible artifact, and
+		// prose that continued into a tool call is narration. The renderer
+		// projects the disposition; it never infers one.
+		switch turn.Answer {
+		case agent.AnswerRejected:
+			rejected, _ := turn.RejectedAnswer()
 			p.publishCritical(AssistantReconcile{
-				Discard:   true,
-				Withdrawn: "answer review requested changes",
-				At:        time.Now(), Seq: seq,
+				Text:   rejected.Text,
+				Answer: agent.AnswerRejected,
+				Reason: turn.AnswerReview,
+				At:     time.Now(), Seq: seq,
 			})
-		case turn.SuppressText:
-			p.publishCritical(AssistantReconcile{Discard: true, At: time.Now(), Seq: seq})
+		case agent.AnswerSuperseded:
+			p.publishCritical(AssistantReconcile{Answer: agent.AnswerSuperseded, At: time.Now(), Seq: seq})
+		case agent.AnswerNarration:
+			p.publishCritical(AssistantReconcile{Answer: agent.AnswerNarration, At: time.Now(), Seq: seq})
 		}
 		seenIn += turn.Assistant.Usage.Input
 		seenOut += turn.Assistant.Usage.Output
@@ -6484,8 +6475,19 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	streamedThinking := liveThinking.String()
 	consumedThinking := 0
 	committedAnswer := ""
+	rejectedReason := ""
+	rejectedText := ""
 	for _, rawTurn := range turns {
-		if rawTurn.Suppressed {
+		if rawTurn.Answer == agent.AnswerRejected {
+			// A terminal refusal is not conversation and has no tool outcome.
+			// Its one accountable artifact is published after this loop from
+			// the control plane's reason, never from the raw prose.
+			if rejectedReason == "" {
+				rejectedReason = strings.TrimSpace(rawTurn.AnswerReview)
+			}
+			if artifact, ok := rawTurn.RejectedAnswer(); ok {
+				rejectedText = artifact.Text
+			}
 			continue
 		}
 		turn := agent.TranscriptTurn(rawTurn)
@@ -6506,8 +6508,8 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				p.publish(ReasoningDelta{Text: chunk, At: time.Now(), Seq: seq})
 			}
 		}
-		if text := turn.Assistant.Text(); text != "" {
-			committedAnswer = text
+		if rawTurn.Answer == agent.AnswerCommitted {
+			committedAnswer = turn.Assistant.Text()
 		}
 		// A call that never reached execution (denied authority, grounding
 		// refusal, invalid arguments, budget stop) still produced a real
@@ -6570,22 +6572,28 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			})
 		}
 	}
-	// The publication transaction is the only authority for assistant text.
-	// A run that produced a candidate but did not commit it (the claim audit
-	// refused publication, or the run ended before finalization) must not leave
-	// that candidate on screen as the answer. The provisional stream is
-	// withdrawn instead; the terminal footer carries the review boundary.
-	if audit := p.loop.LastResponseAudit(); audit.State == agent.ResponseCommitted && committedAnswer != "" {
-		p.publishCritical(AssistantReconcile{Text: committedAnswer, At: time.Now(), Seq: seq})
-	} else {
-		// This also covers a committed run whose finalizer withheld all text:
-		// the provisional preview must not survive as an answer no transaction
-		// accepted, but the last candidate stays inspectable under a withdrawn
-		// label unless the turn hook already preserved it.
+	// The answer disposition is the publication transaction's own record. A
+	// committed turn settles the provisional stream with its exact text; a
+	// terminal refusal keeps that one candidate as a labelled display-only
+	// draft with the control plane's reason. A run with neither (failure,
+	// cancellation, budget stop, narration only) withdraws the preview without
+	// a review label: no transaction refused an answer, and the terminal footer
+	// names the actual outcome.
+	switch {
+	case committedAnswer != "":
 		p.publishCritical(AssistantReconcile{
-			Discard:   true,
-			Withdrawn: "the runtime did not approve this answer",
-			At:        time.Now(), Seq: seq,
+			Text: committedAnswer, Answer: agent.AnswerCommitted,
+			At: time.Now(), Seq: seq,
+		})
+	case rejectedReason != "":
+		p.publishCritical(AssistantReconcile{
+			Text: rejectedText, Answer: agent.AnswerRejected, Reason: rejectedReason,
+			At: time.Now(), Seq: seq,
+		})
+	default:
+		p.publishCritical(AssistantReconcile{
+			Answer: agent.AnswerNarration,
+			At:     time.Now(), Seq: seq,
 		})
 	}
 	// The durable task transition lands after the turn's answer text, so the
@@ -6695,7 +6703,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		// semantic cancellation already reached the transcript through
 		// TurnCancelled, so only real failures publish here.
 		if errors.Is(loopErr, context.Canceled) {
-			p.publish(TurnCancelled{Seq: seq, At: time.Now()})
+			p.publishCritical(TurnCancelled{Seq: seq, At: time.Now()})
 		} else if reviewNotice == "" {
 			// A review verdict already carries the reason in the single
 			// terminal footer; publishing the error above it would state the
@@ -6706,7 +6714,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// The terminal verdict is the single footer of the turn. The decision is
 	// derived from the runtime's own action, never from the model's closing
 	// sentence; a cancelled turn is closed by TurnCancelled in the same slot.
-	p.publish(AssistantDone{
+	p.publishCritical(AssistantDone{
 		Seq:    seq,
 		At:     time.Now(),
 		Footer: turnFooterForOutcome(action, reason, reviewNotice, loopErr, turns, activeAuthority),
@@ -7047,9 +7055,9 @@ func (p *Program) publishOK(event Event) bool {
 }
 
 // publishCritical delivers an event that must not be dropped: the exact
-// answer text and its withdrawal are state corrections, not previews. It
-// waits for the update goroutine instead of discarding under backpressure, and
-// still returns when the UI has shut down.
+// answer text, its withdrawal, and a turn's terminal transition are state
+// corrections, not previews. It waits for the update goroutine instead of
+// discarding under backpressure, and still returns when the UI has shut down.
 func (p *Program) publishCritical(event Event) {
 	select {
 	case p.events <- event:

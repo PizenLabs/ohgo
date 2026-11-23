@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -104,6 +105,26 @@ func TestClassifyRunKeepsTheFailureCause(t *testing.T) {
 	}
 }
 
+// A provider transport failure before any turn completed is a failed run. A
+// failure after real work is a review: earlier mutations and evidence must
+// remain resumable instead of being marked FAILED.
+func TestClassifyRunProviderFailureIsRecoverableAfterWork(t *testing.T) {
+	for _, sentinel := range []error{ErrProviderRequest, ErrProviderStream} {
+		err := fmt.Errorf("%w: %w", sentinel, errors.New("connection reset"))
+		verdict, _, _ := ClassifyRun(err, mutationInput(nil), false)
+		if verdict != RunFailed {
+			t.Errorf("%v without work: verdict = %v, want RunFailed", sentinel, verdict)
+		}
+		verdict, reason, _ := ClassifyRun(err, mutationInput(verifiedMutationTurns()), false)
+		if verdict != RunNeedsReview {
+			t.Errorf("%v after work: verdict = %v, want RunNeedsReview", sentinel, verdict)
+		}
+		if !strings.Contains(reason, "connection reset") {
+			t.Errorf("%v: reason = %q, want the transport cause", sentinel, reason)
+		}
+	}
+}
+
 // Absent a stop, the evidence decides, and an evidence gap is review — not
 // failure and not completion.
 func TestClassifyRunEvidenceDecidesWithoutAStop(t *testing.T) {
@@ -126,6 +147,7 @@ func TestClassifyRunEvidenceDecidesWithoutAStop(t *testing.T) {
 func TestClassifyRunPreservesProtocolFailureStage(t *testing.T) {
 	for _, sentinel := range []error{
 		ErrNoModelOutput,
+		ErrOutputTruncated,
 		ErrExecutionIntentWithoutTool,
 		ErrToolNormalizationFailed,
 	} {

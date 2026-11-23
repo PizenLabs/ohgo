@@ -30,7 +30,10 @@ func conversationLoop(t *testing.T, stream ai.StreamFn, tools ...Tool) *Loop {
 
 // A turn that produced only reasoning is a run observation, never conversation
 // content. The observed failure was exactly this turn being replayed on the
-// next user request, where a provider rejected its empty content.
+// next user request, where a provider rejected its empty content. Separately,
+// such a turn cannot advance the run: with no recovery directive it must be a
+// recoverable lifecycle stop, not a silent finish that leaves the user with no
+// result.
 func TestReasoningOnlyTurnIsNotReplayed(t *testing.T) {
 	tool := newScriptedTool("read", "package main")
 	first, firstRequests := scriptedStream(
@@ -45,8 +48,8 @@ func TestReasoningOnlyTurnIsNotReplayed(t *testing.T) {
 	)
 	loop := conversationLoop(t, first, tool)
 	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "run this project help me"}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	if !errors.Is(err, ErrNoModelOutput) {
+		t.Fatalf("err = %v, want %v for a reasoning-only stop", err, ErrNoModelOutput)
 	}
 	if len(turns) != 2 {
 		t.Fatalf("turns = %d, want the action turn and the reasoning-only observation", len(turns))
@@ -179,8 +182,8 @@ func TestConversationStaysValidAcrossRepeatedTurns(t *testing.T) {
 		)
 		loop := conversationLoop(t, stream, tool)
 		turns, err := loop.Run(context.Background(), history)
-		if err != nil {
-			t.Fatalf("cycle %d: Run: %v", cycle, err)
+		if !errors.Is(err, ErrNoModelOutput) {
+			t.Fatalf("cycle %d: err = %v, want the recoverable reasoning-only stop", cycle, err)
 		}
 		for index, request := range requests() {
 			requestsSeen++
@@ -216,8 +219,8 @@ func TestConversationProjectionKeepsRunObservationsOutOfContextOnly(t *testing.T
 	)
 	loop := conversationLoop(t, stream, tool)
 	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "inspect"}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	if !errors.Is(err, ErrNoModelOutput) {
+		t.Fatalf("err = %v, want the recoverable reasoning-only stop", err)
 	}
 	if len(turns) != 2 || turns[1].Assistant.ThinkingText() == "" {
 		t.Fatalf("turns = %#v, want the reasoning observation preserved", turns)

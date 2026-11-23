@@ -222,7 +222,7 @@ func ensureSentence(text string) string {
 // identical repeat; its request-level class keeps that record out of capability
 // health and task blocking.
 func (s *EvidenceState) recordFailure(outcome agent.ToolOutcome, seq int) {
-	if s == nil {
+	if s == nil || outcome.Result.NegativeObservation() {
 		return
 	}
 	signature := agent.CallSignature(outcome.ToolName, outcome.Args)
@@ -331,6 +331,15 @@ func (s *EvidenceState) resolveFailure(outcome agent.ToolOutcome) {
 			continue
 		}
 		if record.Signature == signature || (target != "" && record.Target == target) {
+			record.Resolved = true
+			continue
+		}
+		// A later successful invocation of the same capability proves the
+		// capability itself is not broken. An execution-class failure (a
+		// spawn or dispatch failure, or a pre-classification command error)
+		// must not keep telling the model the tool is unavailable after a
+		// different command has already succeeded.
+		if record.Tool == outcome.ToolName && record.Class == knowledge.FailureExecutionFailed {
 			record.Resolved = true
 		}
 	}

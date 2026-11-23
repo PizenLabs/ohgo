@@ -8,6 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 // Output-first interaction contract.
@@ -218,6 +220,7 @@ func TestLiveStreamingConvergesOnTheFinishedRender(t *testing.T) {
 		i += n
 		printed = append(printed, v.render(s)...)
 	}
+	s.Apply(AssistantReconcile{Text: answer, Answer: agent.AnswerCommitted})
 	s.Apply(AssistantDone{})
 	printed = append(printed, v.render(s)...)
 
@@ -258,7 +261,7 @@ func TestLiveStreamingKeepsEveryDeltaOnceWhileItRuns(t *testing.T) {
 
 	// Settlement is the authoritative transfer: the exact value replaces the
 	// preview, and the whole answer leaves for scrollback once.
-	s.Apply(AssistantReconcile{Text: seen.String()})
+	s.Apply(AssistantReconcile{Text: seen.String(), Answer: agent.AnswerCommitted})
 	scrollback = append(scrollback, v.render(s)...)
 	s.Apply(AssistantDone{})
 	scrollback = append(scrollback, v.render(s)...)
@@ -329,7 +332,7 @@ func TestLiveLongAnswerStaysBoundedAndKeepsEveryWord(t *testing.T) {
 		}
 	}
 
-	s.Apply(AssistantReconcile{Text: seen.String()})
+	s.Apply(AssistantReconcile{Text: seen.String(), Answer: agent.AnswerCommitted})
 	painted = append(painted, v.render(s)...)
 	s.Apply(AssistantDone{})
 	painted = append(painted, v.render(s)...)
@@ -361,7 +364,7 @@ func TestLiveCommitKeepsUTF8Intact(t *testing.T) {
 			t.Fatalf("live text is not a suffix of the answer: %q", got)
 		}
 	}
-	s.Apply(AssistantReconcile{Text: seen.String()})
+	s.Apply(AssistantReconcile{Text: seen.String(), Answer: agent.AnswerCommitted})
 	painted = append(painted, v.render(s)...)
 	s.Apply(AssistantDone{})
 	painted = append(painted, v.render(s)...)
@@ -597,7 +600,7 @@ func TestLiveStatusMarksProvisionalAnswer(t *testing.T) {
 	if !strings.Contains(line, "draft · answer review pending") {
 		t.Fatalf("live status does not mark the draft: %q", line)
 	}
-	s.Apply(AssistantReconcile{Text: "candidate answer"})
+	s.Apply(AssistantReconcile{Text: "candidate answer", Answer: agent.AnswerCommitted})
 	line = liveStatusLine(s, DarkPalette(), ComputeLayout(s))
 	if strings.Contains(line, "draft ·") {
 		t.Fatalf("settled answer still marked as a draft: %q", line)

@@ -11,8 +11,8 @@ import (
 )
 
 // The TUI is a public stream. A copied runtime state block must not appear in
-// an AssistantDelta even when the provider emitted it, and the final transcript
-// must hold the project answer rather than the orchestration text.
+// the committed answer even when the provider emitted it, and the final
+// transcript must hold the project answer rather than the orchestration text.
 func TestLiveTranscriptWithholdsRuntimeState(t *testing.T) {
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
@@ -32,22 +32,27 @@ func TestLiveTranscriptWithholdsRuntimeState(t *testing.T) {
 	p := NewProgram(loop, "test", 0)
 	p.runTurn("go")
 
-	var live strings.Builder
+	live := ""
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
 		case event := <-p.events:
 			switch e := event.(type) {
 			case AssistantDelta:
-				live.WriteString(e.Text)
+				t.Fatalf("candidate prose was published before commit: %q", e.Text)
+			case AssistantReconcile:
+				if e.Answer != agent.AnswerCommitted {
+					continue
+				}
+				live = e.Text
 				for _, forbidden := range []string{"Runtime state", "Sufficiency:", "Available actions:"} {
-					if strings.Contains(e.Text, forbidden) {
-						t.Fatalf("delta leaked %q: %q", forbidden, e.Text)
+					if strings.Contains(live, forbidden) {
+						t.Fatalf("committed answer leaked %q: %q", forbidden, live)
 					}
 				}
 			case AssistantDone:
-				if !strings.Contains(live.String(), "order service creates orders") {
-					t.Fatalf("live transcript dropped the answer: %q", live.String())
+				if !strings.Contains(live, "order service creates orders") {
+					t.Fatalf("live transcript dropped the answer: %q", live)
 				}
 				if strings.Contains(p.state.AssistantText(), "Runtime state") {
 					t.Fatalf("stored transcript leaked runtime state: %q", p.state.AssistantText())

@@ -120,6 +120,19 @@ const ExecutionRecoveryRequest = `Runtime protocol recovery: your previous messa
 // re-emit the operation through the canonical tool channel.
 const ProtocolRecoveryRequest = `Runtime protocol recovery: your previous message contained serialized tool syntax that could not be normalized into a tool call. The malformed call was not executed. Re-emit the operation as a native tool call with complete arguments, or answer without protocol syntax. Do not repeat the serialized envelope.`
 
+// ToolArgumentRecoveryRequest is the one bounded correction the loop appends
+// when a streamed tool call closed with incomplete argument JSON. Nothing from
+// that call executed. The directive is runtime-authored and never persisted.
+const ToolArgumentRecoveryRequest = `Runtime protocol recovery: your previous tool call was not executed because its argument JSON was incomplete or could not be decoded. Re-emit the action with complete, valid arguments. If the payload is large, do not repeat the same oversized call: create a complete file first and make the remaining changes with smaller edits, or reduce the scope of this call. Nothing from the incomplete call changed the workspace.`
+
+// OutputRecoveryRequest is the one bounded correction the loop appends when a
+// mid-run turn produced neither a tool call nor visible answer text — either it
+// contained only hidden reasoning or the provider cut it off at the completion
+// ceiling. The turn could not act or answer, so the directive asks for the next
+// concrete output without spending another response on
+// planning. It is runtime-authored and never persisted.
+const OutputRecoveryRequest = `Runtime recovery: your previous response produced no tool call and no answer, so nothing was executed and the user received no result. Produce the next concrete output immediately with minimal planning: either emit the actual tool call with complete arguments, or, if the evidence is sufficient, write the final answer. Do not restate the plan or repeat the analysis.`
+
 // CompletionReviewRequest is the one bounded correction the loop appends when a
 // candidate answer fails the answer-level completion review. The placeholder is
 // replaced with the runtime's evidence reason. The model may use an available
@@ -139,6 +152,10 @@ const ClaimRepairRequest = `Runtime completion review: {{count}} claim(s) in the
 For each claim below, first obtain the missing observation its requirement/action names. Use the reopened surface only for those observations; the runtime enforces a small allowance and refuses a call past it. Read the exact coordinate the claim is about when the prior observation did not cover it; do not repeat an observation that already contains the required evidence.
 
 Only if those calls cannot establish the claim: remove that claim or qualify that sentence specifically. Do not add a general coverage or uncertainty disclaimer; it does not repair a different claim and will be rejected.
+
+Allowed repair actions: {{actions}}.
+
+{{preserved}}
 
 {{repairs}}
 

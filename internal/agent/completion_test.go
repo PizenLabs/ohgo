@@ -721,6 +721,42 @@ func TestExecutionCompletionStillVetoesAFailedCommand(t *testing.T) {
 	}
 }
 
+// A command that ran to completion with a non-zero status is an observation,
+// not a failed capability. git on an unborn branch exits 128 with "no commits
+// yet"; treating that as unrecovered poison vetoed a run that had otherwise
+// built and verified the requested site. A recognised check that fails is
+// still a hard veto, because it contradicts the final state.
+func TestCompletionDistinguishesCommandResultFromFailedCheck(t *testing.T) {
+	observation := []Turn{
+		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "wrote styles.css", Mutates: true})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text:    "$ git status --short && git log --oneline -5\n\nfatal: your current branch 'main' does not have any commits yet\n\n[exit code 128]",
+			IsError: true, Executes: true, Finished: true,
+			FailureClass: ToolFailureCommand,
+		})}},
+		{Results: []ToolOutcome{toolOutcome("verify", Result{
+			Text: "PASS", Executes: true, Finished: true, Verifies: true,
+			Verification: &VerificationEvidence{Command: "verify"},
+		})}},
+		answerTurn("Created the site."),
+	}
+	if verdict := EvaluateCompletion(observation, true); !verdict.Complete() {
+		t.Fatalf("a completed non-zero command vetoed built and verified work: %s", verdict.Reason)
+	}
+
+	failedCheck := []Turn{
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text:    "$ go test ./...\n\n--- FAIL\n\n[exit code 1]",
+			IsError: true, Executes: true, Finished: true,
+			FailureClass: ToolFailureVerification,
+		})}},
+		answerTurn("The tests passed."),
+	}
+	if verdict := EvaluateCompletion(failedCheck, false); verdict.Complete() {
+		t.Fatal("a failed verification was reported complete")
+	}
+}
+
 // A correction-budget refusal never ran. It is control feedback, not a failed
 // observation, and must not veto an informational answer that already
 // qualified the claim the repair could not complete.

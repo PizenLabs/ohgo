@@ -16,6 +16,13 @@ import (
 
 // persistTurn appends a completed turn to the session transcript.
 //
+// The stored conversation is what the model may replay, not everything the
+// user saw. TranscriptTurn withholds narration, superseded candidates, and
+// terminal refusals; a refused candidate stays available to the completion
+// evaluator and its bounded claim issues are persisted with the durable task.
+// Storing the refused prose would put words in the model's history that no
+// publication transaction accepted.
+//
 // A write failure is reported but never fails the run: the conversation is
 // still correct in memory, and aborting a working turn because a log insert
 // failed would be the worse trade.

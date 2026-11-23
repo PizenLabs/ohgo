@@ -138,7 +138,7 @@ func NewVerifyTool(root string) *VerifyTool {
 								"description": "Exact HTTP status. Omit to accept any 2xx response.",
 							},
 							"contains": map[string]any{
-								"description": "Literal strings the response body or rendered DOM must contain. A single string is accepted as a one-element list.",
+								"description": "Literal strings the HTTP response body or extracted browser page text must contain. Browser text ignores markup and normalizes whitespace across element boundaries. A single string is accepted as a one-element list.",
 								"anyOf": []any{
 									map[string]any{"type": "string"},
 									map[string]any{
@@ -1023,16 +1023,17 @@ func (t *VerifyTool) runCheck(ctx agent.Context, check verifyCheckPlan) verifyCh
 			return result
 		}
 		result.Bytes = len(dom)
+		pageText := browserCheckText(dom)
 		for _, want := range check.Contains {
-			if !strings.Contains(dom, want) {
+			if !strings.Contains(pageText, normalizeBrowserCheckText(want)) {
 				result.Status = "FAIL"
 				result.FailureClass = agent.ToolFailureVerification
-				result.Detail = fmt.Sprintf("rendered DOM does not contain %q", want)
+				result.Detail = fmt.Sprintf("rendered page text does not contain %q", want)
 				return result
 			}
 		}
 		result.Status = "PASS"
-		result.Detail = fmt.Sprintf("rendered DOM %d bytes", len(dom))
+		result.Detail = fmt.Sprintf("rendered page text %d characters", len(pageText))
 		return result
 	case "command":
 		if strings.TrimSpace(check.Command) == "" {
@@ -1078,6 +1079,25 @@ func (t *VerifyTool) runCheck(ctx agent.Context, check verifyCheckPlan) verifyCh
 		result.Detail = fmt.Sprintf("unknown check kind %q", check.Kind)
 		return result
 	}
+}
+
+// browserCheckText projects Chromium's serialized DOM into readable page text.
+//
+// Text split across adjacent elements is common in styled interfaces. Those
+// element boundaries act as word separators for a contains assertion, while
+// markup, attributes, and non-visible head/script/style content do not count.
+func browserCheckText(dom string) string {
+	// --dump-dom serializes adjacent elements without the layout whitespace a
+	// browser presents between many styled labels and values. Add a separator
+	// before extracting text so a check for "OSS first" matches sibling spans.
+	withBoundaries := strings.ReplaceAll(dom, "><", "> <")
+	return normalizeBrowserCheckText(htmlToText(withBoundaries))
+}
+
+// normalizeBrowserCheckText makes source whitespace and line wrapping
+// irrelevant without changing the asserted words.
+func normalizeBrowserCheckText(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func (t *VerifyTool) runBrowser(ctx context.Context, rawURL string, timeout time.Duration) (string, error) {

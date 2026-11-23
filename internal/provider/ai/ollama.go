@@ -265,8 +265,13 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (*Stream, erro
 				streamErr = fmt.Errorf("ai: ollama error: %s", chunk.Error)
 				break
 			}
-			for _, pending := range acc.apply(ctx, chunk) {
-				if !stream.publish(ctx, pending) {
+			pending, applyErr := acc.apply(ctx, chunk)
+			if applyErr != nil {
+				streamErr = applyErr
+				break
+			}
+			for _, event := range pending {
+				if !stream.publish(ctx, event) {
 					streamErr = ctx.Err()
 					break
 				}
@@ -361,7 +366,7 @@ func newOllamaAccumulator(msg *AssistantMessage) *ollamaAccumulator {
 }
 
 // apply folds one chunk into events.
-func (a *ollamaAccumulator) apply(ctx context.Context, chunk ollamaChunk) []StreamEvent {
+func (a *ollamaAccumulator) apply(ctx context.Context, chunk ollamaChunk) ([]StreamEvent, error) {
 	_ = ctx
 	var out []StreamEvent
 	if chunk.Message != nil {
@@ -396,10 +401,16 @@ func (a *ollamaAccumulator) apply(ctx context.Context, chunk ollamaChunk) []Stre
 					}
 				}
 			}
+			// Decode before announcing the call. Ollama sends whole arguments
+			// per chunk rather than fragments, so a payload that does not decode
+			// is malformed or truncated, never executable. Silently treating it
+			// as empty could run a call with defaults the model never chose.
+			decoded, err := decodeJSONArgs(rawArgs)
+			if err != nil {
+				return out, classifyToolArgumentError(name, a.msg.StopReason, err)
+			}
 			a.idCounter++
 			id := fmt.Sprintf("ollama:%d:%s", a.idCounter, name)
-			decoded := map[string]any{}
-			_ = json.Unmarshal([]byte(rawArgs), &decoded)
 			out = append(out, EventToolCallStart{ID: id, Name: name})
 			out = append(out, EventToolCallDelta{ID: id, Delta: rawArgs})
 			// Place the call in the content sequence when it arrives, not at
@@ -419,7 +430,7 @@ func (a *ollamaAccumulator) apply(ctx context.Context, chunk ollamaChunk) []Stre
 		a.msg.StopReason = mapOllamaStopReason(chunk.DoneReason, len(a.calls) > 0)
 		a.msg.Usage = Usage{Input: a.usageIn, Output: a.usageOut, Total: a.usageIn + a.usageOut}
 	}
-	return out
+	return out, nil
 }
 
 // finish closes reassembled calls after the final chunk.

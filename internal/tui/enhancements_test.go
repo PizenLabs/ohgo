@@ -274,14 +274,12 @@ func TestLongTurnReachesTranscriptInOrder(t *testing.T) {
 		case event := <-p.events:
 			switch e := event.(type) {
 			case AssistantDelta:
-				got += e.Text
+				t.Fatalf("answer prose was published before commit: %q", e.Text)
 			case AssistantReconcile:
-				if e.Discard {
-					got = ""
+				if e.Answer != agent.AnswerCommitted {
 					continue
 				}
-				// The committed value replaces the provisional preview; it is
-				// authoritative even when a delta was dropped.
+				// The committed value is the first and only answer artifact.
 				got = e.Text
 				if got != want {
 					t.Fatalf("transcript holds %d runes, want the %d-rune turn in order", len([]rune(got)), len([]rune(want)))
@@ -298,10 +296,10 @@ func TestLongTurnReachesTranscriptInOrder(t *testing.T) {
 	}
 }
 
-// A real token stream must reach the transcript as multiple deltas before the
-// turn settles. This is the regression that the disabled text hook hid: the
-// completed turn is not the first visible text.
-func TestRunTurnStreamsRealProviderDeltas(t *testing.T) {
+// A provider token stream is not a public answer stream. The transcript must
+// receive one committed artifact after the answer gate, never the candidate
+// prose while it can still be rejected or superseded.
+func TestRunTurnWithholdsAnswerDeltasUntilCommit(t *testing.T) {
 	deltas := []string{"# Project\n\n", "The project is a ", "Go agent runtime.\n"}
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
@@ -315,28 +313,24 @@ func TestRunTurnStreamsRealProviderDeltas(t *testing.T) {
 	}
 	p := NewProgram(loop, "test", 0)
 	p.runTurn("what is this project")
-	var streamed strings.Builder
-	reconciled := ""
-	deltaCount := 0
+	committed := ""
+	artifactCount := 0
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
 		case event := <-p.events:
 			switch e := event.(type) {
 			case AssistantDelta:
-				deltaCount++
-				streamed.WriteString(e.Text)
+				t.Fatalf("candidate prose was streamed before commit: %q", e.Text)
 			case AssistantReconcile:
-				if !e.Discard {
-					reconciled = e.Text
+				if e.Answer == agent.AnswerCommitted {
+					artifactCount++
+					committed = e.Text
 				}
 			case AssistantDone:
-				if deltaCount < 2 {
-					t.Fatalf("deltas = %d, want the real token stream, not one completed block", deltaCount)
-				}
 				want := strings.TrimSpace(strings.Join(deltas, ""))
-				if strings.TrimSpace(streamed.String()) != want || reconciled != want {
-					t.Fatalf("streamed=%q reconciled=%q want=%q", streamed.String(), reconciled, want)
+				if committed != want || artifactCount != 1 {
+					t.Fatalf("committed=%q count=%d want=%q count=1", committed, artifactCount, want)
 				}
 				return
 			}
@@ -382,25 +376,26 @@ func TestLiveTextDeltasRevealWithoutDuplication(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	p := NewProgram(loop, "test", 0)
-	// A mutation objective has no answer review, so its text still streams
-	// token by token. An informational answer is published after the gate.
+	// Answer prose is published only after the publication gate, for every
+	// objective kind. The committed text appears exactly once.
 	p.runTurn("fix the failing test")
-	var got strings.Builder
-	deltas := 0
+	got := ""
+	committed := 0
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
 		case event := <-p.events:
 			switch e := event.(type) {
 			case AssistantDelta:
-				deltas++
-				got.WriteString(e.Text)
-			case AssistantDone:
-				if got.String() != want {
-					t.Fatalf("transcript = %q, want the turn exactly once, in order", got.String())
+				t.Fatalf("candidate prose was published before commit: %q", e.Text)
+			case AssistantReconcile:
+				if e.Answer == agent.AnswerCommitted {
+					got = e.Text
+					committed++
 				}
-				if deltas == 0 {
-					t.Error("the completed answer was never published")
+			case AssistantDone:
+				if got != want || committed != 1 {
+					t.Fatalf("transcript = %q committed=%d, want the turn exactly once", got, committed)
 				}
 				return
 			}
@@ -489,7 +484,7 @@ func TestAbandonedAnswerBeforeToolIsNotPublished(t *testing.T) {
 				got.WriteString(delta.Text)
 			}
 			if reconcile, ok := event.(AssistantReconcile); ok {
-				if reconcile.Discard {
+				if reconcile.Answer != agent.AnswerCommitted {
 					got.Reset()
 				} else {
 					got.Reset()

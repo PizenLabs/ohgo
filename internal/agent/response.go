@@ -58,8 +58,16 @@ type ResponseAudit struct {
 	RetriedToolCalls int `json:"retried_tool_calls,omitempty"`
 	// RedundantToolCalls counts an identical call repeated after a successful
 	// observation. It could not add evidence.
-	RedundantToolCalls int         `json:"redundant_tool_calls,omitempty"`
-	Answer             AnswerAudit `json:"answer,omitempty"`
+	RedundantToolCalls int `json:"redundant_tool_calls,omitempty"`
+	// Lineage is the internal draft history for this run. It is audit data:
+	// a superseded draft is never replayed as a user-visible answer.
+	Lineage []DraftAudit `json:"lineage,omitempty"`
+	// PreservedClaims counts the valid claims the committed answer retained
+	// from the strongest draft.
+	PreservedClaims int `json:"preserved_claims,omitempty"`
+	// RemovedClaims counts unsupported claims the fallback repair removed.
+	RemovedClaims int         `json:"removed_claims,omitempty"`
+	Answer        AnswerAudit `json:"answer,omitempty"`
 }
 
 // LastResponseAudit returns the publication audit for the most recent run.
@@ -130,9 +138,7 @@ func (l *Loop) finalizeResponse(turns []Turn, live *[]Message, evidenceGap strin
 	}
 	if finalized.Text != answer {
 		turns[len(turns)-1].Assistant = replaceAssistantText(turns[len(turns)-1].Assistant, finalized.Text)
-		if live != nil && len(*live) > 0 {
-			(*live)[len(*live)-1] = AssistantMessage{Message: turns[len(turns)-1].Assistant}
-		}
+		replaceLiveAssistant(live, turns[len(turns)-1].Assistant)
 	}
 
 	metrics := responseToolMetrics(turns)
@@ -207,6 +213,16 @@ func (l *Loop) markResponseReview(issues []contract.GroundingIssue) {
 	}
 	l.response.State = ResponseReview
 	l.response.Answer = audit
+}
+
+// recordDraftLineage copies the per-run draft history into the response audit.
+// It is audit data: a host never uses it to decide what to display.
+func (l *Loop) recordDraftLineage(summaries []DraftAudit, preserved, removed int) {
+	l.responseMu.Lock()
+	l.response.Lineage = append([]DraftAudit(nil), summaries...)
+	l.response.PreservedClaims = preserved
+	l.response.RemovedClaims = removed
+	l.responseMu.Unlock()
 }
 
 // abortResponse records a run that ended without a committed answer.

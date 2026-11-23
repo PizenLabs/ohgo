@@ -37,6 +37,50 @@ func TestTodoInitCreatesASingleInProgressTask(t *testing.T) {
 	}
 }
 
+func TestTodoInitAndUpdatesWorkWithoutAPhaseEcho(t *testing.T) {
+	// The runtime's phase (ASK/FUZZ/BUILD) is not the todo group name. A model
+	// that omits the planning label must still be able to track work; the tool
+	// owns the default and resolves the single group for later operations.
+	tool := NewTodoTool()
+	init := tool.Execute(testContext(), map[string]any{
+		"op": "init", "tasks": []any{"first", "second"},
+	})
+	if init.IsError {
+		t.Fatalf("init without phase: %s", init.Text)
+	}
+	if !strings.Contains(init.Text, defaultTodoPhase) {
+		t.Fatalf("default group missing from rendering: %s", init.Text)
+	}
+	done := tool.Execute(testContext(), map[string]any{"op": "done", "task": "first"})
+	if done.IsError {
+		t.Fatalf("done without phase: %s", done.Text)
+	}
+	if !strings.Contains(done.Text, "Todo: 1/2 done") {
+		t.Fatalf("done did not advance the plan: %s", done.Text)
+	}
+	start := tool.Execute(testContext(), map[string]any{"op": "start", "task": "second"})
+	if start.IsError {
+		t.Fatalf("start without phase: %s", start.Text)
+	}
+}
+
+func TestTodoInfersTheOnlyPhaseThatContainsTheTask(t *testing.T) {
+	tool := NewTodoTool()
+	tool.Execute(testContext(), map[string]any{
+		"op": "init", "phase": "alpha", "tasks": []any{"a"},
+	})
+	tool.Execute(testContext(), map[string]any{
+		"op": "append", "phase": "beta", "tasks": []any{"b"},
+	})
+	result := tool.Execute(testContext(), map[string]any{"op": "done", "task": "b"})
+	if result.IsError {
+		t.Fatalf("done without phase was not resolved by task identity: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "Completed: b") {
+		t.Fatalf("wrong task completed: %s", result.Text)
+	}
+}
+
 func TestTodoResetClearsTheSessionPlan(t *testing.T) {
 	tool := NewTodoTool()
 	if result := tool.Execute(testContext(), map[string]any{
@@ -58,7 +102,6 @@ func TestTodoInitRejectsBadInput(t *testing.T) {
 		name string
 		args map[string]any
 	}{
-		{"missing phase", map[string]any{"op": "init", "tasks": []any{"a"}}},
 		{"missing tasks", map[string]any{"op": "init", "phase": "p"}},
 		{"empty task list", map[string]any{"op": "init", "phase": "p", "tasks": []any{}}},
 		{"duplicate tasks", map[string]any{"op": "init", "phase": "p", "tasks": []any{"a", "a"}}},
