@@ -571,3 +571,35 @@ func TestLiveResizeRewrapsOnlyTheLiveRegion(t *testing.T) {
 		t.Errorf("the composer lost the bottom row after the resize: %q", last)
 	}
 }
+
+// Output-first cannot rewrite scrollback, so a withdrawn draft is rendered as
+// labelled history rather than disappearing. The display text stays visible;
+// the answer projection does not.
+func TestLiveWithdrawnDraftRendersLabel(t *testing.T) {
+	entry := Entry{
+		Kind: EntryAssistant, Discarded: true,
+		WithdrawnText:   "candidate answer",
+		WithdrawnReason: "answer review requested changes",
+	}
+	lines := liveEntryLines(New(), 0, entry, DarkPalette(), ComputeLayout(State{Width: 70, Height: 20}))
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "draft withdrawn") || !strings.Contains(joined, "candidate answer") {
+		t.Fatalf("withdrawn draft is not visible in output-first:\n%s", joined)
+	}
+}
+
+// The in-flight output-first block is a pure text suffix, so its draft state
+// lives in the telemetry line instead of being prepended to the answer.
+func TestLiveStatusMarksProvisionalAnswer(t *testing.T) {
+	s := New()
+	s.Apply(AssistantDelta{Text: "candidate answer"})
+	line := liveStatusLine(s, DarkPalette(), ComputeLayout(s))
+	if !strings.Contains(line, "draft · answer review pending") {
+		t.Fatalf("live status does not mark the draft: %q", line)
+	}
+	s.Apply(AssistantReconcile{Text: "candidate answer"})
+	line = liveStatusLine(s, DarkPalette(), ComputeLayout(s))
+	if strings.Contains(line, "draft ·") {
+		t.Fatalf("settled answer still marked as a draft: %q", line)
+	}
+}

@@ -594,7 +594,14 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		return userPromptLines(e.UserText, s.Status.User, pal, layout)
 
 	case EntryAssistant:
-		lines := liveMarkdownLines(e.AssistantText, pal, layout)
+		text, label := assistantDisplay(e)
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		lines := liveMarkdownLines(text, pal, layout)
+		if label != "" {
+			lines = append([]string{pal.Warning.Render(label)}, lines...)
+		}
 		now := s.presentationAt()
 		if !entryFading(e, now) {
 			if age, ok := assistantFinalLineAge(e, now); ok && age < fadeFinalAt && len(lines) > 0 {
@@ -982,6 +989,12 @@ func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
 	width := displayWidth(s, layout)
+	if hasProvisionalAssistant(s) {
+		// Output-first has no stable row above the streamed block, so the
+		// draft state lives in the telemetry line. Full-screen marks the block
+		// itself; both modes say the same thing exactly once.
+		parts = append(parts, "draft · answer review pending")
+	}
 	// Shutting down is the one non-idle state no active telemetry row claims:
 	// the turn is already leaving, so the footer keeps the phase word.
 	if runtime := DeriveRuntime(s); runtime == RuntimeShuttingDown {
@@ -1151,4 +1164,17 @@ func liveHintsFor(s State, layout Layout) string {
 // the live region so the terminal scrolls them into its scrollback.
 func printTranscript(lines []string) tea.Cmd {
 	return tea.Println(strings.Join(lines, "\n"))
+}
+
+// hasProvisionalAssistant reports a streamed answer the review has not
+// settled. It is a status query, not authority: the block remains provisional
+// until AssistantReconcile accepts or withdraws it.
+func hasProvisionalAssistant(s State) bool {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := s.Entries[i]
+		if entry.Kind == EntryAssistant && entry.Provisional && !entry.Discarded {
+			return true
+		}
+	}
+	return false
 }
