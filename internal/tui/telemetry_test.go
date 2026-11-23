@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/tui/design"
 )
 
@@ -257,6 +258,7 @@ func TestAssistantFinalLineFadesOnSettle(t *testing.T) {
 	s.Apply(UserSubmitted{Text: "go", At: at})
 	s.Apply(AssistantDelta{Text: "streamed answer", At: at})
 	doneAt := at.Add(time.Second)
+	s.Apply(AssistantReconcile{Text: "streamed answer", Answer: agent.AnswerCommitted, At: doneAt})
 	s.Apply(AssistantDone{At: doneAt})
 	s.Apply(FrameTick{At: doneAt})
 

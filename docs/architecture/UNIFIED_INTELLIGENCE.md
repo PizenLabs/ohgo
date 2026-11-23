@@ -519,11 +519,24 @@ Internal iterations are not user-visible turns. One task has one answer
 transaction: `INVESTIGATING → FINALIZING → COMMITTED`, with `REVIEW` when the
 publication audit refuses the candidate and `ABORTED` when no answer was
 accepted. Drafts may be rejected and replaced; only the committed text reaches
-the host transcript as an answer. A candidate superseded by a correction is
-internal repair context and is never displayed; only a terminal review refusal
-may remain as one labelled withdrawn draft, and a streamed candidate is
-labelled provisional, so the display never passes a draft off as committed
-text. `Loop.LastResponseAudit`
+the host transcript as an answer.
+
+The runtime classifies every turn's assistant prose once, as
+`agent.AnswerDisposition`:
+
+| Disposition | Meaning | User-visible projection |
+|---|---|---|
+| `AnswerNarration` | A tool-round preamble or an abandoned plan. | Calls and results stay; prose is withheld. |
+| `AnswerSuperseded` | A bounded correction replaced the candidate. | Nothing; the candidate is internal repair context. |
+| `AnswerRejected` | The publication review terminally refused the candidate. | Exactly one labelled draft, or the plain output's `answer withheld` line. `AnswerReview` carries the control-plane reason verbatim. |
+| `AnswerCommitted` | The response transaction accepted the answer. | The one answer, settled with its exact text. |
+
+A streamed candidate is labelled provisional until `AnswerCommitted` settles
+it. The renderer does not infer a disposition from event order, empty text,
+stream completion, or its own audit read: an unclassified preview at a turn
+boundary is withdrawn, not promoted. A cancelled stream keeps its partial text
+as one display-only draft labelled with the interruption, never as an answer.
+`Loop.LastResponseAudit`
 records the drafts, rejections,
 tool calls, reused observations, retries, redundant identical calls, and the
 final claim audit; a second commit for the same run is a no-op.

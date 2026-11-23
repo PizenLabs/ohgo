@@ -100,7 +100,7 @@ func TestPrematureInformationalAnswerIsCorrectedBeforeCommit(t *testing.T) {
 	if len(turns) != 3 {
 		t.Fatalf("turns = %d, want 3", len(turns))
 	}
-	if !turns[0].Superseded || turns[0].Suppressed {
+	if turns[0].Answer != agent.AnswerSuperseded {
 		t.Fatal("the premature answer was not superseded by the correction")
 	}
 	if got := turns[len(turns)-1].Assistant.Text(); !strings.Contains(got, "controlled runtime") {
@@ -279,7 +279,7 @@ func TestSourceGrepPreventsAProvenanceCorrection(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("turns = %d, want the observation and the answer", len(turns))
 	}
-	if turns[0].Suppressed || turns[1].Suppressed {
+	if turns[0].Answer == agent.AnswerRejected || turns[1].Answer == agent.AnswerRejected {
 		t.Fatalf("turns = %+v, want no rejected candidate", turns)
 	}
 	if got := turns[len(turns)-1].Assistant.Text(); got != answer {

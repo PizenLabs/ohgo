@@ -79,6 +79,7 @@ func TestTurnFooterWaitsForSettledStream(t *testing.T) {
 	}
 
 	footer := &TurnFooter{Kind: FooterVerified, Detail: "1 tool call · read-only analysis · provenance clean"}
+	state.Apply(AssistantReconcile{Text: "a long answer", Answer: agent.AnswerCommitted, Seq: 1})
 	state.Apply(AssistantDone{Seq: 1, Footer: footer})
 	if got := countFooterEntries(state); got != 1 {
 		t.Fatalf("footer entries after settle = %d, want 1", got)
@@ -95,6 +96,7 @@ func TestTurnFooterWithoutTaskProjection(t *testing.T) {
 	state := New()
 	state.Apply(UserSubmitted{Text: "hello", Seq: 1})
 	state.Apply(AssistantDelta{Text: "hi", Seq: 1})
+	state.Apply(AssistantReconcile{Text: "hi", Answer: agent.AnswerCommitted, Seq: 1})
 	state.Apply(AssistantDone{Seq: 1, Footer: verifiedFooter(nil, "ask")})
 	if got := countFooterEntries(state); got != 1 {
 		t.Fatalf("footer entries = %d, want 1", got)
@@ -119,6 +121,7 @@ func TestBackToBackTurnsEmitOneFooterEach(t *testing.T) {
 	run := func(seq int, answer, detail string) {
 		state.Apply(UserSubmitted{Text: "task", Seq: seq})
 		state.Apply(AssistantDelta{Text: answer, Seq: seq})
+		state.Apply(AssistantReconcile{Text: answer, Answer: agent.AnswerCommitted, Seq: seq})
 		state.Apply(AssistantDone{Seq: seq, Footer: &TurnFooter{Kind: FooterVerified, Detail: detail}})
 	}
 	run(1, "first answer", "1 tool call · first verdict")
@@ -191,6 +194,7 @@ func TestLongAnswerKeepsFooterAtTheBottom(t *testing.T) {
 	}
 	answer.WriteString("ANSWER_END\n")
 	state.Apply(AssistantDelta{Text: answer.String(), Seq: 1})
+	state.Apply(AssistantReconcile{Text: answer.String(), Answer: agent.AnswerCommitted, Seq: 1})
 	state.Apply(TaskProjected{Projection: TaskProjection{
 		ID: "t1", Status: "COMPLETED", Objective: "explain Go",
 	}})

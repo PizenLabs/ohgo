@@ -8,6 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 // Activity presentation contract: one semantic block per tool call,
@@ -302,6 +304,7 @@ func TestToolThenAnswerStaysOrdered(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "contents here\n", Summary: "", At: now})
 	s.Apply(AssistantDelta{Text: "the file holds the config"})
+	s.Apply(AssistantReconcile{Text: "the file holds the config", Answer: agent.AnswerCommitted})
 	s.Apply(AssistantDone{})
 	if len(s.Entries) != 2 {
 		t.Fatalf("entries = %d, want tool + answer", len(s.Entries))

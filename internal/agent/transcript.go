@@ -1,6 +1,10 @@
 package agent
 
-import "github.com/PizenLabs/ohgo/internal/provider/ai"
+import (
+	"strings"
+
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+)
 
 // TranscriptTurn projects a completed turn into what a host may show and
 // persist as the conversation record.
@@ -58,19 +62,50 @@ func ConversationMessages(turns []Turn) []Message {
 	return out
 }
 
+// RejectedAnswer is the one accountable artifact a host may show for a
+// terminal review refusal. Text is the candidate the runtime withheld; Reason
+// is the control-plane boundary that refused it.
+//
+// The artifact is display-only. It is never conversation, never an answer, and
+// never replayed to the model: the turn that produced it stays in the run's
+// completion input, and the durable task carries the bounded claim issues.
+type RejectedAnswer struct {
+	Text   string
+	Reason string
+}
+
+// RejectedAnswer returns the terminal refusal this turn represents, if any.
+//
+// A rejected candidate is not conversation and not a publishable answer, but
+// hiding it without a trace would leave the human unable to see that a
+// completed-looking answer was withheld. This is the single projection every
+// host uses, so the TUI, plain output, and persistence name the same artifact
+// from the same runtime classification.
+func (t Turn) RejectedAnswer() (RejectedAnswer, bool) {
+	if t.Answer != AnswerRejected {
+		return RejectedAnswer{}, false
+	}
+	text := SanitizeAnswerText(t.Assistant.Text())
+	if strings.TrimSpace(text) == "" {
+		return RejectedAnswer{}, false
+	}
+	return RejectedAnswer{Text: text, Reason: strings.TrimSpace(t.AnswerReview)}, true
+}
+
 func TranscriptTurn(turn Turn) Turn {
-	// A rejected candidate was shown to the model for repair, not to the
-	// user. Returning an empty projection hides its text from the transcript,
-	// plain output, persistence, and the next request; the accepted answer
-	// remains the only assistant turn.
-	if turn.Suppressed {
-		return Turn{}
+	// A terminal refusal is not conversation. Its prose is projection-only
+	// (RejectedAnswer above), and its results are empty by construction: the
+	// gate withholds prose only when the turn ran no tool call. Keeping the
+	// classification makes the projection consumable without re-deriving why
+	// the text is absent.
+	if turn.Answer == AnswerRejected {
+		return Turn{Answer: AnswerRejected, AnswerReview: turn.AnswerReview}
 	}
 	// A turn that continued into a tool call published investigation, not a
 	// conclusion. Keep the call and its result; drop the prose. A superseded
 	// answer candidate is the same boundary for a different reason: a bounded
 	// correction replaces it, so only the final answer may reach a host.
-	if turn.SuppressText || turn.Superseded {
+	if turn.Answer == AnswerNarration || turn.Answer == AnswerSuperseded {
 		// Build a new backing slice: Turn is a value, but its Content shares
 		// the loop's live conversation. Reusing the capacity would overwrite
 		// the turn the completion authority still needs to read.

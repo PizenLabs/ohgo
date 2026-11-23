@@ -61,7 +61,7 @@ func TestCancelledRunDoesNotCommitARejectedDraft(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
-	if len(turns) != 1 || !turns[0].Superseded || turns[0].Suppressed {
+	if len(turns) != 1 || turns[0].Answer != AnswerSuperseded {
 		t.Fatalf("turns = %+v, want one internal draft superseded by the correction", turns)
 	}
 	audit := loop.LastResponseAudit()

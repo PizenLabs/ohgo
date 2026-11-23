@@ -57,6 +57,58 @@ const DefaultMaxTurns = 100
 // that already failed to support the claim.
 const DefaultCorrectionToolCalls = 4
 
+// AnswerDisposition is the runtime's classification of a turn's assistant
+// prose. It is the single authority for whether a host may present that prose
+// as an answer.
+//
+// One candidate has exactly one terminal disposition:
+//
+//	candidate → AnswerSuperseded   (a bounded correction replaces it)
+//	candidate → AnswerRejected     (the publication review refuses it)
+//	candidate → AnswerCommitted    (the response transaction accepts it)
+//
+// AnswerNarration is prose that was never a candidate: a tool-round preamble
+// or an abandoned plan. Superseded and narration prose is model context only.
+// Only AnswerCommitted may be presented as the task's answer, and only
+// AnswerRejected may be presented as a terminal refusal.
+type AnswerDisposition uint8
+
+const (
+	// AnswerUnclassified is a turn no publication decision touched. Hosts
+	// treat its text as ordinary assistant content. The runtime classifies
+	// every turn that can end a run; a host must not infer a disposition.
+	AnswerUnclassified AnswerDisposition = iota
+	// AnswerNarration is prose that announced or accompanied tool work. The
+	// calls and their results remain visible; the prose does not.
+	AnswerNarration
+	// AnswerSuperseded is a candidate a bounded correction replaced. It is
+	// internal repair context: no host may show it as an answer or as a
+	// withdrawal.
+	AnswerSuperseded
+	// AnswerRejected is the terminal candidate the publication review
+	// refused. It is not conversation and not an answer. A host may project
+	// exactly one accountable artifact from RejectedAnswer.
+	AnswerRejected
+	// AnswerCommitted is the one answer the response transaction accepted.
+	AnswerCommitted
+)
+
+// String names the disposition for logs and diagnostics.
+func (d AnswerDisposition) String() string {
+	switch d {
+	case AnswerNarration:
+		return "narration"
+	case AnswerSuperseded:
+		return "superseded"
+	case AnswerRejected:
+		return "rejected"
+	case AnswerCommitted:
+		return "committed"
+	default:
+		return "unclassified"
+	}
+}
+
 // Turn is one request/response cycle.
 type Turn struct {
 	// Assistant is the message the model produced.
@@ -66,23 +118,16 @@ type Turn struct {
 	Results []ToolOutcome
 	// Err is set when the turn failed before any tool call was dispatched.
 	Err error
-	// SuppressText marks assistant prose that accompanied a tool call. It was
-	// narration or an answer the model abandoned to keep investigating, not
-	// the final conclusion: the call and its result remain, the prose does
-	// not. This is the "text then more tools" publication boundary.
-	SuppressText bool
-	// Suppressed marks a rejected answer candidate. The loop kept it in the
-	// provider context so the correction request can see what it must repair,
-	// but it is not a publication: hosts must hide it from the transcript,
-	// persistence, and plain output. Only the accepted final answer is shown.
-	Suppressed bool
-	// Superseded marks a rejected candidate that a bounded correction
-	// replaces. It is model context, not a user-visible artifact: the run is
-	// still investigating and the next candidate is the only one a host may
-	// present. Tool outcomes in the same turn remain real work and stay
-	// visible; only the prose is internal. Unlike Suppressed, this is not a
-	// terminal review verdict.
-	Superseded bool
+	// Answer is the runtime's classification of the assistant prose. The
+	// publication gate sets it before the turn reaches a host, so every
+	// transcript, persistence, and plain-output path consumes the same
+	// decision instead of re-deriving one from ordered events.
+	Answer AnswerDisposition
+	// AnswerReview is the control-plane boundary that refused a terminal
+	// candidate. It is set only with AnswerRejected and is safe to show: it
+	// names the review finding, never a scheduler counter, candidate number,
+	// or internal state id. A host shows it verbatim.
+	AnswerReview string
 }
 
 // ToolOutcome records what happened to one tool call.
@@ -1142,9 +1187,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// sent.
 	var nudges []string
 
-	// reportTurn publishes the completed turn. It is deliberately called after
-	// the answer review: a rejected candidate is marked suppressed first, so a
-	// host never displays it as an answer.
+	// reportTurn publishes the completed turn after the answer gate has
+	// classified it. A host sees AnswerNarration, AnswerSuperseded,
+	// AnswerRejected, or AnswerCommitted and never has to infer the decision
+	// from event order.
 	reportTurn := func() {
 		if l.cfg.OnTurn != nil && len(turns) > 0 {
 			l.cfg.OnTurn(turns[len(turns)-1])
@@ -1166,29 +1212,30 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return true
 		}
 		last := &turns[len(turns)-1]
-		if !last.SuppressText || l.cfg.AnswerReview != nil {
+		if last.Answer != AnswerNarration || l.cfg.AnswerReview != nil {
 			l.noteDraft()
 		}
-		// suppress withdraws the candidate text. Tool results in the same
-		// turn are real work: hiding them from the transcript would erase
-		// calls the user watched run, so only the prose is withheld.
-		suppress := func() {
+		// withhold keeps the candidate out of every user-visible answer
+		// projection. Tool results in the same turn are real work: hiding
+		// them would erase calls the user watched run, so only the prose is
+		// withdrawn.
+		withhold := func(review string) {
 			if len(last.Results) > 0 {
-				last.SuppressText = true
-				last.Suppressed = false
+				last.Answer = AnswerNarration
+				last.AnswerReview = ""
 				return
 			}
-			last.Suppressed = true
+			last.Answer = AnswerRejected
+			last.AnswerReview = review
 		}
-		// supersede withdraws an intermediate candidate that a correction
+		// supersede marks an intermediate candidate that a correction
 		// replaces. It must not become a user-visible answer artifact: the
 		// user watched a provisional preview, not a result. The model still
 		// sees the text in the live conversation, so it can repair the named
 		// claims. Tool outcomes remain visible.
 		supersede := func() {
-			last.Superseded = true
-			last.Suppressed = false
-			last.SuppressText = false
+			last.Answer = AnswerSuperseded
+			last.AnswerReview = ""
 		}
 		finish := func() { reportTurn() }
 		reason := l.answerReviewReason(turns)
@@ -1227,14 +1274,14 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// deliverable, and the finalizer's Approved gate decides whether
 			// the text is publishable while completion carries the gap.
 			if blocksPublication(repairs) {
-				suppress()
+				withhold(answerRejectionReason(reason, repairs))
 				l.noteRejected()
 				l.markResponseReview(repairs)
 				finish()
 				return true
 			}
 		}
-		if last.SuppressText {
+		if last.Answer == AnswerNarration {
 			// Prose that accompanied tool calls or only announced a future
 			// action is narration. It stays in the completion input for its
 			// veto, but it is not a publishable answer and must not open a
@@ -1246,7 +1293,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// The finalizer's own audit is authoritative. It refused the
 			// candidate, so the host must not publish it. The raw turn stays
 			// available to completion, which reports the exact claims.
-			suppress()
+			audit := l.LastResponseAudit().Answer
+			withhold(answerRejectionReason("", audit.Issues))
 			l.noteRejected()
 			if l.responseState() != ResponseReview {
 				l.markResponseReview(l.answerRepairs(turns))
@@ -1254,6 +1302,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			finish()
 			return true
 		}
+		last.Answer = AnswerCommitted
+		last.AnswerReview = ""
 		finish()
 		return true
 	}
@@ -1565,7 +1615,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// remains visible and its result is evidence; the prose would read as
 		// an answer the run later replaces.
 		if len(calls) > 0 && strings.TrimSpace(assistant.Text()) != "" {
-			turn.SuppressText = true
+			turn.Answer = AnswerNarration
 		}
 		if len(calls) > 0 {
 			// A canonical call is the correction both protocol recoveries ask
@@ -1582,7 +1632,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// exploration narration as final prose is the failure this
 			// suppression closes.
 			if answerIsDeferredPlan(turn.Assistant.Text()) {
-				turn.SuppressText = true
+				turn.Answer = AnswerNarration
 			}
 			turns = append(turns, turn)
 			// A terminal surface with neither a proposal nor an answer is a
@@ -1727,7 +1777,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			(closed || (!answerIsDeferredPlan(text) &&
 				l.noEvidenceInBatch(activeByName, redundant, calls, len(turns)))) {
 			turn.Assistant = SanitizeAssistantMessage(answerWithoutToolCalls(assistant))
-			turn.SuppressText = false
+			turn.Answer = AnswerUnclassified
 			turns = append(turns, turn)
 			// The stored turn dropped the call blocks, so the live conversation
 			// must drop them too. A correction request otherwise replays a call

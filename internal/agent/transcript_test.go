@@ -93,20 +93,47 @@ func TestTranscriptTurnKeepsNonAnswerRefusals(t *testing.T) {
 	}
 }
 
-// A rejected candidate is model context, not a user-visible answer. It must
-// not reach the transcript, plain output, persistence, or the next request.
-func TestTranscriptTurnHidesSuppressedCandidate(t *testing.T) {
+// A terminal refusal is not an answer, not conversation, and not a silent
+// disappearance: exactly one accountable artifact survives for a host.
+func TestTranscriptTurnProjectsTerminalRejectionAsOneArtifact(t *testing.T) {
+	const prose = "The first, unsupported answer."
 	turn := Turn{
 		Assistant: ai.AssistantMessage{
-			Content: []ai.ContentBlock{ai.TextContent{Text: "The first, unsupported answer."}},
+			Content: []ai.ContentBlock{ai.TextContent{Text: prose}},
 		},
-		Suppressed: true,
+		Answer:       AnswerRejected,
+		AnswerReview: "the answer asserts a claim the run did not observe",
 	}
 	if got := TranscriptTurn(turn); got.Assistant.Text() != "" || len(got.Results) != 0 {
-		t.Fatalf("suppressed turn was published: %+v", got)
+		t.Fatalf("rejected turn was published as conversation: %+v", got)
 	}
 	if got := ConversationMessages([]Turn{turn}); len(got) != 0 {
-		t.Fatalf("suppressed turn entered the next request: %+v", got)
+		t.Fatalf("rejected turn entered the next request: %+v", got)
+	}
+	artifact, ok := turn.RejectedAnswer()
+	if !ok {
+		t.Fatal("the terminal refusal has no accountable artifact")
+	}
+	if artifact.Text != prose || artifact.Reason != turn.AnswerReview {
+		t.Fatalf("artifact = %+v, want the withheld prose and the runtime reason", artifact)
+	}
+	if projected, ok := TranscriptTurn(turn).RejectedAnswer(); ok {
+		t.Fatalf("the projected turn must not carry prose: %+v", projected)
+	}
+}
+
+// Only a terminal refusal is an accountable artifact. Internal repair context
+// and narration must not be presented as one.
+func TestRejectedAnswerIsOnlyForTerminalRefusal(t *testing.T) {
+	for _, disposition := range []AnswerDisposition{AnswerNarration, AnswerSuperseded, AnswerCommitted} {
+		turn := Turn{
+			Assistant:    ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "candidate"}}},
+			Answer:       disposition,
+			AnswerReview: "not a terminal refusal",
+		}
+		if _, ok := turn.RejectedAnswer(); ok {
+			t.Fatalf("%s produced a rejection artifact", disposition)
+		}
 	}
 }
 
@@ -122,7 +149,7 @@ func TestTranscriptTurnHidesSupersededCandidateButKeepsItsWork(t *testing.T) {
 			},
 			StopReason: ai.StopToolUse,
 		},
-		Superseded: true,
+		Answer: AnswerSuperseded,
 		Results: []ToolOutcome{
 			{CallID: "read", ToolName: "read", Result: Result{Text: "package a"}},
 		},
@@ -150,7 +177,7 @@ func TestTranscriptTurnDropsProseBeforeToolCall(t *testing.T) {
 			},
 			StopReason: ai.StopToolUse,
 		},
-		SuppressText: true,
+		Answer: AnswerNarration,
 		Results: []ToolOutcome{
 			{CallID: "read", ToolName: "read", Result: Result{Text: "package a"}},
 		},
@@ -172,7 +199,7 @@ func TestTranscriptTurnDropsProseBeforeToolCall(t *testing.T) {
 // completion authority still reads.
 func TestTranscriptTurnDoesNotMutateTheLoopTurn(t *testing.T) {
 	turn := Turn{
-		SuppressText: true,
+		Answer: AnswerNarration,
 		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{
 			ai.TextContent{Text: "I will inspect the parser."},
 			ai.ToolCall{ID: "c1", Name: "read", Arguments: map[string]any{"path": "x.go"}},

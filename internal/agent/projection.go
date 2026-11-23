@@ -41,7 +41,9 @@ type ProjectionRequest struct {
 	Correcting bool
 	// CorrectionBudget is the number of tool calls this correction may still
 	// execute. It is a control-plane fact, not a hint: the loop refuses calls
-	// beyond it, and the runtime block states the remaining allowance.
+	// beyond it. The projector states the consequence of an exhausted window
+	// and never narrates the remaining count, so the model reasons about the
+	// evidence instead of the scheduler.
 	CorrectionBudget int
 }
 

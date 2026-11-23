@@ -59,7 +59,7 @@ func TestRunTurnPublishesAssistantText(t *testing.T) {
 			// reconcile, the same event a token stream uses to replace its
 			// provisional preview.
 			if reconcile, ok := event.(AssistantReconcile); ok &&
-				!reconcile.Discard && reconcile.Text == "hello golang" {
+				reconcile.Answer == agent.AnswerCommitted && reconcile.Text == "hello golang" {
 				found = true
 			}
 			p.state.Apply(event)
@@ -215,7 +215,7 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 				published += delta.Text
 			}
 			if reconcile, ok := event.(AssistantReconcile); ok {
-				if reconcile.Discard {
+				if reconcile.Answer != agent.AnswerCommitted {
 					published = ""
 				} else {
 					published = reconcile.Text
@@ -230,7 +230,7 @@ func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 						published += delta.Text
 					}
 					if reconcile, ok := event.(AssistantReconcile); ok {
-						if reconcile.Discard {
+						if reconcile.Answer != agent.AnswerCommitted {
 							published = ""
 						} else {
 							published = reconcile.Text
@@ -339,6 +339,26 @@ func TestRunTurnPersistsExactlyOneAssistantAnswer(t *testing.T) {
 	if answers[0] != "This project is a Go coding agent." {
 		t.Fatalf("persisted answer = %q, want the committed answer", answers[0])
 	}
+
+	// Historical replay is the same semantic projection as the live frame:
+	// exactly the committed answer, no stale candidate, no withdrawn artifact.
+	replayed, err := session.Replay(rows)
+	if err != nil {
+		t.Fatalf("session.Replay: %v", err)
+	}
+	history := New()
+	history.Apply(TerminalResized{Width: 80, Height: 24})
+	history.Apply(HistoryReplaced{Entries: EntriesFromMessages(replayed)})
+	rendered := Render(history)
+	if got := strings.Count(rendered, "This project is a Go coding agent."); got != 1 {
+		t.Fatalf("replayed committed answer count = %d, want exactly one:\n%s", got, rendered)
+	}
+	if strings.Contains(rendered, "There is no database.") {
+		t.Fatalf("replay resurrected a superseded candidate:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "draft withdrawn") {
+		t.Fatalf("replay invented a withdrawal that never happened:\n%s", rendered)
+	}
 }
 
 // A candidate the publication audit refuses must not survive as the answer on
@@ -380,13 +400,21 @@ func TestRunTurnDoesNotPublishUnapprovedAnswer(t *testing.T) {
 				t.Fatalf("an unapproved answer reached the transcript: %q", got)
 			}
 			withdrawn := ""
+			withdrawnReason := ""
 			for _, entry := range p.state.Entries {
 				if entry.Kind == EntryAssistant && entry.Discarded {
 					withdrawn = entry.WithdrawnText
+					withdrawnReason = entry.WithdrawnReason
 				}
 			}
 			if !strings.Contains(withdrawn, "no database") {
 				t.Fatalf("unapproved candidate vanished without a trace: %q", withdrawn)
+			}
+			if strings.TrimSpace(withdrawnReason) == "" {
+				t.Fatal("the terminal refusal has no control-plane reason")
+			}
+			if withdrawnReason == "answer review requested changes" {
+				t.Fatalf("the renderer substituted its own review reason: %q", withdrawnReason)
 			}
 			var rendered strings.Builder
 			for _, entry := range p.state.Entries {
@@ -394,11 +422,133 @@ func TestRunTurnDoesNotPublishUnapprovedAnswer(t *testing.T) {
 					renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
 				}
 			}
-			if !strings.Contains(rendered.String(), "draft withdrawn") {
-				t.Fatalf("unapproved candidate has no withdrawn label:\n%s", rendered.String())
+			if !strings.Contains(rendered.String(), "draft withdrawn") ||
+				!strings.Contains(rendered.String(), withdrawnReason) {
+				t.Fatalf("unapproved candidate has no labelled control-plane reason:\n%s", rendered.String())
 			}
 			if audit := loop.LastResponseAudit(); audit.State != agent.ResponseReview {
 				t.Fatalf("response state = %s after %d request(s), want REVIEW", audit.State, requests)
+			}
+			return
+		case <-timeout:
+			t.Fatal("runTurn hung")
+		}
+	}
+}
+
+// A terminal refusal is display-only accountability. The durable task keeps
+// the review reason and claim issues; the session must not replay the refused
+// prose as conversation, and a reload must not invent a withdrawal that the
+// live frame showed only as a display affordance.
+func TestRejectedCandidateDoesNotEnterReplayedHistory(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("session.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sess, err := store.Create(t.TempDir(), "m")
+	if err != nil {
+		t.Fatalf("session.Create: %v", err)
+	}
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			return ai.NewTextStream("There is no database anywhere in the repository."), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	p.AttachSession(store, &sess, nil)
+	p.runTurn("analyze this project")
+
+	rows, err := store.Messages(sess.ID, 0)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	for _, row := range rows {
+		if strings.Contains(row.Text, "no database") {
+			t.Fatalf("the refused candidate was persisted: %+v", row)
+		}
+	}
+	replayed, err := session.Replay(rows)
+	if err != nil {
+		t.Fatalf("session.Replay: %v", err)
+	}
+	history := New()
+	history.Apply(TerminalResized{Width: 80, Height: 24})
+	history.Apply(HistoryReplaced{Entries: EntriesFromMessages(replayed)})
+	rendered := Render(history)
+	if strings.Contains(rendered, "no database") {
+		t.Fatalf("replay resurrected a refused candidate:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "draft withdrawn") {
+		t.Fatalf("replay invented a withdrawal:\n%s", rendered)
+	}
+	if got := history.AssistantText(); got != "" {
+		t.Fatalf("replay produced an answer from a refused run: %q", got)
+	}
+}
+
+// A completed transport never streams a preview. The terminal refusal must
+// still produce exactly one accountable artifact, not vanish and not duplicate
+// when the post-run settlement repeats it.
+func TestRunTurnShowsOneArtifactForANonStreamingRefusal(t *testing.T) {
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{
+					Text: "There is no database anywhere in the repository.",
+				}},
+			}), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	done := make(chan struct{})
+	go func() { defer close(done); p.runTurn("analyze this project") }()
+
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-p.events:
+			p.state.Apply(event)
+		case <-done:
+			for {
+				select {
+				case event := <-p.events:
+					p.state.Apply(event)
+					continue
+				default:
+				}
+				break
+			}
+			var artifacts []Entry
+			for _, entry := range p.state.Entries {
+				if entry.Kind == EntryAssistant && entry.Discarded {
+					artifacts = append(artifacts, entry)
+				}
+			}
+			if len(artifacts) != 1 {
+				t.Fatalf("withheld artifacts = %d, want exactly one", len(artifacts))
+			}
+			if !strings.Contains(artifacts[0].WithdrawnText, "no database") ||
+				strings.TrimSpace(artifacts[0].WithdrawnReason) == "" {
+				t.Fatalf("artifact = %+v, want the prose and the control-plane reason", artifacts[0])
+			}
+			if got := p.state.AssistantText(); got != "" {
+				t.Fatalf("the refused answer entered the answer projection: %q", got)
+			}
+			var rendered strings.Builder
+			renderEntryContent(&rendered, artifacts[0], PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
+			if strings.Count(rendered.String(), "draft withdrawn") != 1 {
+				t.Fatalf("the refusal was rendered more than once:\n%s", rendered.String())
 			}
 			return
 		case <-timeout:

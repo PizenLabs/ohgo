@@ -92,8 +92,8 @@ type Entry struct {
 	// under a "draft withdrawn" label so a streaming candidate cannot vanish
 	// without a trace. It is never copied or treated as the answer.
 	WithdrawnText string
-	// WithdrawnReason names the runtime review boundary that withdrew the
-	// draft, e.g. "answer review requested changes".
+	// WithdrawnReason is the control-plane review boundary that withdrew the
+	// draft, verbatim. The renderer never synthesises or substitutes one.
 	WithdrawnReason string
 	// Reasoning is set when Kind is EntryReasoning: the model's own thinking
 	// trace, represented as a block rather than inferred from prose.
@@ -1190,8 +1190,19 @@ func (s *State) Apply(event Event) {
 		if s.Cancelled {
 			return
 		}
-		if e.Discard {
-			s.discardProvisionalAssistant(e.At, e.Withdrawn)
+		if e.Answer != agent.AnswerCommitted {
+			// Only the response transaction's committed answer may replace a
+			// preview as an answer. A terminal refusal keeps its text for
+			// display; narration and superseded candidates disappear.
+			if e.Answer == agent.AnswerRejected {
+				if s.lastProvisionalAssistant() < 0 {
+					s.appendWithheldAssistant(e.Text, e.Reason, e.At)
+					return
+				}
+				s.discardProvisionalAssistant(e.At, e.Reason)
+				return
+			}
+			s.discardProvisionalAssistant(e.At, "")
 			return
 		}
 		s.settleAssistant(e.Text, e.At)
@@ -1211,7 +1222,9 @@ func (s *State) Apply(event Event) {
 		// Close the trailing assistant entry: without this the next turn would
 		// append to it and the transcript would read as one continuous answer.
 		s.closeReasoning(e.At)
-		s.settleProvisionalAssistants()
+		// No reconcile arrived, so no publication decision classified this
+		// preview. It is withdrawn rather than promoted to an answer.
+		s.discardProvisionalAssistants(e.At, "")
 		if open := s.openAssistant(); open >= 0 {
 			// A turn boundary is final: no reconcile is coming, so the
 			// accumulated text is the settled answer and may enter scrollback.
@@ -1260,10 +1273,12 @@ func (s *State) Apply(event Event) {
 				s.bumpEntry(i)
 			}
 		}
-		s.settleProvisionalAssistants()
+		// A partial stream is not an answer; the human stopped the turn before
+		// any publication decision. Keep what they saw as one display-only
+		// draft and name the interruption, rather than sealing it as a result.
+		s.discardProvisionalAssistants(e.At, "the turn was interrupted")
 		if open := s.openAssistant(); open >= 0 {
-			// The partial answer is what the user actually saw before the
-			// interruption; it is final for display and may be sealed.
+			// The partial draft is settled for display and may be sealed.
 			s.closedAssistant = true
 		}
 		for i := range s.Entries {
@@ -3506,15 +3521,15 @@ func (s *State) appendAssistant(text string, at time.Time) {
 	s.closedAssistant = false
 }
 
-// settleProvisionalAssistants clears the await-reconcile flag at a turn
-// boundary. No reconcile can arrive after Done or cancellation, so whatever
-// text the user already saw is the block's final display value.
-func (s *State) settleProvisionalAssistants() {
-	for i := range s.Entries {
-		if s.Entries[i].Kind == EntryAssistant && s.Entries[i].Provisional {
-			s.Entries[i].Provisional = false
-			s.bumpEntry(i)
-		}
+// discardProvisionalAssistants withdraws every preview still waiting for a
+// decision at a turn boundary. An unclassified preview is not an answer: no
+// response transaction committed it. A terminal refusal is settled earlier by
+// the AssistantReconcile that carries the runtime's reason; this fallback
+// exists so an aborted or interrupted turn cannot leave its partial text
+// looking like a completed answer.
+func (s *State) discardProvisionalAssistants(at time.Time, reason string) {
+	for s.lastProvisionalAssistant() >= 0 {
+		s.discardProvisionalAssistant(at, reason)
 	}
 }
 
@@ -3561,6 +3576,44 @@ func (s *State) settleAssistant(text string, at time.Time) {
 	entry.Provisional = false
 	s.assistantText = true
 	s.bumpEntry(index)
+}
+
+// appendWithheldAssistant records a terminal refusal that never streamed as a
+// preview, so a completed-transport response still leaves one accountable
+// artifact. It is display-only from the start: AssistantText stays empty and
+// the prose lives in WithdrawnText.
+func (s *State) appendWithheldAssistant(text, reason string, at time.Time) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	// The turn hook and the post-run settlement both report the same refusal.
+	// Reuse the existing artifact so one semantic event has one
+	// representation. Only the last assistant block can be this refusal; a
+	// different candidate after it means a new artifact.
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := &s.Entries[i]
+		if entry.Kind != EntryAssistant {
+			continue
+		}
+		if entry.Discarded && strings.TrimSpace(entry.WithdrawnText) == text {
+			if reason != "" && entry.WithdrawnReason != reason {
+				entry.WithdrawnReason = reason
+				s.bumpEntry(i)
+			}
+			return
+		}
+		break
+	}
+	s.Entries = append(s.Entries, Entry{
+		Kind:            EntryAssistant,
+		Discarded:       true,
+		WithdrawnText:   text,
+		WithdrawnReason: reason,
+		AppearedAt:      at,
+	})
+	s.assignIdentity(len(s.Entries) - 1)
 }
 
 // discardProvisionalAssistant withdraws a streamed block the runtime did not
@@ -3768,20 +3821,28 @@ type AssistantDelta struct {
 func (AssistantDelta) eventKind() string { return "assistant_delta" }
 
 // AssistantReconcile settles the provisional text of one turn with the exact
-// value the runtime committed.
+// value the runtime committed, or withdraws it under the runtime's own
+// classification.
 //
 // Deltas are a progressive preview, not the authoritative text: a delta can
 // be dropped under backpressure, and the answer finalizer can rewrite the
 // committed answer. Text is the whole final value, so the reducer replaces
-// rather than appends. Discard withdraws a preview the runtime classified as
-// tool narration, a rejected draft, or a plan that was not an answer.
+// rather than appends. Answer is the control plane's disposition; the renderer
+// never infers it from event order, empty text, or stream completion.
+//
+// Only AnswerCommitted settles the preview as an answer. AnswerRejected keeps
+// the preview as one labelled display-only draft; when no preview streamed
+// (a completed-transport response), Text opens that draft so the refusal is
+// still accountable. Every other disposition withdraws the preview outright.
 type AssistantReconcile struct {
-	Text    string
-	Discard bool
-	// Withdrawn, when Discard is set, keeps the discarded provisional text as
-	// a labelled draft instead of deleting it. It is used for an answer the
-	// review rejected; tool narration still discards outright.
-	Withdrawn string
+	// Text is the exact committed answer, or the withheld prose for
+	// AnswerRejected. It is ignored for other dispositions.
+	Text   string
+	Answer agent.AnswerDisposition
+	// Reason is the control-plane review boundary for AnswerRejected. It is
+	// shown verbatim under the withdrawn draft and is never synthesised by
+	// the renderer.
+	Reason string
 	// At is when the turn settled. Zero means unknown.
 	At time.Time
 	// Seq identifies the turn. Zero accepts any turn for legacy callers.

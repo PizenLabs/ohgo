@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 // The lexical pass repairs complete prose words and preserves sentence case.
@@ -89,6 +91,7 @@ func TestMarkdownRenderCorrectsDisplayedProseOnly(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
 	s.Apply(AssistantDelta{Text: "teh recieve github"})
+	s.Apply(AssistantReconcile{Text: "teh recieve github", Answer: agent.AnswerCommitted})
 	s.Apply(AssistantDone{})
 
 	out := stripForTest(t, Render(s))

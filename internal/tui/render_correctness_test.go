@@ -34,6 +34,7 @@ func renderAssistant(t *testing.T, text string, width, height int) string {
 	s := New()
 	s.Apply(TerminalResized{Width: width, Height: height})
 	s.Apply(AssistantDelta{Text: text})
+	s.Apply(AssistantReconcile{Text: text, Answer: agent.AnswerCommitted})
 	s.Apply(AssistantDone{})
 	return Render(s)
 }
@@ -246,6 +247,7 @@ func TestMarkdownConvergesRegardlessOfChunkSplits(t *testing.T) {
 		for _, c := range chunks {
 			s.Apply(AssistantDelta{Text: c})
 		}
+		s.Apply(AssistantReconcile{Text: full, Answer: agent.AnswerCommitted})
 		s.Apply(AssistantDone{})
 		got := RenderMarkdownWrapped(s.Entries[0].AssistantText, pal, 50)
 		if i == 0 {
@@ -806,6 +808,7 @@ func TestResizeDuringStreamKeepsViewportClean(t *testing.T) {
 			}
 		}
 	}
+	s.Apply(AssistantReconcile{Text: s.Entries[0].AssistantText, Answer: agent.AnswerCommitted})
 	s.Apply(AssistantDone{})
 	if !strings.Contains(Render(s), "Report") || !strings.Contains(Render(s), "quoted") {
 		t.Error("resized streaming lost content")
@@ -1069,6 +1072,7 @@ func TestScrolledFrameKeepsFooterPinned(t *testing.T) {
 		fmt.Fprintf(&sb, "line %d with some words to fill the transcript\n", i)
 	}
 	s.Apply(AssistantDelta{Text: sb.String()})
+	s.Apply(AssistantReconcile{Text: sb.String(), Answer: agent.AnswerCommitted})
 	s.Apply(AssistantDone{})
 	s.Apply(WorkspaceUpdated{Cwd: "/work/project", HasCwd: true, Session: "#9", HasSession: true})
 	s.Apply(ScrollMoved{Delta: 10})
@@ -1109,6 +1113,7 @@ func TestRenderLongTranscriptBounded(t *testing.T) {
 	}
 	sb.WriteString("\n| a | b |\n|---|---|\n| 1 | 2 |\n")
 	s.Apply(AssistantDelta{Text: sb.String()})
+	s.Apply(AssistantReconcile{Text: sb.String(), Answer: agent.AnswerCommitted})
 	s.Apply(AssistantDone{})
 	start := time.Now()
 	out := Render(s)
@@ -1221,6 +1226,7 @@ func BenchmarkAssistantStreaming(b *testing.B) {
 		sb.WriteString("Paragraph with **bold** and a [link](https://example.com).\n\n- one\n- two\n\n")
 	}
 	s.Apply(AssistantDelta{Text: sb.String()})
+	s.Apply(AssistantReconcile{Text: sb.String(), Answer: agent.AnswerCommitted})
 	s.Apply(AssistantDone{})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

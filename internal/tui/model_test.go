@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 func TestApplyStreamsAssistantTextIntoOneEntry(t *testing.T) {
@@ -33,6 +35,7 @@ func TestApplySplitsAssistantTextAcrossTurns(t *testing.T) {
 	// one continuous answer.
 	state := New()
 	state.Apply(AssistantDelta{Text: "first"})
+	state.Apply(AssistantReconcile{Text: "first", Answer: agent.AnswerCommitted})
 	state.Apply(AssistantDone{})
 	state.Apply(AssistantDelta{Text: "second"})
 
@@ -436,7 +439,7 @@ func TestClearedKeepsTheStatusLine(t *testing.T) {
 func TestAssistantReconcileReplacesTheProvisionalStream(t *testing.T) {
 	state := New()
 	state.Apply(AssistantDelta{Text: "partial draft"})
-	state.Apply(AssistantReconcile{Text: "the exact committed answer"})
+	state.Apply(AssistantReconcile{Text: "the exact committed answer", Answer: agent.AnswerCommitted})
 	if got := state.AssistantText(); got != "the exact committed answer" {
 		t.Fatalf("AssistantText = %q, want the exact committed value", got)
 	}
@@ -448,13 +451,13 @@ func TestAssistantReconcileReplacesTheProvisionalStream(t *testing.T) {
 func TestAssistantReconcileDiscardsToolNarration(t *testing.T) {
 	state := New()
 	state.Apply(AssistantDelta{Text: "Let me inspect the backend."})
-	state.Apply(AssistantReconcile{Discard: true})
+	state.Apply(AssistantReconcile{Answer: agent.AnswerNarration})
 	if got := state.AssistantText(); got != "" {
 		t.Fatalf("AssistantText = %q, want the withdrawn narration gone", got)
 	}
 	state.Apply(ToolStarted{ID: "c1", Name: "read", At: time.Now()})
 	state.Apply(AssistantDelta{Text: "final answer"})
-	state.Apply(AssistantReconcile{Text: "final answer"})
+	state.Apply(AssistantReconcile{Text: "final answer", Answer: agent.AnswerCommitted})
 	state.Apply(AssistantDone{})
 	if got := state.AssistantText(); got != "final answer" {
 		t.Fatalf("AssistantText = %q, want only the accepted answer", got)
@@ -467,7 +470,7 @@ func TestAssistantReconcileDiscardsToolNarration(t *testing.T) {
 func TestAssistantReconcileRepairsADroppedDeltaWithoutDuplication(t *testing.T) {
 	state := New()
 	state.Apply(AssistantDelta{Text: "the first half"})
-	state.Apply(AssistantReconcile{Text: "the first half and the repaired second half"})
+	state.Apply(AssistantReconcile{Text: "the first half and the repaired second half", Answer: agent.AnswerCommitted})
 	if got := state.AssistantText(); got != "the first half and the repaired second half" {
 		t.Fatalf("AssistantText = %q", got)
 	}
@@ -476,14 +479,15 @@ func TestAssistantReconcileRepairsADroppedDeltaWithoutDuplication(t *testing.T) 
 	}
 }
 
-// A rejected answer already streamed as a normal block. It must not vanish
-// without a trace when the review asks for a correction: the text moves to a
-// labelled display-only draft, while AssistantText stays empty so copy and
-// persistence never treat it as the answer.
+// A terminal refusal already streamed as a normal block. It must not vanish
+// without a trace when the review refuses it: the text moves to a labelled
+// display-only draft, while AssistantText stays empty so copy and persistence
+// never treat it as the answer. The label carries the control-plane reason
+// verbatim; the renderer invents none.
 func TestAssistantReconcileKeepsRejectedAnswerAsWithdrawnDraft(t *testing.T) {
 	state := New()
 	state.Apply(AssistantDelta{Text: "There is no database."})
-	state.Apply(AssistantReconcile{Discard: true, Withdrawn: "answer review requested changes"})
+	state.Apply(AssistantReconcile{Answer: agent.AnswerRejected, Reason: "answer review requested changes"})
 	if got := state.AssistantText(); got != "" {
 		t.Fatalf("AssistantText = %q, want the withdrawn draft excluded", got)
 	}
@@ -510,7 +514,7 @@ func TestAssistantReconcileKeepsRejectedAnswerAsWithdrawnDraft(t *testing.T) {
 	if got := state.AssistantText(); got != "This project is a Go service." {
 		t.Fatalf("new candidate AssistantText = %q", got)
 	}
-	state.Apply(AssistantReconcile{Text: "This project is a Go service."})
+	state.Apply(AssistantReconcile{Text: "This project is a Go service.", Answer: agent.AnswerCommitted})
 	if got := state.AssistantText(); got != "This project is a Go service." {
 		t.Fatalf("committed AssistantText = %q", got)
 	}
@@ -530,7 +534,7 @@ func TestProvisionalAnswerCarriesDraftLabel(t *testing.T) {
 	if !strings.Contains(rendered.String(), "draft · answer review pending") {
 		t.Fatalf("provisional answer has no draft label:\n%s", rendered.String())
 	}
-	state.Apply(AssistantReconcile{Text: "candidate answer"})
+	state.Apply(AssistantReconcile{Text: "candidate answer", Answer: agent.AnswerCommitted})
 	entry = state.Entries[len(state.Entries)-1]
 	if entry.Provisional {
 		t.Fatal("committed answer is still provisional")
@@ -548,8 +552,8 @@ func TestProvisionalAnswerCarriesDraftLabel(t *testing.T) {
 func TestCommittedAnswerIsNeverRetracted(t *testing.T) {
 	state := New()
 	state.Apply(AssistantDelta{Text: "the committed answer"})
-	state.Apply(AssistantReconcile{Text: "the committed answer"})
-	state.Apply(AssistantReconcile{Discard: true, Withdrawn: "late correction"})
+	state.Apply(AssistantReconcile{Text: "the committed answer", Answer: agent.AnswerCommitted})
+	state.Apply(AssistantReconcile{Answer: agent.AnswerSuperseded})
 	if got := state.AssistantText(); got != "the committed answer" {
 		t.Fatalf("committed answer was retracted: %q", got)
 	}
@@ -564,12 +568,95 @@ func TestCommittedAnswerIsNeverRetracted(t *testing.T) {
 func TestWithdrawnDraftIsNotCopyableAsAnswer(t *testing.T) {
 	state := New()
 	state.Apply(AssistantDelta{Text: "There is no database."})
-	state.Apply(AssistantReconcile{Discard: true, Withdrawn: "answer review requested changes"})
+	state.Apply(AssistantReconcile{Answer: agent.AnswerRejected, Reason: "answer review requested changes"})
 	entry := state.Entries[len(state.Entries)-1]
 	if got := BlockCopyText(entry); strings.TrimSpace(got) != "" {
 		t.Fatalf("withdrawn draft copied as an answer: %q", got)
 	}
 	if got := state.AssistantText(); strings.TrimSpace(got) != "" {
 		t.Fatalf("withdrawn draft projected as an answer: %q", got)
+	}
+}
+
+// A completed transport has no streamed preview. A terminal refusal still
+// leaves exactly one accountable artifact, and a repeated settlement does not
+// duplicate it.
+func TestRejectedAnswerOpensOneArtifactWithoutAPreview(t *testing.T) {
+	state := New()
+	state.Apply(AssistantReconcile{
+		Text:   "There is no database.",
+		Answer: agent.AnswerRejected,
+		Reason: "the answer asserts a claim the run did not observe",
+	})
+	state.Apply(AssistantReconcile{
+		Text:   "There is no database.",
+		Answer: agent.AnswerRejected,
+		Reason: "the answer asserts a claim the run did not observe",
+	})
+	if got := state.AssistantText(); got != "" {
+		t.Fatalf("the refused answer entered the answer projection: %q", got)
+	}
+	var withheld []Entry
+	for _, entry := range state.Entries {
+		if entry.Kind == EntryAssistant && entry.Discarded {
+			withheld = append(withheld, entry)
+		}
+	}
+	if len(withheld) != 1 {
+		t.Fatalf("withheld artifacts = %d, want exactly one", len(withheld))
+	}
+	if withheld[0].WithdrawnText != "There is no database." ||
+		withheld[0].WithdrawnReason != "the answer asserts a claim the run did not observe" {
+		t.Fatalf("artifact = %+v", withheld[0])
+	}
+}
+
+// A turn boundary that never received a publication decision must not promote
+// the preview to an answer. Only AnswerCommitted settles text as an answer;
+// an unclassified preview is withdrawn, and the terminal footer carries the
+// real outcome.
+func TestAssistantDoneDoesNotPromoteAnUnclassifiedPreview(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "partial candidate"})
+	state.Apply(AssistantDone{})
+	if got := state.AssistantText(); got != "" {
+		t.Fatalf("an unclassified preview became the answer: %q", got)
+	}
+	entry := state.Entries[len(state.Entries)-1]
+	if !entry.Discarded {
+		t.Fatalf("unclassified preview was not withdrawn: %+v", entry)
+	}
+	if entry.WithdrawnText != "" || entry.WithdrawnReason != "" {
+		t.Fatalf("a turn with no review verdict was labelled as a refusal: %+v", entry)
+	}
+}
+
+// Cancellation is not an answer-review refusal. The partial text stays visible
+// as one display-only draft that names the interruption, and it never enters
+// the answer projection.
+func TestTurnCancelledLabelsTheDraftAsInterrupted(t *testing.T) {
+	state := New()
+	state.Apply(AssistantDelta{Text: "half an answer"})
+	state.Apply(TurnCancelled{At: time.Now()})
+	if got := state.AssistantText(); got != "" {
+		t.Fatalf("a cancelled partial answer was treated as a result: %q", got)
+	}
+	var entry *Entry
+	for i := range state.Entries {
+		if state.Entries[i].Kind == EntryAssistant {
+			entry = &state.Entries[i]
+		}
+	}
+	if entry == nil || !entry.Discarded || entry.WithdrawnText != "half an answer" {
+		t.Fatalf("cancelled draft state = %+v", entry)
+	}
+	if entry.WithdrawnReason != "the turn was interrupted" {
+		t.Fatalf("cancelled draft reason = %q", entry.WithdrawnReason)
+	}
+	var rendered strings.Builder
+	renderEntryContent(&rendered, *entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
+	if !strings.Contains(rendered.String(), "draft withdrawn") ||
+		!strings.Contains(rendered.String(), "interrupted") {
+		t.Fatalf("cancelled draft has no truthful label:\n%s", rendered.String())
 	}
 }

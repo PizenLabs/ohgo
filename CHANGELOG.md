@@ -204,6 +204,15 @@ immutable.
 
 ### Changed
 
+- Answer prose now carries one explicit runtime disposition
+  (`agent.AnswerDisposition`) instead of three independent booleans. The
+  publication gate classifies a turn as narration, superseded, terminal
+  rejection, or committed before any host sees it; the TUI, plain output, and
+  persistence project that decision instead of re-deriving it from empty text,
+  event order, or stream completion. A terminal rejection names the
+  control-plane reason verbatim, a non-streaming refusal still leaves one
+  labelled artifact, and an unclassified or interrupted preview is withdrawn
+  rather than promoted to an answer.
 - `make build` now uses the host toolchain. With a C compiler it compiles the
   pinned tree-sitter grammars, so TypeScript, TSX, JavaScript, Java, C#, Rust,
   Kotlin, Ruby, Python, C, and C++ are structurally observable. `make build-portable`

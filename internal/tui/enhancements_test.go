@@ -276,7 +276,7 @@ func TestLongTurnReachesTranscriptInOrder(t *testing.T) {
 			case AssistantDelta:
 				got += e.Text
 			case AssistantReconcile:
-				if e.Discard {
+				if e.Answer != agent.AnswerCommitted {
 					got = ""
 					continue
 				}
@@ -327,7 +327,7 @@ func TestRunTurnStreamsRealProviderDeltas(t *testing.T) {
 				deltaCount++
 				streamed.WriteString(e.Text)
 			case AssistantReconcile:
-				if !e.Discard {
+				if e.Answer == agent.AnswerCommitted {
 					reconciled = e.Text
 				}
 			case AssistantDone:
@@ -489,7 +489,7 @@ func TestAbandonedAnswerBeforeToolIsNotPublished(t *testing.T) {
 				got.WriteString(delta.Text)
 			}
 			if reconcile, ok := event.(AssistantReconcile); ok {
-				if reconcile.Discard {
+				if reconcile.Answer != agent.AnswerCommitted {
 					got.Reset()
 				} else {
 					got.Reset()

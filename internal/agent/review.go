@@ -186,6 +186,35 @@ func blocksPublication(issues []contract.GroundingIssue) bool {
 	return false
 }
 
+// maxAnswerReviewReason bounds the review boundary a host may show under a
+// refused answer. It is one sentence, not the claim list: the durable task
+// owns the bounded machine-readable issues.
+const maxAnswerReviewReason = 160
+
+// answerRejectionReason renders the one-line boundary for a terminal refusal.
+// The review prose wins because it is the audit's own wording; otherwise the
+// first claim names what was not established. It never formats a counter,
+// candidate number, or scheduler state, so a host can show it verbatim.
+func answerRejectionReason(reason string, issues []contract.GroundingIssue) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		for _, issue := range issues {
+			if detail := strings.TrimSpace(issue.Detail); detail != "" {
+				reason = detail
+				break
+			}
+			if claim := strings.TrimSpace(issue.Claim); claim != "" {
+				reason = fmt.Sprintf("the evidence review did not support %q", claim)
+				break
+			}
+		}
+	}
+	if reason == "" {
+		reason = "the evidence review did not approve this answer"
+	}
+	return boundRepair(strings.Join(strings.Fields(reason), " "), maxAnswerReviewReason)
+}
+
 // answerRepairKey identifies the claims a review rejected. It is the progress
 // signal for correction admission: a different set may earn the next pass,
 // while the same set terminates at review.

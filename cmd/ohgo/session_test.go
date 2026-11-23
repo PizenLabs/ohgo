@@ -95,36 +95,66 @@ func TestPersistTurnWritesTheTranscript(t *testing.T) {
 
 	turn := agent.Turn{
 		Assistant: ai.AssistantMessage{
+			Content: []ai.ContentBlock{ai.TextContent{Text: "here is the answer"}},
+			Model:   catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		},
+		Answer: agent.AnswerCommitted,
+	}
+	persistTurn(store, sess, turn)
+
+	// A tool round is investigation, not an answer. Its call and result are
+	// persisted; its preamble is not.
+	toolTurn := agent.Turn{
+		Assistant: ai.AssistantMessage{
 			Content: []ai.ContentBlock{
-				ai.TextContent{Text: "here is the answer"},
+				ai.TextContent{Text: "let me inspect it"},
 				ai.ToolCall{ID: "c1", Name: "read", Arguments: map[string]any{"path": "a"}},
 			},
 			StopReason: ai.StopToolUse,
 			Model:      catalog.MustResolve("anthropic/claude-sonnet-4-5"),
 		},
+		Answer: agent.AnswerNarration,
 		Results: []agent.ToolOutcome{{
 			CallID:   "c1",
 			ToolName: "read",
 			Result:   agent.Result{Text: "file contents"},
 		}},
 	}
-	persistTurn(store, sess, turn)
+	persistTurn(store, sess, toolTurn)
+
+	// A terminal refusal is not conversation. The durable task carries the
+	// review issues; the session must not replay the refused prose.
+	persistTurn(store, sess, agent.Turn{
+		Assistant: ai.AssistantMessage{
+			Content: []ai.ContentBlock{ai.TextContent{Text: "the unsupported answer"}},
+		},
+		Answer:       agent.AnswerRejected,
+		AnswerReview: "the answer asserts a claim the run did not observe",
+	})
 
 	messages, err := store.Messages(sess.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 {
-		t.Fatalf("persisted %d messages, want the assistant turn and the tool result", len(messages))
+	if len(messages) != 3 {
+		t.Fatalf("persisted %d messages, want the committed answer, the narration call, and the tool result", len(messages))
 	}
-	if messages[0].Role != "assistant" || !strings.Contains(messages[0].Text, "here is the answer") {
-		t.Errorf("assistant turn = %+v, want the model's text", messages[0])
+	if messages[0].Role != "assistant" || messages[0].Text != "here is the answer" {
+		t.Errorf("assistant turn = %+v, want the committed answer", messages[0])
 	}
-	if len(messages[0].Calls) != 1 || messages[0].Calls[0].ID != "c1" {
-		t.Errorf("assistant calls = %+v, want the tool call", messages[0].Calls)
+	if len(messages[1].Calls) != 1 || messages[1].Calls[0].ID != "c1" {
+		t.Errorf("assistant calls = %+v, want the tool call", messages[1])
 	}
-	if messages[1].Role != "toolResult" || messages[1].Text != "file contents" {
-		t.Errorf("tool result = %+v, want the executed result", messages[1])
+	if strings.Contains(messages[1].Text, "let me inspect it") {
+		t.Errorf("tool narration was persisted as conversation: %+v", messages[1])
+	}
+	if messages[2].Role != "toolResult" || messages[2].Text != "file contents" {
+		t.Errorf("tool result = %+v, want the executed result", messages[2])
+	}
+	for _, message := range messages {
+		if strings.Contains(message.Text, "the unsupported answer") {
+			t.Fatalf("the refused candidate was persisted: %+v", message)
+		}
 	}
 }
 

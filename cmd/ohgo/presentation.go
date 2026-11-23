@@ -30,7 +30,21 @@ func promptBlocks(opts options, extra string) []ai.SystemPromptBlock {
 // Answer-required control refusals are not actions the runtime performed; they
 // are projected out here as well as in the UI so the plain transcript never
 // shows an internal refusal as a tool failure.
+//
+// A terminal answer refusal is the one accountable artifact of its turn. The
+// plain surface names the withheld answer and the control-plane reason in one
+// line; it does not print the refused prose, because stdout is append-only and
+// script-visible. The full candidate stays in the run's completion input and
+// the durable task carries the bounded claim issues.
 func printTurn(out io.Writer, turn agent.Turn) {
+	if rejected, ok := turn.RejectedAnswer(); ok {
+		if reason := strings.TrimSpace(rejected.Reason); reason != "" {
+			_, _ = fmt.Fprintf(out, "answer withheld · %s\n", reason)
+		} else {
+			_, _ = fmt.Fprintln(out, "answer withheld")
+		}
+		return
+	}
 	turn = agent.TranscriptTurn(turn)
 	if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
 		return
