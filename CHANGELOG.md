@@ -255,6 +255,64 @@ immutable.
 
 ### Fixed
 
+- A shell command that ran to completion and returned a non-zero status is now
+  a negative observation (`command_failed`), not `tool_runtime_failed`. The
+  process started, produced output, and reported a result; treating a benign
+  probe such as `git log` on an unborn branch as a failed capability entered the
+  durable failure ledger, told the model "do not repeat bash", refused an
+  identical retry, and vetoed completion. A recognised check that exits non-zero
+  remains `verification_failed`. A proven empty namespace is an absence
+  observation even when git exits 128.
+- A mid-run turn that contains only hidden reasoning is no longer a silent end.
+  It produced neither a tool call nor an answer, so it cannot advance the run or
+  give the user a result. The loop spends one bounded `OutputRecoveryRequest`
+  asking for a concrete call or answer, and a second reasoning-only turn becomes
+  a recoverable `NO_MODEL_OUTPUT` review. The reasoning-only turn still never
+  enters provider conversation history.
+- Every stream consumer now drains `Events` with a context-aware, inactivity-
+  bounded loop. The context summarizer previously called `Stream.Result()`
+  without draining, so a summary longer than the event buffer deadlocked the
+  run; a large tool result that made compaction necessary could leave the TUI
+  busy indefinitely. `ai.DrainStreamHooks` selects on the context and a
+  five-minute idle bound, so a silent provider ends in `PROVIDER_STALLED`
+  rather than an unbounded wait. The summarizer cancels its request context on
+  return, so a stalled response is aborted rather than leaked.
+- A streamed tool call whose argument JSON ends mid-value is classified as
+  `TOOL_CALL_INCOMPLETE`, not a generic stream failure. The call never executes,
+  the run spends one bounded recovery request (large payloads are asked to be
+  split), and if recovery is unavailable the task stays resumable instead of
+  becoming FAILED. Earlier mutations remain authoritative. All providers share
+  the same typed `ai.ToolCallArgumentError`; a length-terminated response is
+  additionally marked as the output limit.
+- The default completion budget is the resolved model's output ceiling again.
+  `config.Default().MaxTokens` was 8192, so `resolveMaxTokens` never reached its
+  documented model-ceiling path and large writes were truncated mid-call. Zero
+  now means "use the model ceiling"; an explicit user value still wins and is
+  clamped to the ceiling.
+- `todo` no longer requires the model to restate a phase name. A phase is an
+  optional planning group, not the runtime's ASK/FUZZ/BUILD mode: `init`
+  creates `Tasks` when omitted, later operations infer a single existing group
+  or the unique group containing the named task, and multiple groups still
+  require an explicit choice. The schema names the distinction.
+- A withheld tool refusal now tells the model the current evidence stage, the
+  control-plane reason the tool was withheld, that no state changed, and which
+  actions remain offered. The structured `Details` carry the same facts for
+  audit. A capability transition no longer has to be rediscovered by probing.
+- Subagents inherit the serialized-syntax, execution-intent, and incomplete-
+  argument recovery directives plus the stream idle bound. A child that emitted
+  a recoverable protocol failure previously had no recovery path even when its
+  parent did.
+- A provider request or stream failure after at least one completed turn is a
+  review, not a terminal task failure. Earlier evidence and mutations stay
+  resumable; a failure before any turn keeps the existing FAILED verdict.
+- A Thought activity now reconciles at the answer boundary and at every run
+  terminal path. The committed answer could previously become visible while its
+  reasoning trace stayed open, so the TUI kept showing a growing
+  `Thought · 6m 2s` spinner beside the final answer. Applying the answer
+  disposition closes every open trace before the answer appears; completion and
+  cancellation reconcile any remaining trace and terminalize a call that never
+  reported an outcome. No timeout, text match, spinner reset, or renderer
+  heuristic is involved, and a terminal run now owns zero live activities.
 - Answer review no longer turns its internal candidate revisions into
   conversation. A streamed candidate is labelled `draft · answer review
   pending`; a candidate superseded by a bounded correction is withdrawn when

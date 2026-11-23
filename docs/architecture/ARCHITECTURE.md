@@ -513,6 +513,27 @@ reports each `ProviderRequested`, `ProviderRetrying`, `ProviderFailed`, and
 so the UI names the measured status, attempt, and backoff instead of showing
 "preparing workspace" through a hidden retry window.
 
+Draining is mandatory for every stream consumer. `Stream.Result` alone blocks
+while a producer fills the event channel, so a consumer that waits for the
+final message without consuming `Events` deadlocks once a response exceeds the
+buffer. `ai.DrainStreamHooks` is the one implementation: it selects on both the
+event channel and the caller's context, so cancellation is observable even
+when no event is ready, and it applies `ai.DefaultStreamIdleTimeout` (five
+minutes of inactivity, not total generation time). A silent transport therefore
+ends in `PROVIDER_STALLED`, a recoverable review verdict, instead of an
+indefinite busy state. The context summarizer and every other production
+consumer use the same drain path.
+
+Streamed tool-call argument JSON is decoded once the call closes. A payload
+that ends before the JSON value does is not a generic transport error and not
+an execution failure: `ai.ToolCallArgumentError` records the tool, whether the
+payload was incomplete or malformed, and whether the provider reported its
+output ceiling. No call from that turn is dispatched. The agent loop spends one
+bounded recovery request asking for complete arguments, and the directive asks
+a truncated large payload to be split rather than repeated. If recovery is
+unavailable or spent, the run reports `TOOL_CALL_INCOMPLETE`, a non-terminal
+review, so earlier mutations and the task checkpoint remain authoritative.
+
 Native tool calls and serialized tool calls inside assistant text are two
 transport representations of the same logical intent. Both converge on
 `ai.ToolCall`. A recognized serialized envelope is converted at the boundary;
@@ -617,6 +638,14 @@ or a click expands it to `- Thought · 6.5s` and a `│`-guided, muted amber
 italic body, bounded so one long trace cannot displace the answer. The completed
 `AssistantMessage` keeps the same thinking block, so a resumed transcript
 renders it without re-parsing provider output.
+
+Reasoning is transient activity with the same convergence rule as a tool.
+Applying the answer disposition reconciles every open trace before the answer
+(or its withdrawal) becomes visible. `AssistantDone` and `TurnCancelled`
+reconcile any trace still open and terminalize any call that never reported an
+outcome, so a terminal run owns zero live activities. The renderer projects the
+stored lifecycle; it never infers completion from elapsed time, spinner state,
+prose, or the absence of deltas.
 
 ## Completion, task state, and exit status
 
@@ -1165,9 +1194,11 @@ is structural, not advisory (`internal/agent/subagent.go`,
 `internal/execution/tools/task.go`):
 
 - The child inherits stream, model, tools, budget, approval, compaction,
-  summarizer. It drops `OnTurn`, `OnToolProgress`, `TransformContext`,
-  steering. It refuses: no system prompt (inheriting the parent's is an
-  identity leak), an empty task, a write tool under a read-only request.
+  summarizer, and the bounded protocol-recovery directives (serialized syntax,
+  execution intent, incomplete tool arguments, stream idle bound). It drops
+  `OnTurn`, `OnToolProgress`, `TransformContext`, steering. It refuses: no
+  system prompt (inheriting the parent's is an identity leak), an empty task,
+  a write tool under a read-only request.
 - The depth bound is baked into the tool set: a subagent at the cap is
   built without a task tool, so it cannot delegate however prompted.
   Default `--max-depth 1` means the top level may delegate once.
@@ -1302,13 +1333,25 @@ observation. Discovery reports `TierRead`; execution reports `TierExec`.
 Protocol/lifecycle failures are classified before a generic verdict:
 `NO_MODEL_OUTPUT`, `EXECUTION_INTENT_WITHOUT_TOOL`, and
 `TOOL_NORMALIZATION_FAILED` stop a run in which no requested action executed and
-are reported as review (non-terminal), preserving the task identity. Tool
+are reported as review (non-terminal), preserving the task identity. A turn that
+contains only hidden reasoning is the `NO_MODEL_OUTPUT` shape: one bounded
+recovery request asks for a concrete call or answer, and a second reasoning-only
+turn is a recoverable review, never a silent finish with no result. Tool
 outcomes carry a provider-agnostic `FailureClass` such as `tool_start_failed`,
-`tool_runtime_failed`, `tool_timeout`, `tool_cancelled`,
+`tool_runtime_failed`, `command_failed`, `tool_timeout`, `tool_cancelled`,
 `tool_authorization_denied`, `tool_capability_unavailable`,
 `verification_failed`, or `verification_insufficient`, so the UI can say whether
 failure happened before or after execution. A model claim, a tool emission, and a
 zero exit code remain distinct from verification and proof.
+
+A shell command that ran to completion and returned a non-zero status is
+`command_failed`, a negative observation rather than a capability failure: the
+process started, produced output, and reported a result. It stays an error for
+the model, but it does not enter the failure ledger, does not refuse an identical
+retry, and does not veto completion. A recognised check that exits non-zero is
+`verification_failed` instead, because it contradicts the final state the proof
+depends on. A proven empty namespace (`git log` on an unborn branch) is an
+absence observation even when git exits non-zero.
 
 An unavailable capability is its own terminal class. `agent.ErrCapabilityUnavailable`
 is returned before any provider request when the objective needs an operation no

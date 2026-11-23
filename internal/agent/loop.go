@@ -229,6 +229,27 @@ type Config struct {
 	// correctly serialized call without inventing arguments. Empty keeps the
 	// classification but does not spend the recovery request.
 	ProtocolRecoveryRequest string
+	// ToolArgumentRecoveryRequest is the directive carried once when a streamed
+	// tool call closed with incomplete or malformed argument JSON. Nothing from
+	// that call executed. The directive must ask for complete arguments and,
+	// when the payload was truncated by the output limit, for a smaller or
+	// split action; repeating the same oversized payload would truncate again.
+	// Empty keeps the classification but does not spend a recovery request.
+	ToolArgumentRecoveryRequest string
+	// OutputRecoveryRequest is the directive carried once when a mid-run turn
+	// contains only reasoning and produces neither a tool call nor visible
+	// answer text. That turn cannot change the runtime state or answer the
+	// user, so the run must not treat it as a clean stop. The directive asks
+	// for a concrete call or answer without repeating the planning. Empty
+	// returns the recoverable lifecycle stop immediately instead of spending
+	// a request that would be identical.
+	OutputRecoveryRequest string
+	// StreamIdleTimeout bounds how long one provider stream may go without an
+	// event before the run classifies it as a stalled transport. Zero uses
+	// ai.DefaultStreamIdleTimeout. It is an inactivity bound, not a total
+	// generation bound, so a long stream that keeps producing deltas is
+	// unaffected.
+	StreamIdleTimeout time.Duration
 	// CompletionReviewRequest is the directive carried once when a candidate
 	// answer fails the answer-level completion review. It must contain
 	// {{reason}}; the loop replaces it with the runtime's evidence reason. The
@@ -734,6 +755,9 @@ func New(cfg Config) (*Loop, error) {
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = DefaultMaxTurns
 	}
+	if cfg.StreamIdleTimeout <= 0 {
+		cfg.StreamIdleTimeout = ai.DefaultStreamIdleTimeout
+	}
 	explicitBudget := cfg.Budget != nil
 	if cfg.Budget == nil {
 		cfg.Budget = budget.New(budget.Limits{
@@ -1146,6 +1170,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// covers both a forced answer after refusals and a natural evidence
 	// boundary where the first answer request produced only reasoning.
 	answerRetried := false
+	// reasoningRetried bounds the recovery for a mid-run turn that produced
+	// only hidden reasoning. The turn cannot act or answer, so one directive
+	// asks for a concrete next output; a second reasoning-only turn is a
+	// recoverable lifecycle stop, not a deliberate finish.
+	reasoningRetried := false
 	// answerCorrections and correctionPending implement the bounded
 	// completion-review correction. The next request reopens the constructed
 	// tool surface so the model can acquire the missing evidence instead of
@@ -1163,9 +1192,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// executionRecoveryAttempted and normalizationRecoveryAttempted are the
 	// bounded protocol recoveries. Each is spent at most once per run and the
 	// run/turn budget still bounds the whole loop, so neither can become an
-	// infinite retry.
+	// infinite retry. argumentRecoveryAttempted is the same bound for a
+	// streamed tool call whose argument JSON never completed: the call was not
+	// executed, so one reduced re-emission is the only safe recovery.
 	executionRecoveryAttempted := false
 	normalizationRecoveryAttempted := false
+	argumentRecoveryAttempted := false
 	// executionIntentPending means the previous turn announced an action and
 	// the runtime asked for the actual call. If the next turn still has no
 	// call, the failure is classified as a protocol failure, never executed.
@@ -1478,6 +1510,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		runtimeBlocks = append(runtimeBlocks, l.cfg.RuntimeContext...)
 		runtimeBlocks = append(runtimeBlocks, nudges...)
 		activeTools := tools
+		surface := actionSurface{}
 		answerEligible := false
 		terminal := false
 		closed := false
@@ -1599,6 +1632,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			for _, tool := range activeTools {
 				report.ToolNames = append(report.ToolNames, tool.Name())
 			}
+			// The rejection path needs the same surface the projection just
+			// described. Passing it forward is what turns "tool not offered"
+			// into a recoverable instruction naming the stage, the control
+			// reason, and the actions that are still available.
+			surface.stage = report.Stage
+			if len(report.Excluded) > 0 {
+				surface.withheld = make(map[string]string, len(report.Excluded))
+				for _, entry := range report.Excluded {
+					if entry.Tool != "" && entry.Reason != "" {
+						surface.withheld[entry.Tool] = entry.Reason
+					}
+				}
+			}
 			report.Messages = len(requestMessages)
 			if l.cfg.OnProjection != nil {
 				l.cfg.OnProjection(report)
@@ -1682,7 +1728,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return turns, turnBudgetError(err)
 		}
 
-		stream, err := l.openStream(ctx, ai.Request{
+		// The request owns a cancellable context so the idle watchdog can abort
+		// a transport that has gone silent. Without the cancel, a stalled HTTP
+		// response would keep its goroutine alive after the run stopped waiting.
+		requestCtx, requestCancel := context.WithCancel(ctx)
+		stream, err := l.openStream(requestCtx, ai.Request{
 			Model:           l.model(),
 			Messages:        converted,
 			System:          requestSystem,
@@ -1694,12 +1744,34 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			SessionID:       l.cfg.SessionID,
 		})
 		if err != nil {
-			return turns, fmt.Errorf("agent: open stream: %w", err)
+			requestCancel()
+			return turns, fmt.Errorf("%w: %w", ErrProviderRequest, err)
 		}
 
-		assistant, err := l.drain(ctx, stream)
+		assistant, err := l.drain(requestCtx, stream, requestCancel)
+		requestCancel()
 		if err != nil {
-			return turns, fmt.Errorf("agent: stream: %w", err)
+			// A tool call whose arguments never completed is not an executed
+			// action and not a failed task. Nothing from that turn was
+			// dispatched, so one bounded re-emission with complete arguments
+			// is safe; a truncated payload is asked to be split rather than
+			// repeated. If the recovery is unavailable or already spent, the
+			// run stops as a recoverable protocol failure so the task remains
+			// resumable and earlier mutations stay authoritative.
+			if argumentErr := asToolArgumentError(err); argumentErr != nil {
+				if !argumentRecoveryAttempted && len(activeTools) > 0 &&
+					strings.TrimSpace(l.cfg.ToolArgumentRecoveryRequest) != "" &&
+					len(turns) < l.cfg.MaxTurns {
+					argumentRecoveryAttempted = true
+					nudges = append(nudges, l.cfg.ToolArgumentRecoveryRequest)
+					continue
+				}
+				return turns, fmt.Errorf("%w: %w", ErrToolCallIncomplete, argumentErr)
+			}
+			if errors.Is(err, ErrProviderStalled) {
+				return turns, err
+			}
+			return turns, fmt.Errorf("%w: %w", ErrProviderStream, err)
 		}
 		// The provider's own context count is the floor for the next
 		// compaction decision.
@@ -1814,6 +1886,32 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				reportTurn()
 				continue
 			}
+			// A mid-run turn that contains only hidden reasoning produced no
+			// action and no answer. It cannot change the runtime state or give
+			// the user a result, so treating it as a clean stop silently ends
+			// the run with neither. This is the shape a reasoning model takes
+			// when it exhausts the output budget on planning. Ask once for a
+			// concrete call or answer; a second reasoning-only turn is a
+			// recoverable lifecycle stop rather than a deliberate finish.
+			if strings.TrimSpace(assistant.Text()) == "" && !closed && !forceAnswer &&
+				!normalizationPending && !executionIntentPending &&
+				strings.TrimSpace(assistant.ThinkingText()) != "" &&
+				len(turns) < l.cfg.MaxTurns {
+				if directive := strings.TrimSpace(l.cfg.OutputRecoveryRequest); directive != "" && !reasoningRetried {
+					reasoningRetried = true
+					// Reasoning-only content has no replayable form, so the
+					// retry starts from the last conversational turn and the
+					// directive, not from the exhausted reasoning.
+					live = live[:len(live)-1]
+					origins = origins[:len(origins)-1]
+					nudges = append(nudges, directive)
+					reportTurn()
+					continue
+				}
+				reportTurn()
+				return turns, fmt.Errorf("%w: the model produced only reasoning and no tool call or answer",
+					ErrNoModelOutput)
+			}
 			// The surface was already answer-only and the model returned only
 			// reasoning. That is the same lifecycle failure one request later:
 			// the runtime asked for the answer, nothing executed, and the run
@@ -1920,7 +2018,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			}
 		}
 
-		outcomes, admissionErr := l.dispatch(ctx, activeByName, refusals, assistant, calls, turn, len(turns), edit)
+		outcomes, admissionErr := l.dispatch(ctx, activeByName, surface, refusals, assistant, calls, turn, len(turns), edit)
 		turn.Results = outcomes
 		l.markVerification(ctx, edit, outcomes)
 		for _, outcome := range outcomes {
@@ -2018,6 +2116,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			}
 			return turns, nil
 		}
+		// A closed surface can still receive a call with no accompanying prose.
+		// The model has now ignored the answer boundary once; spend the single
+		// bounded answer retry rather than falling straight into a hard block.
+		// The turn and its refusal stay in the live conversation so the model
+		// sees the consequence, and the retry is answer-only.
+		if answerRequired(outcomes) && !answerRetried &&
+			strings.TrimSpace(l.cfg.AnswerRequest) != "" && len(turns) < l.cfg.MaxTurns {
+			answerRetried = true
+			forceAnswer = true
+			nudges = append(nudges, l.cfg.AnswerRequest)
+			reportTurn()
+			continue
+		}
 		unproductiveTurns++
 		if unproductiveTurns < maxUnproductiveTurns {
 			reportTurn()
@@ -2036,8 +2147,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return turns, nil
 		}
 		// Nothing can execute, so a further tool turn cannot make progress.
-		// Close the action surface and ask for the answer instead of ending
-		// the run with a hard block; the answer remains a completion candidate.
+		// Close the action surface and ask for the answer instead of ending the
+		// run with a hard block; the answer remains a completion candidate.
 		// This applies only when an offered capability was refused: a model
 		// that keeps calling a withheld tool has already ignored the surface,
 		// and a model with no offered tools already had its answer-only turn.
@@ -2324,7 +2435,7 @@ func (l *Loop) convert(messages []Message, origins []ai.Provenance) ([]ai.Messag
 // runtime directive that the final answer would withhold, and the live text
 // stays a prefix of the completed text even when a trigger is split across
 // deltas.
-func (l *Loop) drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessage, error) {
+func (l *Loop) drain(ctx context.Context, stream *ai.Stream, cancel context.CancelFunc) (ai.AssistantMessage, error) {
 	var textSanitizer, thinkingSanitizer *answerStreamSanitizer
 	hooks := ai.DrainHooks{}
 	if l.cfg.OnTextDelta != nil {
@@ -2347,7 +2458,16 @@ func (l *Loop) drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessag
 			}
 		}
 	}
-	message, err := ai.DrainStreamHooks(ctx, stream, hooks)
+	message, err := ai.DrainStreamHooksIdle(ctx, stream, hooks, l.cfg.StreamIdleTimeout)
+	// An idle transport is aborted before returning: the provider goroutine
+	// must not keep reading a response the run has stopped waiting for. A
+	// parent cancellation has its own cause and is not reclassified.
+	if errors.Is(err, ai.ErrStreamStalled) {
+		if cancel != nil {
+			cancel()
+		}
+		err = fmt.Errorf("%w: %v", ErrProviderStalled, err)
+	}
 	if textSanitizer != nil {
 		if tail := textSanitizer.Flush(); tail != "" {
 			l.cfg.OnTextDelta(tail)
@@ -2367,6 +2487,27 @@ type runEdit struct {
 	txn     EditTransaction
 }
 
+// actionSurface is the projection's view of what the runtime offered for one
+// request. The loop passes it to dispatch so a withheld call can be refused
+// with the same stage and reason the projection already sent, instead of a bare
+// "not offered" that leaves the model to rediscover the surface by trial and
+// error. It is control data, never authority: the security gate still decides
+// every call that is offered.
+type actionSurface struct {
+	stage    string
+	withheld map[string]string
+}
+
+// asToolArgumentError extracts the provider-boundary classification for a
+// streamed tool call whose arguments could not be decoded.
+func asToolArgumentError(err error) *ai.ToolCallArgumentError {
+	var argumentErr *ai.ToolCallArgumentError
+	if errors.As(err, &argumentErr) {
+		return argumentErr
+	}
+	return nil
+}
+
 // dispatch runs a batch of tool calls.
 //
 // Calls marked exclusive run alone; shared calls run concurrently. Results are
@@ -2375,6 +2516,7 @@ type runEdit struct {
 func (l *Loop) dispatch(
 	ctx context.Context,
 	byName map[string]Tool,
+	surface actionSurface,
 	refusals map[string]string,
 	assistant ai.AssistantMessage,
 	calls []ai.ToolCall,
@@ -2439,7 +2581,7 @@ func (l *Loop) dispatch(
 		wg.Add(1)
 		go func(position int, call ai.ToolCall) {
 			defer wg.Done()
-			outcome := l.execute(ctx, byName, refusals, assistant, call, turn, turnIndex)
+			outcome := l.execute(ctx, byName, surface, refusals, assistant, call, turn, turnIndex)
 			l.noteEvidence(outcome.Result)
 			l.noteObservation(call, outcome.Result, turnIndex)
 			record(position, outcome)
@@ -2590,6 +2732,7 @@ func isExclusive(byName map[string]Tool, call ai.ToolCall) bool {
 func (l *Loop) execute(
 	ctx context.Context,
 	byName map[string]Tool,
+	surface actionSurface,
 	refusals map[string]string,
 	assistant ai.AssistantMessage,
 	call ai.ToolCall,
@@ -2707,29 +2850,33 @@ func (l *Loop) execute(
 				ToolName: call.Name,
 				Args:     call.Arguments,
 				Result: Result{
-					Text:              fmt.Sprintf("No tool is available in the current task stage; this call is not offered for the objective. Answer from the evidence already established. Ignored call: %q.", call.Name),
+					Text:              closedSurfaceRefusal(call.Name, surface),
 					IsError:           true,
 					FailureClass:      ToolFailureCapabilityUnavailable,
 					CandidateRejected: true,
 					AnswerRequired:    !policyRefusal,
+					Details:           refusalDetails(call.Name, surface, nil),
 				},
 			}
 		}
 		// A tool the loop was built with but the task-shaped projection
 		// withheld is a runtime action-space refusal, not an execution
-		// failure. The model is told which tools are still available;
-		// completion does not count the refusal as a failed call.
+		// failure. The model is told the stage, the control-plane reason, and
+		// which tools are still available, so recovery is a choice rather than
+		// another blind probe; completion does not count the refusal as a
+		// failed call.
 		if l.cfg.Project != nil && l.hasTool(call.Name) {
+			available := sorted(names)
 			return ToolOutcome{
 				CallID:   call.ID,
 				ToolName: call.Name,
 				Args:     call.Arguments,
 				Result: Result{
-					Text: fmt.Sprintf("Tool %q is not offered in the current task stage. Available tools: %s.",
-						call.Name, strings.Join(sorted(names), ", ")),
+					Text:              withheldSurfaceRefusal(call.Name, surface, available),
 					IsError:           true,
 					FailureClass:      ToolFailureCapabilityUnavailable,
 					CandidateRejected: true,
+					Details:           refusalDetails(call.Name, surface, available),
 				},
 			}
 		}
@@ -3133,6 +3280,70 @@ func sorted(values []string) []string {
 		}
 	}
 	return out
+}
+
+// refusalStage names the evidence-lifecycle stage for a refusal message. An
+// empty stage is a projection that did not report one; the message then omits
+// the parenthetical rather than inventing a value.
+func refusalStage(surface actionSurface) string {
+	if strings.TrimSpace(surface.stage) == "" {
+		return ""
+	}
+	return " (stage: " + surface.stage + ")"
+}
+
+// withheldSurfaceRefusal renders a recoverable action-space refusal.
+//
+// It answers the three questions a model needs to pick a different action:
+// what was requested, why the runtime withheld it, and what is still offered.
+// It never widens the surface and never executes the withheld call.
+func withheldSurfaceRefusal(name string, surface actionSurface, available []string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Tool %q is not offered in the current task stage%s. Nothing ran; no state changed.",
+		name, refusalStage(surface))
+	if reason := strings.TrimSpace(surface.withheld[name]); reason != "" {
+		sb.WriteString(" Runtime reason: " + reason + ".")
+	}
+	if len(available) > 0 {
+		sb.WriteString(" Available actions: " + strings.Join(available, ", ") + ".")
+		sb.WriteString(" Choose an available action, or answer from the evidence already observed.")
+	} else {
+		sb.WriteString(" No action is available; answer from the evidence already observed.")
+	}
+	return sb.String()
+}
+
+// closedSurfaceRefusal renders the answer-boundary refusal. The closed surface
+// has no action to choose, so the only valid recovery is prose.
+func closedSurfaceRefusal(name string, surface actionSurface) string {
+	text := fmt.Sprintf("No tool is available in the current task stage%s; this call is not offered for the objective.",
+		refusalStage(surface))
+	if reason := strings.TrimSpace(surface.withheld[name]); reason != "" {
+		text += " Runtime reason: " + reason + "."
+	}
+	text += fmt.Sprintf(" Answer from the evidence already established. Ignored call: %q.", name)
+	return text
+}
+
+// refusalDetails is the structured audit counterpart of a refusal message. It
+// lets a host or test inspect the stage, reason, state-change fact, and offered
+// actions without parsing prose.
+func refusalDetails(name string, surface actionSurface, available []string) map[string]any {
+	details := map[string]any{
+		"tool":          name,
+		"reason":        "tool_not_offered",
+		"state_changed": false,
+	}
+	if surface.stage != "" {
+		details["stage"] = surface.stage
+	}
+	if reason := surface.withheld[name]; reason != "" {
+		details["runtime_reason"] = reason
+	}
+	if available != nil {
+		details["available_tools"] = append([]string(nil), available...)
+	}
+	return details
 }
 
 // compactIfNeeded reduces live context when the projected next request no

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -118,6 +119,27 @@ func TestOllamaReassemblesToolCalls(t *testing.T) {
 // TestOllamaPreservesTextAfterNativeToolCall keeps the content sequence the
 // model produced: a call that arrives between two text chunks stays between
 // them, rather than being moved to the end.
+func TestOllamaMalformedToolArgumentsAreNeverDecodedAsEmpty(t *testing.T) {
+	// Ollama sends whole arguments per chunk. Treating an undecodable payload
+	// as an empty object could execute a call with defaults the model never
+	// chose, so it must fail as a typed argument error with no call produced.
+	h := newOllamaHarness(t, 200, []string{
+		`{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"write","arguments":"{\"path\":\"a.go\""}}]},"done":false}`,
+		`{"done":true,"done_reason":"tool_calls"}`,
+	})
+	msg, err := runOllama(t, h, ollamaTestModel(""))
+	var argumentErr *ToolCallArgumentError
+	if !errors.As(err, &argumentErr) {
+		t.Fatalf("error = %T %v, want *ToolCallArgumentError", err, err)
+	}
+	if argumentErr.Tool != "write" || !argumentErr.Incomplete {
+		t.Fatalf("argument error = %+v, want write/incomplete", argumentErr)
+	}
+	if calls := msg.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("calls = %+v, want none from a malformed payload", calls)
+	}
+}
+
 func TestOllamaPreservesTextAfterNativeToolCall(t *testing.T) {
 	h := newOllamaHarness(t, 200, []string{
 		`{"message":{"role":"assistant","content":"before"},"done":false}`,

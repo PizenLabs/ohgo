@@ -540,6 +540,15 @@ at a turn boundary is withdrawn, not promoted. A cancelled stream keeps its
 partial text as one display-only draft labelled with the interruption, never as
 an answer.
 
+The committed disposition is also the Thought boundary. Applying it reconciles
+every open reasoning trace before the answer becomes visible, so a frame can
+never show `Thought: ACTIVE` beside `Answer: FINAL`. Every run terminal path
+reconciles any remaining trace and terminalizes any call that never reported an
+outcome; `RunTerminal` therefore implies zero live activities. This is a
+lifecycle transition in the reducer, not a renderer heuristic: elapsed time,
+spinner state, prose patterns, and the absence of deltas never decide that an
+activity finished.
+
 A candidate is an internal `agent.AnswerDraft`, with a version, a
 `SUPERSEDES` link, and a sentence-sized claim ledger. Review is claim-scoped:
 only the claims an issue names become `REPAIR_REQUIRED`; the rest keep their

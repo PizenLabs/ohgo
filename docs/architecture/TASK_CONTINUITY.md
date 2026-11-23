@@ -269,6 +269,13 @@ todo labels as its plan. A todo is a model proposal, so it is plan context, neve
 a fact. Semantic reasoning, strategy, and hypotheses still require a host write;
 they are not inferred from model prose.
 
+A todo *phase* is an optional label for a group of tasks. It is deliberately
+unrelated to the runtime's ASK/FUZZ/BUILD phase, which is authority state owned
+by the control plane and never restated by the model. The todo tool owns its
+grouping: an omitted phase uses the single existing group, the unique group that
+contains the named task, or a default group on `init`. Multiple groups still
+require an explicit choice, and none of this can grant authority or completion.
+
 A new task starts with an empty session plan. The todo tool is a session-scoped
 owner, so the controller asks it to clear at the new-task boundary before the
 new checkpoint can snapshot it; the previous task keeps its own todo snapshot in

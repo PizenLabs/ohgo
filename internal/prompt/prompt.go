@@ -120,6 +120,18 @@ const ExecutionRecoveryRequest = `Runtime protocol recovery: your previous messa
 // re-emit the operation through the canonical tool channel.
 const ProtocolRecoveryRequest = `Runtime protocol recovery: your previous message contained serialized tool syntax that could not be normalized into a tool call. The malformed call was not executed. Re-emit the operation as a native tool call with complete arguments, or answer without protocol syntax. Do not repeat the serialized envelope.`
 
+// ToolArgumentRecoveryRequest is the one bounded correction the loop appends
+// when a streamed tool call closed with incomplete argument JSON. Nothing from
+// that call executed. The directive is runtime-authored and never persisted.
+const ToolArgumentRecoveryRequest = `Runtime protocol recovery: your previous tool call was not executed because its argument JSON was incomplete or could not be decoded. Re-emit the action with complete, valid arguments. If the payload is large, do not repeat the same oversized call: create a complete file first and make the remaining changes with smaller edits, or reduce the scope of this call. Nothing from the incomplete call changed the workspace.`
+
+// OutputRecoveryRequest is the one bounded correction the loop appends when a
+// mid-run turn contained only hidden reasoning and produced neither a tool call
+// nor visible answer text. The turn could not act or answer, so the directive
+// asks for the next concrete output without spending another response on
+// planning. It is runtime-authored and never persisted.
+const OutputRecoveryRequest = `Runtime recovery: your previous response produced no tool call and no answer, so nothing was executed and the user received no result. Produce the next concrete output now: either emit the actual tool call with complete arguments, or, if the evidence is sufficient, write the final answer. Do not restate the plan.`
+
 // CompletionReviewRequest is the one bounded correction the loop appends when a
 // candidate answer fails the answer-level completion review. The placeholder is
 // replaced with the runtime's evidence reason. The model may use an available

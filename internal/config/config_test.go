@@ -148,9 +148,11 @@ func TestLoadReturnsErrNotFoundForMissingFile(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
-	// Defaults must still be usable when no file exists.
-	if settings.MaxTokens <= 0 {
-		t.Error("default max tokens were not populated")
+	// Defaults must still be usable when no file exists. MaxTokens is
+	// deliberately zero: the resolved model's ceiling is the per-run budget,
+	// and a flat default would truncate large tool-call arguments.
+	if settings.MaxTokens != 0 {
+		t.Errorf("default max tokens = %d, want 0 (model ceiling)", settings.MaxTokens)
 	}
 	if settings.ThemePreference() != ThemeAuto {
 		t.Errorf("default theme = %q, want auto", settings.ThemePreference())

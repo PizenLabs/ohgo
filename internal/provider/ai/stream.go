@@ -7,7 +7,19 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
+
+// DefaultStreamIdleTimeout bounds how long a stream consumer waits for the
+// next event before declaring the transport stalled.
+//
+// A completion may legitimately take minutes before its first token on a slow
+// reasoning model, so the bound is generous. It is not optional: a provider
+// that keeps a connection open without producing events would otherwise leave
+// the run in a non-terminal busy state forever. The bound measures inactivity,
+// not total generation time, so a long stream that keeps emitting deltas is
+// unaffected.
+const DefaultStreamIdleTimeout = 5 * time.Minute
 
 // Sentinel errors returned by the streaming layer. Callers should match them
 // with errors.Is rather than comparing error strings.
@@ -16,6 +28,10 @@ var (
 	ErrStreamClosed = errors.New("ai: stream already closed")
 	// ErrStreamAborted means the caller's context was cancelled mid-stream.
 	ErrStreamAborted = errors.New("ai: stream aborted")
+	// ErrStreamStalled means the stream produced no event for the configured
+	// idle bound. It is a recoverable transport failure: no tool effect can
+	// have occurred merely by waiting, so the caller may resume or retry.
+	ErrStreamStalled = errors.New("ai: stream stalled without events")
 )
 
 // StreamEvent is one item published while a completion is generated.
@@ -140,6 +156,21 @@ func NewCompletedStream(msg AssistantMessage) *Stream {
 	return stream
 }
 
+// NewFailedStream returns a stream that yields the given partial message and
+// terminates with err.
+//
+// It exists for deterministic transports and tests that must exercise a
+// failure path without a provider server. The message is the partial state the
+// stream reached; a caller must never execute tool calls from a failed stream.
+// The Events channel is already drained and closed.
+func NewFailedStream(msg AssistantMessage, err error) *Stream {
+	stream := newStream(2)
+	stream.publish(context.Background(), EventStart{Message: msg})
+	stream.publish(context.Background(), EventError{Err: err})
+	stream.finish(msg, err)
+	return stream
+}
+
 // NewTextStream returns a stream that emits each delta as an EventTextDelta
 // before completing with their concatenation.
 //
@@ -223,29 +254,66 @@ func DrainStream(ctx context.Context, stream *Stream, onDelta func(string)) (Ass
 //
 // It is the single drain implementation: every consumer sees the same event
 // ordering and the same context-cancellation contract, whether it displays only
-// the answer or both the answer and the reasoning behind it.
+// the answer or both the answer and the reasoning behind it. It applies
+// DefaultStreamIdleTimeout so a transport that stops producing events cannot
+// hold the run forever.
 func DrainStreamHooks(ctx context.Context, stream *Stream, hooks DrainHooks) (AssistantMessage, error) {
+	return DrainStreamHooksIdle(ctx, stream, hooks, DefaultStreamIdleTimeout)
+}
+
+// DrainStreamHooksIdle is DrainStreamHooks with an explicit inactivity bound.
+// A non-positive idle disables the idle bound; context cancellation still
+// applies. Callers that own a run-level policy pass their own value.
+func DrainStreamHooksIdle(ctx context.Context, stream *Stream, hooks DrainHooks, idle time.Duration) (AssistantMessage, error) {
 	if stream == nil {
 		return AssistantMessage{}, errors.New("ai: nil stream")
 	}
-	for event := range stream.Events {
-		switch e := event.(type) {
-		case EventTextDelta:
-			if hooks.OnText != nil && e.Delta != "" {
-				hooks.OnText(e.Delta)
-			}
-		case EventThinkingDelta:
-			if hooks.OnThinking != nil && e.Delta != "" {
-				hooks.OnThinking(e.Delta)
-			}
-		}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var (
+		timer    *time.Timer
+		idleDone <-chan time.Time
+	)
+	if idle > 0 {
+		timer = time.NewTimer(idle)
+		defer timer.Stop()
+		idleDone = timer.C
+	}
+	for {
+		// Cancellation must be observable even while no event is ready. A
+		// range over Events only checks the context after a receive, so a
+		// transport that goes silent could never be interrupted.
 		select {
 		case <-ctx.Done():
 			return AssistantMessage{}, ctx.Err()
-		default:
+		case <-idleDone:
+			return AssistantMessage{}, ErrStreamStalled
+		case event, ok := <-stream.Events:
+			if !ok {
+				return stream.Result()
+			}
+			if timer != nil {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(idle)
+			}
+			switch e := event.(type) {
+			case EventTextDelta:
+				if hooks.OnText != nil && e.Delta != "" {
+					hooks.OnText(e.Delta)
+				}
+			case EventThinkingDelta:
+				if hooks.OnThinking != nil && e.Delta != "" {
+					hooks.OnThinking(e.Delta)
+				}
+			}
 		}
 	}
-	return stream.Result()
 }
 
 // ToolSpec describes one tool as sent to the model.

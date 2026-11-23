@@ -84,11 +84,12 @@ func TestWireRequestCarriesTheModelCeiling(t *testing.T) {
 	registry.SetBaseURL("anthropic", server.URL)
 
 	model := catalog.MustResolve("anthropic/claude-sonnet-4-5")
+	defaults := config.Default()
 	opts := options{
 		root:        t.TempDir(),
 		model:       model,
-		maxTokens:   resolveMaxTokens(config.Settings{}, model),
-		settings:    config.Default(),
+		maxTokens:   resolveMaxTokens(defaults, model),
+		settings:    defaults,
 		autoApprove: true,
 	}
 

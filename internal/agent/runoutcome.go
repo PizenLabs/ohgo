@@ -7,6 +7,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // RunVerdict is the terminal classification of a finished run, independent of
@@ -128,11 +129,26 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 		}
 		return RunNeedsReview, reason, nil
 	case errors.Is(err, ErrNoModelOutput), errors.Is(err, ErrExecutionIntentWithoutTool),
-		errors.Is(err, ErrToolNormalizationFailed):
-		// These are model/protocol lifecycle failures before any requested
-		// action executed. They are non-terminal: the task identity, evidence,
-		// and authority remain valid, so the human can retry the turn.
+		errors.Is(err, ErrToolNormalizationFailed), errors.Is(err, ErrToolCallIncomplete),
+		errors.Is(err, ErrProviderStalled), errors.Is(err, ai.ErrStreamStalled):
+		// These are model/protocol/transport lifecycle failures before any
+		// requested action executed. They are non-terminal: the task identity,
+		// evidence, and authority remain valid, so the human can retry the
+		// turn and earlier mutations stay authoritative. A stalled compaction
+		// summary reaches here wrapped by the compaction layer, which is why
+		// the provider-level sentinel is checked too.
 		return RunNeedsReview, strings.TrimPrefix(err.Error(), "agent: "), nil
+	case errors.Is(err, ErrProviderRequest), errors.Is(err, ErrProviderStream):
+		// A provider failure before any turn completed is the same terminal
+		// run failure the headless runner has always reported. After at least
+		// one completed turn, the task is not failed: real work and possibly
+		// a mutation exist, and marking them FAILED would make a resumable
+		// interruption look unrecoverable. Review preserves the checkpoint
+		// and the truthful reason.
+		if len(input.Turns) > 0 || input.Mutations.Captured {
+			return RunNeedsReview, strings.TrimPrefix(err.Error(), "agent: "), nil
+		}
+		return RunFailed, err.Error(), nil
 	case err != nil:
 		return RunFailed, err.Error(), nil
 	}

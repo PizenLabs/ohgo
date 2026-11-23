@@ -123,7 +123,7 @@ func Extract(obs Observation) []Event {
 			}
 
 			if outcome.Result.IsError {
-				if !outcome.Result.ObservedAbsence && outcome.Result.Exhausted == nil {
+				if !outcome.Result.NegativeObservation() && outcome.Result.Exhausted == nil {
 					failures = append(failures, failureAt{
 						position: position,
 						outcome:  outcome,

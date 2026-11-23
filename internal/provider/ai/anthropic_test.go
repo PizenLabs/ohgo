@@ -145,6 +145,80 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
 	}
 }
 
+func TestAnthropicCompleteInputAtBlockStartIsNotDiscarded(t *testing.T) {
+	// Some compatible gateways send the complete input object at block start
+	// instead of streaming fragments. content_block_stop must keep it rather
+	// than replacing it with the empty fragment buffer.
+	body := `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{"path":"/tmp/x.go"}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+`
+	server, _ := sseServer(t, body, 0)
+	provider := &AnthropicProvider{APIKey: "test-key", BaseURL: server.URL}
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     testModel(),
+		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "read x"}}}},
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	msg, err := stream.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	calls := msg.ToolCalls()
+	if len(calls) != 1 || calls[0].Arguments["path"] != "/tmp/x.go" {
+		t.Fatalf("calls = %+v, want the complete input preserved", calls)
+	}
+}
+
+func TestAnthropicTruncatedToolCallAtMessageStopIsIncomplete(t *testing.T) {
+	// Some gateways cut the stream without a content_block_stop. The buffered
+	// fragment must be classified as incomplete; it must not surface as a call
+	// with empty arguments that could execute with defaults.
+	body := `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"write","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a.go\""}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	server, _ := sseServer(t, body, 0)
+	provider := &AnthropicProvider{APIKey: "test-key", BaseURL: server.URL}
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     testModel(),
+		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "write"}}}},
+		MaxTokens: 64,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	msg, err := stream.Result()
+	if err == nil {
+		t.Fatalf("Result succeeded with an incomplete call: %+v", msg.ToolCalls())
+	}
+	var argumentErr *ToolCallArgumentError
+	if !errors.As(err, &argumentErr) || !argumentErr.Incomplete {
+		t.Fatalf("error = %T %v, want an incomplete ToolCallArgumentError", err, err)
+	}
+	if argumentErr.Tool != "write" {
+		t.Fatalf("tool = %q, want write", argumentErr.Tool)
+	}
+}
+
 func TestAnthropicStreamEmitsEventsInOrder(t *testing.T) {
 	server, _ := sseServer(t, anthropicTextStream, 0)
 	provider := &AnthropicProvider{APIKey: "test-key", BaseURL: server.URL}

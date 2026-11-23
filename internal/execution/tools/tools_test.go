@@ -319,8 +319,77 @@ func TestBashToolTreatsSearchNoMatchAsObservedAbsence(t *testing.T) {
 	if !failed.IsError || failed.ObservedAbsence {
 		t.Fatalf("a non-search exit 1 was recorded as absence: %+v", failed)
 	}
-	if failed.FailureClass != agent.ToolFailureRuntime {
-		t.Fatalf("failure class = %q, want %q", failed.FailureClass, agent.ToolFailureRuntime)
+	if failed.FailureClass != agent.ToolFailureCommand {
+		t.Fatalf("failure class = %q, want %q", failed.FailureClass, agent.ToolFailureCommand)
+	}
+	if !failed.NegativeObservation() {
+		t.Fatal("a completed non-zero command must be a negative observation, not a capability failure")
+	}
+}
+
+// A recognised check that exits non-zero is the opposite of a benign command
+// result: it contradicts the final state and must stay a hard failure.
+func TestBashToolFailedCheckIsVerificationFailure(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/fail\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "fail_test.go"), []byte("package fail\n\nimport \"testing\"\n\nfunc TestFail(t *testing.T) { t.Fatal(\"boom\") }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := NewBashTool(root).Execute(testContext(), map[string]any{"command": "go test ./..."})
+	if !result.IsError {
+		t.Fatal("a failed check must be an error")
+	}
+	if result.FailureClass != agent.ToolFailureVerification {
+		t.Fatalf("failure class = %q, want %q", result.FailureClass, agent.ToolFailureVerification)
+	}
+	if result.NegativeObservation() {
+		t.Fatal("a failed verification must not be a negative observation")
+	}
+}
+
+// git on an unborn branch exits 128 with no commits. That is a normal answer
+// about the repository, not a runtime failure; it must not poison completion
+// or make the shell look unavailable.
+func TestBashToolGitWithoutCommitsIsANegativeObservation(t *testing.T) {
+	root := t.TempDir()
+	tool := NewBashTool(root)
+	if result := tool.Execute(testContext(), map[string]any{"command": "git init -q"}); result.IsError {
+		t.Fatalf("git init failed: %s", result.Text)
+	}
+	result := tool.Execute(testContext(), map[string]any{
+		"command": "git status --short && git log --oneline -5",
+	})
+	if !result.IsError {
+		t.Fatal("the command exited non-zero and must stay an error for the model")
+	}
+	if !result.NegativeObservation() {
+		t.Fatalf("an unborn branch is an observation about the repository, not a runtime failure: %+v", result)
+	}
+	if result.FailureClass == agent.ToolFailureRuntime ||
+		result.FailureClass == agent.ToolFailureVerification {
+		t.Fatalf("failure class = %q, want an observation, not a capability failure", result.FailureClass)
+	}
+	if !strings.Contains(result.Text, "does not have any commits yet") {
+		t.Fatalf("text = %q, want git's own explanation preserved", result.Text)
+	}
+}
+
+// A bare non-zero exit with no absence or check classification is a completed
+// command, not a runtime failure.
+func TestBashToolNonZeroExitIsACompletedCommand(t *testing.T) {
+	result := NewBashTool(t.TempDir()).Execute(testContext(), map[string]any{
+		"command": "git log --oneline -5 2>/dev/null",
+	})
+	if !result.IsError {
+		t.Fatal("the command exited non-zero and must stay an error for the model")
+	}
+	if result.FailureClass != agent.ToolFailureCommand {
+		t.Fatalf("failure class = %q, want %q; text=%s", result.FailureClass, agent.ToolFailureCommand, result.Text)
+	}
+	if !result.NegativeObservation() {
+		t.Fatal("a completed non-zero command must not be a capability failure")
 	}
 }
 

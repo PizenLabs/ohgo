@@ -1100,15 +1100,17 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 	tool := outcome.ToolName
 
 	if outcome.Result.IsError {
-		// A diagnostic is not a repository observation. The one exception is a
-		// missing-file error, which establishes that the named path is absent.
-		// A turn made only of errors therefore never counts as stagnation: the
-		// model is correcting itself, not repeating a completed observation.
+		// A diagnostic is not a repository observation. The exceptions are a
+		// missing-file error, which establishes that the named path is absent,
+		// and a command that ran to completion with a non-zero status. In both
+		// cases the runtime performed the call, so the result is not a
+		// capability failure the next projection must refuse.
 		//
-		// The failure ledger is separate: an absence and a resource stop are
-		// successful control observations, while an execution failure is a
-		// capability fact the next projection must be able to refuse.
-		if !outcome.Result.ObservedAbsence && outcome.Result.Exhausted == nil {
+		// The failure ledger is separate: an absence, a completed command, and
+		// a resource stop are successful control observations, while an
+		// execution or verification failure is a capability fact the next
+		// projection must be able to refuse.
+		if !outcome.Result.NegativeObservation() && outcome.Result.Exhausted == nil {
 			s.recordFailure(outcome, seq)
 		}
 		changed := s.addError(outcome, path, seq)

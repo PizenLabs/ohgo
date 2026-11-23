@@ -164,6 +164,20 @@ type Result struct {
 	Exhausted *budget.ExhaustedError
 }
 
+// NegativeObservation reports an error result that is a completed negative
+// observation rather than a failed capability.
+//
+// It covers two shapes: a probe that established absence (a missing path, a
+// search with no match) and a command that ran to completion with a non-zero
+// status. In both the runtime performed the call and the output is a fact the
+// next turn can use. Completion must not treat either as an unrecovered failed
+// call, sufficiency must not count it as a failed action, and the failure
+// ledger must not refuse an identical retry. A recognised check that exits
+// non-zero keeps ToolFailureVerification, so it is deliberately not covered.
+func (r Result) NegativeObservation() bool {
+	return r.ObservedAbsence || r.FailureClass == ToolFailureCommand
+}
+
 // Rejected reports that the capability never ran the call because its
 // arguments or operation shape did not satisfy the capability's own contract.
 //

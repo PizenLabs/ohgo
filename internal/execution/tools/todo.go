@@ -207,6 +207,13 @@ func taskGlyph(status TaskStatus) string {
 	}
 }
 
+// defaultTodoPhase names the group used when the model does not supply one.
+// A todo phase is a planning label, not the runtime's ASK/FUZZ/BUILD mode, so
+// requiring the model to restate a phase before it can track work was a
+// needless failure mode. The tool owns this default; the model never has to
+// echo runtime state back to it.
+const defaultTodoPhase = "Tasks"
+
 // TodoTool is the model-facing task list.
 //
 // State is in-process rather than on disk: the original keeps it in the
@@ -224,7 +231,8 @@ func NewTodoTool() *TodoTool {
 	tool := &TodoTool{}
 	tool.Base = NewBase("todo",
 		"Track a task list for the current session. One task may be in progress "+
-			"at a time; starting one demotes the previous to pending.",
+			"at a time; starting one demotes the previous to pending. A phase is an "+
+			"optional planning group, not the runtime mode.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -237,8 +245,12 @@ func NewTodoTool() *TodoTool {
 					"description": "The operation to perform.",
 				},
 				"phase": map[string]any{
-					"type":        "string",
-					"description": "Phase name. Required by every op except view.",
+					"type": "string",
+					"description": "Optional planning group for this task list, for " +
+						"example \"build\" or \"investigate\". This is not the runtime " +
+						"mode (ASK/FUZZ/BUILD) and never needs to repeat it. When " +
+						"omitted, an existing single group is used or \"" +
+						defaultTodoPhase + "\" is created.",
 				},
 				"task": map[string]any{
 					"type":        "string",
@@ -326,6 +338,11 @@ func (t *TodoTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	phase, err = t.resolvePhase(op, phase, taskContent)
+	if err != nil {
+		return agent.ErrorResult("%v", err)
+	}
+
 	switch op {
 	case "init":
 		return t.doInit(phase, tasks)
@@ -350,9 +367,6 @@ func (t *TodoTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 
 // doInit replaces the list with one phase of tasks.
 func (t *TodoTool) doInit(phase string, tasks []string) agent.Result {
-	if phase == "" {
-		return agent.ErrorResult("init requires a phase name")
-	}
 	if len(tasks) == 0 {
 		return agent.ErrorResult("init requires at least one task")
 	}
@@ -380,9 +394,6 @@ func (t *TodoTool) doInit(phase string, tasks []string) agent.Result {
 
 // doAppend adds tasks to an existing phase, creating it when absent.
 func (t *TodoTool) doAppend(phase string, tasks []string) agent.Result {
-	if phase == "" {
-		return agent.ErrorResult("append requires a phase name")
-	}
 	if len(tasks) == 0 {
 		return agent.ErrorResult("append requires at least one task")
 	}
@@ -543,6 +554,59 @@ func (t *TodoTool) doUnblock(phase, content string) agent.Result {
 	return agent.Result{
 		Text:    fmt.Sprintf("Unblocked: %s\n\n%s", content, t.list.Render()),
 		Details: map[string]any{"op": "unblock", "phase": phase, "task": content},
+	}
+}
+
+// resolvePhase fills an omitted phase from the tool's own list.
+//
+// The tool is the owner of its groups, so it can resolve an omitted name
+// deterministically: a single existing group is unambiguous; a task content
+// that exists in exactly one group identifies that group; otherwise the model
+// must choose. For init/append the default group is created, which is what
+// makes a plan usable from the first call without a phase echo.
+func (t *TodoTool) resolvePhase(op, phase, content string) (string, error) {
+	if phase != "" {
+		return phase, nil
+	}
+	if len(t.list.Phases) == 1 {
+		return t.list.Phases[0].Name, nil
+	}
+	switch op {
+	case "init":
+		return defaultTodoPhase, nil
+	case "append":
+		if len(t.list.Phases) == 0 {
+			return defaultTodoPhase, nil
+		}
+		names := make([]string, 0, len(t.list.Phases))
+		for _, p := range t.list.Phases {
+			names = append(names, p.Name)
+		}
+		return "", fmt.Errorf("append: pass a phase name; the plan has multiple groups (%s)",
+			strings.Join(names, ", "))
+	case "start", "done", "rm", "drop", "block", "unblock":
+		if content != "" {
+			var matches []string
+			for _, p := range t.list.Phases {
+				if _, _, ok := t.list.Find(p.Name, content); ok {
+					matches = append(matches, p.Name)
+				}
+			}
+			if len(matches) == 1 {
+				return matches[0], nil
+			}
+			if len(matches) > 1 {
+				return "", fmt.Errorf("%s: task %q exists in multiple groups (%s); pass phase",
+					op, content, strings.Join(matches, ", "))
+			}
+		}
+		if len(t.list.Phases) == 0 {
+			return "", fmt.Errorf("%s requires an existing task; call init first", op)
+		}
+		return "", fmt.Errorf("%s: pass a phase name; task %q is not in a single group",
+			op, content)
+	default:
+		return phase, nil
 	}
 }
 

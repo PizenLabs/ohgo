@@ -37,9 +37,11 @@ const (
 	ToolDone ToolStatus = "done"
 	// ToolError means the tool completed with an error.
 	ToolError ToolStatus = "error"
-	// ToolCancelled means the turn was cancelled while the call was running.
-	// It is terminal and distinct from a tool failure: the operation never
-	// produced an outcome, so presenting it as an error would be false.
+	// ToolCancelled means the call did not produce an outcome: the turn was
+	// cancelled while it ran, or the run reached its terminal boundary before
+	// the call reported one. It is terminal and distinct from a tool failure:
+	// the operation never produced a result, so presenting it as an error
+	// would be false.
 	ToolCancelled ToolStatus = "cancelled"
 )
 
@@ -1190,6 +1192,11 @@ func (s *State) Apply(event Event) {
 		if s.Cancelled {
 			return
 		}
+		// A disposition is the control plane's authoritative answer boundary.
+		// Reconcile the open trace here, before the answer (or its withdrawal)
+		// becomes visible, so no frame can show Thought ACTIVE beside a final
+		// answer. This is a lifecycle transition, not a renderer guess.
+		s.reconcileReasoning(e.At)
 		if e.Answer != agent.AnswerCommitted {
 			// Only the response transaction's committed answer may replace a
 			// preview as an answer. A terminal refusal keeps its text for
@@ -1219,9 +1226,10 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		s.ProviderWait = nil
-		// Close the trailing assistant entry: without this the next turn would
-		// append to it and the transcript would read as one continuous answer.
-		s.closeReasoning(e.At)
+		// The run is terminal: every transient activity it owns converges
+		// before the footer lands. A dropped finish event or an unclassified
+		// trace must not survive as an orphaned spinner.
+		s.convergeTransientActivities(e.At)
 		// No reconcile arrived, so no publication decision classified this
 		// preview. It is withdrawn rather than promoted to an answer.
 		s.discardProvisionalAssistants(e.At, "")
@@ -1263,16 +1271,9 @@ func (s *State) Apply(event Event) {
 		s.ProviderWait = nil
 		s.lockTurnElapsed(e.At)
 		s.Queued = nil
-		s.closeReasoning(e.At)
 		// Cancellation is a deliberate abort: no dwell floor may leave a
 		// spinner behind after the turn has converged to cancelled.
-		for i := range s.Entries {
-			entry := &s.Entries[i]
-			if entry.Kind == EntryReasoning && entry.Reasoning != nil && entry.Reasoning.Closed {
-				entry.Reasoning.DwellUntil = time.Time{}
-				s.bumpEntry(i)
-			}
-		}
+		s.reconcileReasoning(e.At)
 		// A partial stream is not an answer; the human stopped the turn before
 		// any publication decision. Keep what they saw as one display-only
 		// draft and name the interruption, rather than sealing it as a result.
@@ -1286,16 +1287,14 @@ func (s *State) Apply(event Event) {
 			if entry.Kind != EntryTool || entry.Tool == nil {
 				continue
 			}
-			if entry.Tool.Status == ToolRunning {
+			if entry.Tool.Status == ToolRunning || entry.Tool.Status == ToolPending {
 				entry.Tool.Status = ToolCancelled
 				entry.Tool.Streaming = false
 				entry.Tool.Summary = "cancelled"
 				entry.Tool.Text = "cancelled"
+				entry.Tool.EndedAt = e.At
 				entry.Tool.DwellUntil = time.Time{}
 				s.bumpEntry(i)
-				if s.runningTools > 0 {
-					s.runningTools--
-				}
 				continue
 			}
 			if !entry.Tool.DwellUntil.IsZero() {
@@ -1303,6 +1302,7 @@ func (s *State) Apply(event Event) {
 				s.bumpEntry(i)
 			}
 		}
+		s.runningTools = 0
 		s.bumpTailToolRun()
 		s.appendTurnFooter(&TurnFooter{Kind: FooterCancelled}, e.At)
 		s.resetTelemetryStatus()
@@ -3448,27 +3448,99 @@ func (s *State) appendReasoning(text string, at time.Time) {
 	s.assignIdentity(len(s.Entries) - 1)
 }
 
-// closeReasoning marks the open reasoning trace finished at at.
+// closeReasoning marks every open reasoning trace finished at at.
+//
+// Only the trailing trace can receive deltas, but an earlier trace can be left
+// open when the control plane settles an answer or a tool without a text delta
+// first. Closing every trace is what makes the activity lifecycle converge: a
+// trace that can no longer grow is never allowed to keep a live spinner.
 //
 // When the runtime did not measure the end, the start is used: the duration is
 // then zero rather than growing with render time, which would fabricate time
 // the runtime never observed.
 func (s *State) closeReasoning(at time.Time) {
-	index := s.openReasoning()
-	if index < 0 {
-		return
-	}
-	reasoning := s.Entries[index].Reasoning
-	reasoning.Closed = true
-	if !reasoning.StartedAt.IsZero() {
-		if at.IsZero() {
-			at = reasoning.StartedAt
+	s.closeReasoningAt(at, true)
+}
+
+// reconcileReasoning closes every open trace at an authoritative boundary
+// without a dwell floor.
+//
+// The answer boundary and the run boundary are both terminal for thought: the
+// next frame must not show Thought still active beside a final answer. The
+// measured duration stays exact; only the transient live frame is dropped.
+func (s *State) reconcileReasoning(at time.Time) {
+	s.closeReasoningAt(at, false)
+}
+
+func (s *State) closeReasoningAt(at time.Time, holdDwell bool) {
+	for i := range s.Entries {
+		entry := &s.Entries[i]
+		if entry.Kind != EntryReasoning || entry.Reasoning == nil {
+			continue
 		}
-		reasoning.EndedAt = at
-		reasoning.DwellUntil = dwellUntil(reasoning.StartedAt, at)
+		reasoning := entry.Reasoning
+		if reasoning.Closed {
+			// A trace already closed by visible text can still be inside its
+			// dwell floor. An authoritative answer or run boundary ends that
+			// floor too, so no spinner survives beside a final answer.
+			if !holdDwell && !reasoning.DwellUntil.IsZero() {
+				reasoning.DwellUntil = time.Time{}
+				s.bumpEntry(i)
+			}
+			continue
+		}
+		reasoning.Closed = true
+		if !reasoning.StartedAt.IsZero() {
+			end := at
+			if end.IsZero() {
+				end = reasoning.StartedAt
+			}
+			reasoning.EndedAt = end
+			if holdDwell {
+				reasoning.DwellUntil = dwellUntil(reasoning.StartedAt, end)
+			} else {
+				reasoning.DwellUntil = time.Time{}
+			}
+		}
+		s.bumpEntry(i)
+		if holdDwell {
+			s.markAnimated(i)
+		}
 	}
-	s.bumpEntry(index)
-	s.markAnimated(index)
+}
+
+// convergeTransientActivities reconciles every activity the turn still owns at
+// its terminal boundary.
+//
+// The run terminal is authoritative even when the control plane published no
+// matching preview: a reasoning trace that can no longer grow is closed, and a
+// call that never reported an outcome becomes a terminal cancelled row rather
+// than an orphaned spinner. This is the reducer-level enforcement of "Run
+// terminal implies zero live activities"; renderers never infer it from time,
+// text, or the absence of deltas.
+func (s *State) convergeTransientActivities(at time.Time) {
+	s.reconcileReasoning(at)
+	for i := range s.Entries {
+		entry := &s.Entries[i]
+		if entry.Kind != EntryTool || entry.Tool == nil {
+			continue
+		}
+		tool := entry.Tool
+		switch tool.Status {
+		case ToolRunning, ToolPending:
+			tool.Status = ToolCancelled
+			tool.Streaming = false
+			tool.EndedAt = at
+			tool.DwellUntil = time.Time{}
+			s.bumpEntry(i)
+		default:
+			if !tool.DwellUntil.IsZero() {
+				tool.DwellUntil = time.Time{}
+				s.bumpEntry(i)
+			}
+		}
+	}
+	s.runningTools = 0
 }
 
 // openReasoning returns the trailing reasoning entry that can still grow, or
@@ -3834,6 +3906,10 @@ func (AssistantDelta) eventKind() string { return "assistant_delta" }
 // the preview as one labelled display-only draft; when no preview streamed
 // (a completed-transport response), Text opens that draft so the refusal is
 // still accountable. Every other disposition withdraws the preview outright.
+//
+// A disposition is also the Thought boundary. Applying it reconciles every open
+// reasoning trace before the answer is projected, so a final answer can never
+// appear beside an activity that still claims to be running.
 type AssistantReconcile struct {
 	// Text is the exact committed answer, or the withheld prose for
 	// AnswerRejected. It is ignored for other dispositions.

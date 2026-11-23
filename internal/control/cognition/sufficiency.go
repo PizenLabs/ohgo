@@ -172,7 +172,7 @@ func SummarizeExecution(turns []agent.Turn) ExecutionState {
 		for _, outcome := range turn.Results {
 			state.ToolCalls++
 			if outcome.Result.IsError {
-				if !outcome.Refused() && !outcome.Result.ObservedAbsence {
+				if !outcome.Refused() && !outcome.Result.NegativeObservation() {
 					state.FailedActions++
 					state.PendingFailures[outcome.ToolName]++
 				}

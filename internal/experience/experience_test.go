@@ -167,6 +167,26 @@ func TestMaterialFailureRemainsBlocking(t *testing.T) {
 	}
 }
 
+// A command that ran to completion and exited non-zero is an observation, not
+// a material capability failure. Learning "do not repeat bash" from a benign
+// git probe is what made the shell look unavailable for the rest of the task.
+func TestCompletedCommandExitIsNotAMaterialFailure(t *testing.T) {
+	obs := testObs(testShape(), []agent.Turn{turn(agent.ToolOutcome{
+		CallID:   "bash-1",
+		ToolName: "bash",
+		Args:     map[string]any{"command": "git status --short && git log --oneline -5"},
+		Result: agent.Result{
+			Text:    "fatal: your current branch 'main' does not have any commits yet\n[exit code 128]",
+			IsError: true, Executes: true, Finished: true,
+			FailureClass: agent.ToolFailureCommand,
+		},
+	})}, OutcomeNeedsReview)
+	events := Extract(obs)
+	if hasEvent(events, EventMaterialFailure) || hasEvent(events, EventRecoverableFailure) {
+		t.Fatalf("events = %+v, want no failure lesson for a completed command", events)
+	}
+}
+
 func TestSuccessfulShortcutCandidateIsPromotedAfterValidation(t *testing.T) {
 	obs := testObs(testShape(), []agent.Turn{
 		turn(readCall("1", "src/main.go"), readCall("2", "src/parser.go")),

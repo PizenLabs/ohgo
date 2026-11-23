@@ -720,7 +720,7 @@ func (a *bedrockAccumulator) applyBlockStop(raw []byte) error {
 	}
 	args, err := decodeJSONArgs(current.RawArguments())
 	if err != nil {
-		return err
+		return classifyToolArgumentError(current.Name, a.msg.StopReason, err)
 	}
 	current.Arguments = args
 	a.msg.Content[state.index] = current
@@ -732,7 +732,15 @@ func (a *bedrockAccumulator) applyBlockStop(raw []byte) error {
 func (a *bedrockAccumulator) finalize() error {
 	for index, state := range a.blocks {
 		if state.kind == "tool" {
-			return fmt.Errorf("ai: bedrock stream ended with an open tool call at block %d", index)
+			name := ""
+			if current, ok := a.msg.Content[state.index].(ToolCall); ok {
+				name = current.Name
+			}
+			return &ToolCallArgumentError{
+				Tool:       name,
+				Incomplete: true,
+				Err:        fmt.Errorf("bedrock stream ended before the tool call at block %d closed", index),
+			}
 		}
 	}
 	return nil

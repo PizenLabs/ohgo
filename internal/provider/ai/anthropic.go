@@ -517,9 +517,22 @@ func (a *anthropicAccumulator) apply(event sseEvent) error {
 	case "content_block_stop":
 		if target := a.blockAt(envelope.Index); target != nil {
 			if tc, ok := (*target).(ToolCall); ok {
-				args, err := decodeJSONArgs(tc.argumentsJSON)
-				if err != nil {
-					return err
+				args := tc.Arguments
+				// Anthropic normally streams arguments through
+				// input_json_delta, but a compatible gateway may send the
+				// complete input object in content_block_start. Only decode a
+				// non-empty fragment buffer; otherwise the already-decoded
+				// input is authoritative and must not be replaced by an empty
+				// map.
+				if strings.TrimSpace(tc.argumentsJSON) != "" {
+					decoded, err := decodeJSONArgs(tc.argumentsJSON)
+					if err != nil {
+						return classifyToolArgumentError(tc.Name, a.msg.StopReason, err)
+					}
+					args = decoded
+				}
+				if args == nil {
+					args = map[string]any{}
 				}
 				tc.Arguments = args
 				tc.argumentsJSON = ""
@@ -543,6 +556,23 @@ func (a *anthropicAccumulator) apply(event sseEvent) error {
 		}
 
 	case "message_stop":
+		// A stream can end before content_block_stop. If the accumulated
+		// argument JSON is complete it is still a canonical call; if it is
+		// not, it is an incomplete call that must never be dispatched. Either
+		// way the final message is the authoritative representation.
+		for index := range a.msg.Content {
+			tc, ok := a.msg.Content[index].(ToolCall)
+			if !ok || strings.TrimSpace(tc.argumentsJSON) == "" {
+				continue
+			}
+			args, err := decodeJSONArgs(tc.argumentsJSON)
+			if err != nil {
+				return classifyToolArgumentError(tc.Name, a.msg.StopReason, err)
+			}
+			tc.Arguments = args
+			tc.argumentsJSON = ""
+			a.msg.Content[index] = tc
+		}
 		if a.msg.StopReason == "" {
 			a.msg.StopReason = StopEndTurn
 		}

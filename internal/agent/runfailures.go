@@ -22,6 +22,21 @@ var (
 	// ErrToolNormalizationFailed means provider tool-call syntax could not be
 	// normalized into canonical calls after the bounded recovery request.
 	ErrToolNormalizationFailed = errors.New("agent: TOOL_NORMALIZATION_FAILED")
+	// ErrToolCallIncomplete means a streamed tool call closed with incomplete
+	// or malformed argument JSON. The call was never dispatched; the task and
+	// any earlier mutation remain valid, so the stop is recoverable.
+	ErrToolCallIncomplete = errors.New("agent: TOOL_CALL_INCOMPLETE")
+	// ErrProviderStalled means a provider stream produced no event for the
+	// configured inactivity bound. No tool from that request executed, so the
+	// stop is a recoverable transport failure rather than a failed task.
+	ErrProviderStalled = errors.New("agent: PROVIDER_STALLED")
+	// ErrProviderRequest means the provider request could not be opened at all.
+	// It is recoverable in the task sense: nothing ran, and earlier turns and
+	// mutations remain authoritative, so a later attempt can continue.
+	ErrProviderRequest = errors.New("agent: PROVIDER_REQUEST_FAILED")
+	// ErrProviderStream means an open provider stream failed before its
+	// canonical message completed. No call from that turn was dispatched.
+	ErrProviderStream = errors.New("agent: PROVIDER_STREAM_FAILED")
 	// ErrInvalidProviderContext means the assembled outbound conversation
 	// violates the provider-independent canonical contract. It is an internal
 	// construction/serialization failure, not a provider or model failure: the
@@ -35,11 +50,19 @@ var (
 // tool result crosses the durable evidence boundary, but the constants keep
 // the vocabulary from drifting into prose-matching.
 const (
-	ToolFailureUnsupported     = "tool_unsupported"
-	ToolFailureAuthorization   = "tool_authorization_denied"
-	ToolFailureDispatch        = "tool_dispatch_failed"
-	ToolFailureStart           = "tool_start_failed"
-	ToolFailureRuntime         = "tool_runtime_failed"
+	ToolFailureUnsupported   = "tool_unsupported"
+	ToolFailureAuthorization = "tool_authorization_denied"
+	ToolFailureDispatch      = "tool_dispatch_failed"
+	ToolFailureStart         = "tool_start_failed"
+	ToolFailureRuntime       = "tool_runtime_failed"
+	// ToolFailureCommand is a command that ran to completion and returned a
+	// non-zero exit status. The process started, produced output, and reported
+	// a result; nothing about the runtime is broken. It is a negative
+	// observation the model reads and adapts to, not a capability failure, so
+	// it must not be refused on retry or veto completion. A recognised check
+	// that exits non-zero is ToolFailureVerification instead, because it
+	// contradicts the final state the proof depends on.
+	ToolFailureCommand         = "command_failed"
 	ToolFailureTimeout         = "tool_timeout"
 	ToolFailureCancelled       = "tool_cancelled"
 	ToolFailureVerification    = "verification_failed"

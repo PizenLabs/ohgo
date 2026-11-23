@@ -411,7 +411,11 @@ type Compaction struct {
 // Default returns the built-in settings.
 func Default() Settings {
 	return Settings{
-		MaxTokens:       8192,
+		// Zero means "use the resolved model's output ceiling". A flat default
+		// here would silently cap every model at that value, which truncates a
+		// large file write mid-tool-call before the model can split it. The
+		// resolved budget is computed per run in cmd/ohgo/resolveMaxTokens.
+		MaxTokens:       0,
 		Reasoning:       false,
 		ReasoningEffort: "medium",
 		Approvals:       map[string]string{},
