@@ -5651,7 +5651,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if current, ok := p.terminalTaskContinuation(text); ok {
 		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 		p.publish(Notice{Text: terminalTaskNotice(current)})
-		p.publish(AssistantDone{Seq: seq})
+		p.publishCritical(AssistantDone{Seq: seq})
 		return
 	}
 
@@ -5697,7 +5697,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		case p.workspace.RestoreTaskAuthority != nil:
 			if err := p.workspace.RestoreTaskAuthority(); err != nil {
 				p.publish(Notice{Text: "task authority: " + err.Error()})
-				p.publish(AssistantDone{Seq: seq})
+				p.publishCritical(AssistantDone{Seq: seq})
 				return
 			}
 			if p.workspace.Current != nil {
@@ -5710,7 +5710,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			// its contract does not grant.
 			p.publish(Notice{Text: "task authority: the task runs under " + taskCurrent.Role +
 				" but no workspace owner can restore it"})
-			p.publish(AssistantDone{Seq: seq})
+			p.publishCritical(AssistantDone{Seq: seq})
 			return
 		}
 	}
@@ -5745,7 +5745,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			reason = "request refused by workspace authority"
 		}
 		p.publish(Notice{Text: reason})
-		p.publish(AssistantDone{Seq: seq})
+		p.publishCritical(AssistantDone{Seq: seq})
 		return
 	}
 
@@ -5796,7 +5796,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// cancelTurnNow, which is scoped to the active turn.
 	abortTurn := func(notice string) {
 		p.publish(Notice{Text: notice})
-		p.publish(AssistantDone{Seq: seq})
+		p.publishCritical(AssistantDone{Seq: seq})
 		p.mu.Lock()
 		p.cancelTurn = nil
 		p.mu.Unlock()
@@ -6703,7 +6703,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		// semantic cancellation already reached the transcript through
 		// TurnCancelled, so only real failures publish here.
 		if errors.Is(loopErr, context.Canceled) {
-			p.publish(TurnCancelled{Seq: seq, At: time.Now()})
+			p.publishCritical(TurnCancelled{Seq: seq, At: time.Now()})
 		} else if reviewNotice == "" {
 			// A review verdict already carries the reason in the single
 			// terminal footer; publishing the error above it would state the
@@ -6714,7 +6714,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// The terminal verdict is the single footer of the turn. The decision is
 	// derived from the runtime's own action, never from the model's closing
 	// sentence; a cancelled turn is closed by TurnCancelled in the same slot.
-	p.publish(AssistantDone{
+	p.publishCritical(AssistantDone{
 		Seq:    seq,
 		At:     time.Now(),
 		Footer: turnFooterForOutcome(action, reason, reviewNotice, loopErr, turns, activeAuthority),
@@ -7055,9 +7055,9 @@ func (p *Program) publishOK(event Event) bool {
 }
 
 // publishCritical delivers an event that must not be dropped: the exact
-// answer text and its withdrawal are state corrections, not previews. It
-// waits for the update goroutine instead of discarding under backpressure, and
-// still returns when the UI has shut down.
+// answer text, its withdrawal, and a turn's terminal transition are state
+// corrections, not previews. It waits for the update goroutine instead of
+// discarding under backpressure, and still returns when the UI has shut down.
 func (p *Program) publishCritical(event Event) {
 	select {
 	case p.events <- event:
