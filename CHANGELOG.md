@@ -244,6 +244,25 @@ immutable.
 - The verified footer counts successful `check` and `verify` outcomes as
   checks. A passing `check` run no longer sits beside "no checks run", which
   made a verified turn contradict its own evidence.
+- A package-qualified code reference is matched to the import path the source
+  actually read. An answer naming `cart.domain.Product` is supported by a file
+  that imports `.../cart/domain` and uses `domain.Product`; the literal dotted
+  spelling is no longer required, so a source-verified declaration does not
+  keep the correction loop alive. An invented package prefix is still rejected.
+- An explicit disclaimer ("No claim is made about `X`") is no longer reviewed
+  as an assertion of `X`. A model that withdraws an unsupported identifier
+  could not previously terminate: the retraction itself kept the entity audit
+  alive.
+- A `wc -l <path>` measurement is accepted as the line count for that path,
+  including when the command measured several files. A listing's byte size is
+  still not a line count, and another file's measurement does not satisfy the
+  claim.
+- A negative claim now carries the offsets of the sentence it was read from.
+  The review points the repair at the unsupported sentence, not the first
+  occurrence of the subject word. A manifest declaration ("no test scripts
+  declared") is a statement about the observed declaration list, not a
+  repository absence, and a static test inventory reports "0 test files"
+  rather than proving that tests do not exist.
 - The claim-level repair directive now follows every request in the correction
   window, not only the first. A window can span several model turns; a later
   turn without the named claims followed an unrelated evidence frontier and
