@@ -709,9 +709,9 @@ user's request before execution and the evidence the runtime observed.
   one labelled draft with the control-plane reason, and only a committed
   answer is the answer. A provisional preview is never promoted by a turn
   boundary; an interrupted preview is labelled as interrupted, not published.
-  The full-screen TUI and output-first live surface do not publish answer
-  deltas at all: the first answer prose a host may render is the committed
-  artifact, published once. Committed text is never withdrawn. A request that
+  The TUI may show streamed answer deltas only as a labelled provisional
+  preview. The committed disposition replaces that preview with the exact
+  answer or withdraws it; committed text is never withdrawn. A request that
   explicitly required external knowledge also needs
   a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from

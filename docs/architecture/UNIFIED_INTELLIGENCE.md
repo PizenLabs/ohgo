@@ -526,15 +526,17 @@ The runtime classifies every turn's assistant prose once, as
 
 | Disposition | Meaning | User-visible projection |
 |---|---|---|
-| `AnswerNarration` | A tool-round preamble or an abandoned plan. | Calls and results stay; prose is withheld. |
-| `AnswerSuperseded` | A bounded correction replaced the candidate. | Nothing; the candidate is internal repair context. |
+| `AnswerNarration` | A tool-round preamble or an abandoned plan. | Calls and results stay; any provisional prose preview is withdrawn. |
+| `AnswerSuperseded` | A bounded correction replaced the candidate. | The prior provisional preview is withdrawn; repair context is not retained as an answer. |
 | `AnswerRejected` | The publication review terminally refused the candidate. | Exactly one labelled draft, or the plain output's `answer withheld` line. `AnswerReview` carries the control-plane reason verbatim. |
 | `AnswerCommitted` | The response transaction accepted the answer. | The one answer, settled with its exact text. |
 
-No answer prose is normally user-visible before `AnswerCommitted`. The TUI
-does not publish answer deltas while a candidate can still be rejected or
-superseded; reasoning and tool activity remain live, and the committed answer
-is published once. The renderer does not infer a disposition from event order,
+No answer prose is presented as final before `AnswerCommitted`. The TUI may
+show streamed deltas as a clearly labelled provisional preview while a
+candidate is under review; reasoning and tool activity remain live as well.
+The committed answer replaces that preview with its exact text, while a
+narration, superseded, or rejected disposition withdraws or relabels it as
+specified above. The renderer does not infer a disposition from event order,
 empty text, stream completion, or its own audit read: an unclassified preview
 at a turn boundary is withdrawn, not promoted. A cancelled stream keeps its
 partial text as one display-only draft labelled with the interruption, never as
