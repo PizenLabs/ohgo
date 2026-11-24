@@ -1329,3 +1329,38 @@ func TestRunActivityListIsNotAnAbsenceClaim(t *testing.T) {
 		t.Fatal("a repository-wide absence was accepted")
 	}
 }
+
+// "No application or test run was performed" reports what this run did, not
+// what the repository contains. The observed project-analysis answer used this
+// wording while the inventory reported test files, and the audit treated the
+// leading list item as the absent thing. Execution negation and entity absence
+// are different claims: only the latter needs inventory coverage.
+func TestNoApplicationOrTestRunIsNotAnAbsenceClaim(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective:  "investigate this project and analyze what this project is about",
+		Action:     contract.GroundingInvestigate,
+		Scope:      contract.GroundingScope{Kind: contract.ScopeRepository},
+		Confidence: contract.GroundingConfidenceHigh,
+	})
+	turns := []Turn{{Results: []ToolOutcome{claimStructureTests(5, true)}}}
+
+	for _, answer := range []string{
+		"No application or test run was performed.",
+		"No application or test suite was performed.",
+		"No application or test was executed.",
+	} {
+		if claims := negativeClaims(answer); len(claims) != 0 {
+			t.Fatalf("%q produced absence claims: %+v", answer, claims)
+		}
+		if assessment := AssessGrounding(intent, turns, answer); !assessment.Pass() {
+			t.Fatalf("%q was reviewed: %s", answer, assessment.Reason())
+		}
+	}
+
+	// The control: a genuine repository absence still needs coverage. The
+	// observed test files contradict it, so accepting it would hide the bug.
+	if assessment := AssessGrounding(intent, turns,
+		"No application or test files exist in this repository."); assessment.Pass() {
+		t.Fatal("a genuine repository absence was accepted")
+	}
+}

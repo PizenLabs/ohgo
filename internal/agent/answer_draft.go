@@ -524,13 +524,31 @@ func salvageDraft(draft AnswerDraft) (string, AnswerDraft, bool) {
 	if len(repair) == 0 {
 		return "", draft, false
 	}
-	var b strings.Builder
+	units := splitAnswerUnits(draft.Text)
+	kept := make([]answerUnit, 0, len(units))
 	removed := 0
-	for index, unit := range splitAnswerUnits(draft.Text) {
+	for index, unit := range units {
 		if repair[index] {
 			removed++
+			// A clause can be separated from the previous clause by a
+			// semicolon or comma that belongs to the previous unit's
+			// separator. Deleting only the clause leaves that punctuation
+			// dangling and glues the next surviving unit onto it, producing
+			// text such as "…favicon; ## Purpose". Transfer the separator
+			// that followed the removed clause to the last survivor so the
+			// boundary remains grammatical.
+			if len(kept) > 0 && isClauseSeparator(kept[len(kept)-1].Sep) {
+				kept[len(kept)-1].Sep = separatorAfterRemoval(unit)
+			}
 			continue
 		}
+		kept = append(kept, unit)
+	}
+	if len(kept) == 0 {
+		return "", draft, false
+	}
+	var b strings.Builder
+	for _, unit := range kept {
 		b.WriteString(unit.Text)
 		b.WriteString(unit.Sep)
 	}
@@ -548,6 +566,48 @@ func salvageDraft(draft AnswerDraft) (string, AnswerDraft, bool) {
 		}
 	}
 	return text, salvaged, true
+}
+
+// isClauseSeparator reports a separator that joins two clauses of one sentence
+// rather than ending a sentence or paragraph. Removing the clause after it must
+// also remove the connector; otherwise the surviving punctuation dangles.
+func isClauseSeparator(sep string) bool {
+	trimmed := strings.TrimLeft(sep, " \t")
+	if trimmed == "" || strings.ContainsAny(trimmed, "\n.!?") {
+		return false
+	}
+	return strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, ",")
+}
+
+// separatorAfterRemoval returns the separator the previous survivor should keep
+// once unit is removed. The removed clause's own terminal punctuation and
+// separator replace the connector, so "a; b. c" becomes "a. c" and "a; b; c"
+// becomes "a; c". A heading after the removed clause keeps its paragraph break.
+func separatorAfterRemoval(unit answerUnit) string {
+	trimmed := strings.TrimLeft(unit.Sep, " \t")
+	if strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, ",") {
+		return unit.Sep
+	}
+	if end := terminalPunctuation(unit.Text); end != "" {
+		return end + unit.Sep
+	}
+	return unit.Sep
+}
+
+// terminalPunctuation returns the trailing sentence punctuation of a claim, or
+// "" when the text ended without one. The splitter keeps terminal punctuation
+// on the claim, so removing that claim would otherwise drop the only mark that
+// ended the sentence.
+func terminalPunctuation(text string) string {
+	text = strings.TrimRight(text, " \t\r\n")
+	for i := len(text) - 1; i >= 0; i-- {
+		switch text[i] {
+		case '.', '!', '?':
+			continue
+		}
+		return text[i+1:]
+	}
+	return text
 }
 
 // DraftAudit is the bounded audit projection of one draft. Hosts never need

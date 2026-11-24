@@ -1613,7 +1613,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// This never widens authority; every call still crosses grounding
 			// and the security gate, and a terminal capability/stall stop is
 			// not overridden.
-			if correcting && !terminal {
+			// A closed window is not an empty projected surface to recover from:
+			// when the allowance is spent, the projector has deliberately
+			// withdrawn every tool. Restoring the constructed set here would
+			// turn the "repair window is closed" notice into a lie and let a
+			// stale tool call execute after the lifecycle refused its budget.
+			if correcting && !terminal && l.remainingCorrectionCalls() > 0 {
 				if len(correctionSurface) > 0 {
 					activeTools = correctionSurface
 				} else {
