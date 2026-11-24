@@ -6336,9 +6336,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				At:     time.Now(), Seq: seq,
 			})
 		case agent.AnswerSuperseded:
-			candidate, _ := turn.SupersededCandidate()
+			// A bounded correction replaces this candidate internally. The
+			// event withdraws the provisional preview; the candidate text is
+			// audit lineage on the turn, never a transcript artifact.
 			p.publishCritical(AssistantReconcile{
-				Text: candidate, Answer: agent.AnswerSuperseded, At: time.Now(), Seq: seq,
+				Answer: agent.AnswerSuperseded, At: time.Now(), Seq: seq,
 			})
 		case agent.AnswerNarration:
 			p.publishCritical(AssistantReconcile{Answer: agent.AnswerNarration, At: time.Now(), Seq: seq})

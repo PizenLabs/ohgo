@@ -82,9 +82,9 @@ const (
 	// calls and their results remain visible; the prose does not.
 	AnswerNarration
 	// AnswerSuperseded is a candidate a bounded correction replaced. It is
-	// repair context for the model and a lifecycle record for a host: it may
-	// be shown only as a superseded candidate, never as the answer or as a
-	// withdrawal, and it is never persisted or replayed.
+	// internal repair context: no host may show it as an answer or as a
+	// withdrawal. Its lineage remains in the turn's draft audit, but its prose
+	// is withheld from the transcript, persistence, and replay.
 	AnswerSuperseded
 	// AnswerRejected is the terminal candidate the publication review
 	// refused. It is not conversation and not an answer. A host may project
