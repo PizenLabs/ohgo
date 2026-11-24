@@ -705,7 +705,8 @@ user's request before execution and the evidence the runtime observed.
   around it; a draft is never the user-visible answer. Empty or whitespace
   text is `NEEDS_REVIEW`. Every turn's prose carries one runtime disposition
   (`UNIFIED_INTELLIGENCE.md` §12.7):
-  narration and superseded candidates are withheld, a terminal refusal leaves
+  narration is withheld, a superseded candidate stays a visible lifecycle entry
+  that never becomes the answer (`UNIFIED_INTELLIGENCE.md` §12.7), a terminal refusal leaves
   one labelled draft with the control-plane reason, and only a committed
   answer is the answer. A provisional preview is never promoted by a turn
   boundary; an interrupted preview is labelled as interrupted, not published.
