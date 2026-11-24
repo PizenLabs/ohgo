@@ -255,6 +255,12 @@ immutable.
 
 ### Fixed
 
+- Deterministic claim salvage now consumes the clause connector when the
+  rejected claim was joined by a semicolon or comma. Removing
+  `no tests or package configuration were found` after `; ` previously left the
+  semicolon and glued the next heading into the committed answer
+  (`…; ## Purpose`). The surviving clause now ends with the removed clause's
+  terminal punctuation and paragraph break.
 - Browser verification now checks extracted page text instead of serialized
   HTML. Styled text split across adjacent elements and whitespace/layout
   boundaries no longer produce false failures, while markup-only content such
