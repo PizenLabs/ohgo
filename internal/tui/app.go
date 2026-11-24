@@ -6685,13 +6685,19 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			switch {
 			case hasOpenTaskItems(projection) || p.task.NeedsReview == nil:
 				// Work remains or no review seam is installed: the task stays
-				// active with the recorded error, never falsely done.
+				// active with the recorded error, never falsely done. The turn
+				// footer must not report a clean verification either: the
+				// answer was accepted but the task boundary did not complete.
+				if hasOpenTaskItems(projection) {
+					reviewNotice = "completion is not proven: work remains in the task plan"
+				}
 				p.PublishTask(projection)
 			default:
 				// The evaluator said complete but the durable task could not
 				// prove or commit it. Review is the truthful non-terminal
-				// transition.
-				p.PublishTask(p.task.NeedsReview("completion evidence: "+projection.Err, nil))
+				// transition, and the footer must carry the same verdict.
+				reviewNotice = "completion evidence: " + projection.Err
+				p.PublishTask(p.task.NeedsReview(reviewNotice, nil))
 			}
 			projection = TaskProjection{}
 		}
