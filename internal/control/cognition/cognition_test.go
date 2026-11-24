@@ -602,6 +602,15 @@ func (t testTool) Execute(agent.Context, map[string]any) agent.Result { return a
 func (t testTool) ActionClasses() []agent.ActionClass                 { return t.classes }
 func (t testTool) MutationOperations() []contract.ChangeOp            { return t.ops }
 
+// planTestTool is a plan owner. It exists so the candidate and render tests can
+// exercise agent.PlanReporter without importing the tool package.
+type planTestTool struct {
+	testTool
+	open []string
+}
+
+func (t planTestTool) OpenPlanItems() []string { return t.open }
+
 func TestCandidatesHideMutationWhenShapeForbidsIt(t *testing.T) {
 	tools := []agent.Tool{
 		testTool{name: "read", tier: agent.TierRead},
@@ -706,6 +715,85 @@ func TestRepositoryOverviewAtStageAnswerWithholdsAllTools(t *testing.T) {
 	}
 	if len(set.Excluded) == 0 || !strings.Contains(set.Excluded[0].Reason, "answer without further tools") {
 		t.Fatalf("the answer boundary was not explained: %+v", set.Excluded)
+	}
+}
+
+// The answer boundary closes observation, not plan bookkeeping. Withdrawing the
+// plan tool left an open plan frozen after the model had answered, and the
+// durable task then refused completion for work the model could no longer mark.
+func TestAnswerBoundaryKeepsThePlanTool(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "ask"})
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		planTestTool{
+			testTool: testTool{name: "todo", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionPlan}},
+			open:     []string{"trace the pipeline"},
+		},
+	}
+
+	evidence := NewEvidenceState()
+	for _, path := range []string{"README.md", "go.mod"} {
+		evidence.ObserveOutcome(agent.ToolOutcome{
+			CallID: "read-" + path, ToolName: "read", Args: map[string]any{"path": path},
+			Result: agent.Result{
+				Text: "1\tcontent", Details: map[string]any{
+					"path": path, "totalLines": 1, "offset": 1, "limit": 2000,
+				},
+			},
+		})
+	}
+	suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false)
+	if suff.Stage != StageAnswer {
+		t.Fatalf("sufficiency stage = %s, want answer", suff.Stage)
+	}
+	set := Candidates(shape, evidence, ExecutionState{}, tools, RepositoryFacts{}, suff)
+	if len(set.Tools) != 1 || set.Tools[0].Name() != "todo" {
+		t.Fatalf("offered tools = %+v, want only the plan tool", set.Tools)
+	}
+}
+
+// The runtime state names the open plan and the one action left at the answer
+// boundary. A model that only reads "answer from the evidence above" cannot
+// know the durable task will refuse completion for the plan it left open.
+func TestAnswerStateReportsOpenPlanAndReconciliation(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "ask"})
+	evidence := NewEvidenceState()
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-README.md", ToolName: "read", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{
+			Text: "1\tcontent", Details: map[string]any{
+				"path": "README.md", "totalLines": 1, "offset": 1, "limit": 2000,
+			},
+		},
+	})
+	suff := Sufficiency{State: Sufficient, Stage: StageAnswer}
+	plan := planTestTool{
+		testTool: testTool{name: "todo", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionPlan}},
+		open:     []string{"trace the pipeline", "check the tests"},
+	}
+	rendered := RenderState(shape, evidence, ExecutionState{}, suff,
+		CandidateSet{Tools: []agent.Tool{plan}}, 0, 0)
+	if !strings.Contains(rendered, "Plan: 2 open item(s)") ||
+		!strings.Contains(rendered, "trace the pipeline") ||
+		!strings.Contains(rendered, "Mark each done, or remove it if you will not do it") {
+		t.Fatalf("state = %q, want the open plan and the reconciliation rule", rendered)
+	}
+	if !strings.Contains(rendered, "Next action: reconcile the plan, then answer") {
+		t.Fatalf("state = %q, want reconciliation named as the next action", rendered)
+	}
+
+	reconciled := plan
+	reconciled.open = nil
+	rendered = RenderState(shape, evidence, ExecutionState{}, suff,
+		CandidateSet{Tools: []agent.Tool{reconciled}}, 0, 0)
+	if !strings.Contains(rendered, "The plan is reconciled and no evidence tool is available") {
+		t.Fatalf("state = %q, want the answer boundary after a reconciled plan", rendered)
 	}
 }
 

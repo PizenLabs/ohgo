@@ -271,7 +271,7 @@ type Config struct {
 	// the run so far and the candidate answer and returns a non-empty reason
 	// when the answer cannot be published as complete. It can only request a
 	// correction; authority, completion, and publication remain the runtime's.
-	// A nil hook accepts every answer.
+	// A nil hook accepts every answer with no open plan.
 	AnswerReview func(turns []Turn, answer string) string
 	// EvidenceGap returns the control plane's current evidence-frontier gap.
 	// It is read when an answer is reviewed and again when it is finalized.
@@ -993,7 +993,8 @@ func (l *Loop) SetConclusionMode(mode contract.ConclusionMode) {
 }
 
 // SetAnswerReview installs the bounded answer-level completion gate for the
-// next run, or nil to accept every answer. The gate can ask for bounded,
+// next run, or nil to accept every answer with no open plan. The gate can ask
+// for bounded,
 // progress-gated corrected answers; it cannot authorize an action, widen the
 // tool set beyond the loop's constructed capabilities, or mark the run
 // complete.
@@ -1601,10 +1602,21 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// withdraw every tool rather than trusting a projector to also
 			// return an empty slice. Otherwise a model could execute a call on
 			// a surface the runtime already declared closed.
+			//
+			// A plan tool is the exception at an answer boundary: it records
+			// the model's own guidance rather than evidence, and withdrawing it
+			// left an open plan frozen after the answer. Keeping only a plan
+			// tool with open items lets the model reconcile it; once the plan
+			// is closed, the surface is empty again. A terminal closure still
+			// withdraws everything: the task cannot progress.
 			if answerEligible || terminal {
-				activeTools = []Tool{}
+				if terminal {
+					activeTools = []Tool{}
+				} else {
+					activeTools = OpenPlanTools(activeTools)
+				}
 			}
-			closed = answerEligible || terminal || len(activeTools) == 0
+			closed = terminal || len(activeTools) == 0
 			// The previous answer failed the answer-level review. Reopen the
 			// surface the projection described for this correction request:
 			// the missing evidence may be one read away, while the projection
@@ -3154,7 +3166,10 @@ func (l *Loop) execute(
 	// Conclude records a control observation, not evidence. It must remain
 	// available after the evidence allowance is spent; refusing it forces
 	// another full answer and turns the terminal control action into a failure.
-	if l.correctionActive.Load() && call.Name != "conclude" {
+	// A plan tool is the same kind of control action: it records the model's own
+	// guidance and acquires no evidence, so spending the investigation allowance
+	// must not make an open plan impossible to reconcile before the answer.
+	if l.correctionActive.Load() && call.Name != "conclude" && !isPlanTool(tool) {
 		limit := int64(l.correctionToolBudget())
 		if used := l.correctionCalls.Add(1); used > limit {
 			return failClass(ToolFailureCorrectionBudget,

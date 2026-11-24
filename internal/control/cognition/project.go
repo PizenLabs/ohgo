@@ -386,14 +386,26 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		}
 	}
 	if correctionSpent && len(candidates.Tools) > 0 {
+		// The allowance buys evidence, not bookkeeping. Keeping the plan tool
+		// lets the model reconcile an open item before it answers; withdrawing
+		// it here left the durable task refusing a completion the model could
+		// no longer reach.
+		kept := agent.OpenPlanTools(candidates.Tools)
+		keptNames := make(map[string]bool, len(kept))
+		for _, tool := range kept {
+			keptNames[tool.Name()] = true
+		}
 		for _, tool := range candidates.Tools {
+			if keptNames[tool.Name()] {
+				continue
+			}
 			candidates.Excluded = append(candidates.Excluded, agent.CandidateExclusion{
 				Tool:   tool.Name(),
 				Reason: "the correction tool allowance is spent; answer from the evidence already observed",
 			})
 		}
-		candidates.Tools = []agent.Tool{}
-		candidates.AnswerOnly = true
+		candidates.Tools = kept
+		candidates.AnswerOnly = len(kept) == 0
 		suff.Next = nil
 	}
 
@@ -408,7 +420,11 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		// The allowance is enforced before execution. State the consequence,
 		// not the control-plane counter: a model told how many calls remain
 		// spends reasoning on the budget instead of the evidence.
-		state += "The repair window is closed. Answer from the evidence already observed; qualify or remove any claim that remains unsupported.\n"
+		if len(agent.OpenPlanItems(candidates.Tools)) > 0 {
+			state += "The repair window is closed. Reconcile the plan, then answer from the evidence already observed; qualify or remove any claim that remains unsupported.\n"
+		} else {
+			state += "The repair window is closed. Answer from the evidence already observed; qualify or remove any claim that remains unsupported.\n"
+		}
 	}
 	if len(advice.Hints) > 0 {
 		state = appendExperienceHints(state, advice.Hints, options.StateBlockBytes)

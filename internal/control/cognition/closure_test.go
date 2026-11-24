@@ -244,6 +244,38 @@ func TestSpentCorrectionClosesTheSurface(t *testing.T) {
 	}
 }
 
+// A spent correction still offers an open plan's tool. The allowance buys
+// evidence, not the bookkeeping whose absence leaves the durable task refusing
+// a completion the model can no longer reach.
+func TestSpentCorrectionKeepsAnOpenPlanTool(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "# Project\n\nA coding agent."),
+	)
+	plan := planTestTool{
+		testTool: testTool{name: "todo", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionPlan}},
+		open:     []string{"trace the pipeline"},
+	}
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		plan,
+	}
+	projected := NewProjector(shape, state, RepositoryFacts{Go: true}).Project(agent.ProjectionRequest{
+		Tools: tools, Correcting: true, CorrectionBudget: 0,
+	})
+	if len(projected.Tools) != 1 || projected.Tools[0].Name() != "todo" {
+		t.Fatalf("spent correction offered %+v, want only the open plan tool", projected.Report.ToolNames)
+	}
+	if !projected.Report.AnswerEligible {
+		t.Fatal("spent correction did not keep the answer boundary")
+	}
+	runtime := strings.Join(projected.Runtime, "\n")
+	if !strings.Contains(runtime, "Reconcile the plan") || !strings.Contains(runtime, "trace the pipeline") {
+		t.Fatalf("spent correction did not name the open plan:\n%s", runtime)
+	}
+}
+
 // During a bounded repair the review's claims are the actionable list. The
 // generic component frontier names unrelated work, and following it spends the
 // correction allowance on a component the answer was not asked about.

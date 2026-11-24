@@ -1,6 +1,10 @@
 package agent
 
-import "github.com/PizenLabs/ohgo/internal/control/contract"
+import (
+	"strings"
+
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+)
 
 // ActionClass is the kind of work a tool performs.
 //
@@ -69,6 +73,61 @@ type LanguageReporter interface {
 // the repository has at least one of those sources.
 type LanguageSetReporter interface {
 	SupportedLanguages() []string
+}
+
+// PlanReporter reports the open items of a mutable plan a tool owns.
+//
+// A plan is model guidance, not evidence: the runtime reads this report only so
+// an open plan cannot outlive the answer that ended the run. The tool remains
+// the plan's sole writer, and the runtime never infers progress from it.
+type PlanReporter interface {
+	OpenPlanItems() []string
+}
+
+// isPlanTool reports whether a tool is plan bookkeeping.
+func isPlanTool(tool Tool) bool {
+	return tool != nil && HasActionClass(tool, ActionPlan)
+}
+
+// OpenPlanTools returns the plan-owning tools that still have open items.
+//
+// The answer boundary keeps these tools and withdraws the rest: a reconciled
+// plan has nothing left to record, so its tool closes like any evidence tool.
+func OpenPlanTools(tools []Tool) []Tool {
+	var out []Tool
+	for _, tool := range tools {
+		reporter, ok := tool.(PlanReporter)
+		if !ok {
+			continue
+		}
+		for _, item := range reporter.OpenPlanItems() {
+			if strings.TrimSpace(item) != "" {
+				out = append(out, tool)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// OpenPlanItems returns the open items every plan-owning tool reports.
+//
+// It is a union with no inference: a tool that reports no plan contributes
+// nothing, and an empty result means no plan needs reconciliation.
+func OpenPlanItems(tools []Tool) []string {
+	var out []string
+	for _, tool := range tools {
+		reporter, ok := tool.(PlanReporter)
+		if !ok {
+			continue
+		}
+		for _, item := range reporter.OpenPlanItems() {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+	}
+	return out
 }
 
 // MutationReporter reports the repository change operations a tool performs.

@@ -155,6 +155,16 @@ func renderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	// drop — a briefing that hides which actions exist and why one is useless is
 	// worse than one that omits a frontier coordinate.
 	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
+	// The plan is the model's own guidance, so the runtime states its open
+	// items next to the actions that can close them. A plan item is not
+	// evidence and never changes the verdict; leaving it out let a model answer
+	// from a plan it had forgotten, which the durable task then refused to
+	// complete.
+	openPlan := agent.OpenPlanItems(candidates.Tools)
+	if len(openPlan) > 0 {
+		fmt.Fprintf(&suffLine, "Plan: %d open item(s) — %s. Mark each done, or remove it if you will not do it, before the final answer.\n",
+			len(openPlan), bound(strings.Join(openPlan, "; "), 260))
+	}
 	if len(candidates.Tools) == 0 &&
 		(candidates.AnswerOnly || suff.Stage == StageAnswer ||
 			suff.Stage == StageComplete || suff.Kind == BlockCapabilityFailure ||
@@ -172,6 +182,16 @@ func renderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 			suffLine.WriteString("Next action: report the lack of meaningful progress and the remaining evidence gap. Do not repeat the same observation; no tool is available.\n")
 		default:
 			suffLine.WriteString("Next action: answer from the evidence above. No tool is available.\n")
+		}
+	} else if (suff.Stage == StageAnswer || suff.Stage == StageComplete) && onlyPlanTools(candidates.Tools) {
+		// The answer boundary closed every evidence tool but kept the plan
+		// tool. The model must reconcile an open plan before it answers, or the
+		// durable task and the transcript will disagree about completion. A
+		// reconciled plan is not a reason to keep working.
+		if len(openPlan) > 0 {
+			suffLine.WriteString("Next action: reconcile the plan, then answer from the evidence above.\n")
+		} else {
+			suffLine.WriteString("Next action: answer from the evidence above. The plan is reconciled and no evidence tool is available.\n")
 		}
 	}
 	if len(candidates.Notices) > 0 {
@@ -634,6 +654,23 @@ func boundSections(sections []string, limit int) string {
 		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// onlyPlanTools reports whether every offered tool is plan bookkeeping.
+//
+// The answer boundary keeps plan tools so an open plan can be reconciled; when
+// no evidence tool remains, reconciliation is the only action before the
+// answer.
+func onlyPlanTools(tools []agent.Tool) bool {
+	if len(tools) == 0 {
+		return false
+	}
+	for _, tool := range tools {
+		if !agent.HasActionClass(tool, agent.ActionPlan) {
+			return false
+		}
+	}
+	return true
 }
 
 func uniqueStrings(values []string) []string {

@@ -80,12 +80,47 @@ func (l *Loop) ClearInformationalRepairs() {
 }
 
 // answerReviewReason runs the installed answer review, if any.
+//
+// An open plan is reviewed before the answer is published. The plan is the
+// model's own guidance, not evidence, so this can only ask for reconciliation:
+// the correction turn keeps the plan tool even after the evidence allowance is
+// spent. Without this gate a model could answer from a plan it had not closed,
+// and the durable task would then refuse a completion the model could no longer
+// reach.
 func (l *Loop) answerReviewReason(turns []Turn) string {
-	if l == nil || l.cfg.AnswerReview == nil || len(turns) == 0 {
+	if l == nil || len(turns) == 0 {
 		return ""
 	}
-	answer := turns[len(turns)-1].Assistant.Text()
-	return strings.TrimSpace(l.cfg.AnswerReview(turns, answer))
+	reason := ""
+	if l.cfg.AnswerReview != nil {
+		answer := turns[len(turns)-1].Assistant.Text()
+		reason = strings.TrimSpace(l.cfg.AnswerReview(turns, answer))
+	}
+	if plan := l.planReviewReason(); plan != "" {
+		if reason == "" {
+			return plan
+		}
+		return plan + "; " + reason
+	}
+	return reason
+}
+
+// planReviewReason reports an open plan as an answer-boundary correction.
+//
+// The report is a union of the plan owners' own state. It never judges whether
+// the plan was good, complete, or relevant; it only requires each item to reach
+// a terminal disposition before the answer.
+func (l *Loop) planReviewReason() string {
+	if l == nil {
+		return ""
+	}
+	items := OpenPlanItems(l.cfg.Tools)
+	if len(items) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"the task plan still has %d open item(s) (%s); mark each done, or remove it if you will not do it, with the plan tool before the final answer. A blocked item keeps the task open",
+		len(items), boundRepair(strings.Join(items, "; "), 240))
 }
 
 // answerRepairs runs the installed claim-level planner, if any.
