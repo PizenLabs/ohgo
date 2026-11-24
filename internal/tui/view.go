@@ -2062,10 +2062,11 @@ func assistantDisplay(entry Entry) (text, label string) {
 		return entry.WithdrawnText, "draft withdrawn · " + reason
 	}
 	if entry.Superseded {
-		// The label states the lifecycle fact at any render time. The link to
-		// the committed answer lives in SupersededBy; scrollback is sealed
-		// before the answer may exist, so the label must not depend on it.
-		return entry.SupersededText, "candidate · superseded"
+		// A superseded candidate is internal repair lineage, not transcript
+		// content. The reducer already moved its text out of AssistantText;
+		// returning no projection here keeps SupersededText audit-only even if
+		// a future display path is added.
+		return "", ""
 	}
 	if entry.Provisional {
 		return entry.AssistantText, "draft · answer review pending"
