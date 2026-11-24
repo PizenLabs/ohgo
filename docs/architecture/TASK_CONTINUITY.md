@@ -916,7 +916,13 @@ Specific rules:
   change, not every current check;
 - open todo work refuses completion and leaves the task active; a fully
   completed todo list is not evidence for a mutation or execution objective,
-  because the todo tool records a model plan and not an observed result;
+  because the todo tool records a model plan and not an observed result. The
+  answer boundary keeps an open plan's tool offered after it closes every
+  evidence tool, and an answer with open items is sent back for one bounded
+  reconciliation before publication. The plan tool is bookkeeping, not
+  evidence, so the correction allowance does not consume it. An unreconciled
+  plan leaves the task `RUNNING` and renders a review footer, never a clean
+  verification;
 - a non-complete evaluation is refused;
 - a task must be `RUNNING`: `PAUSED` and `NEEDS_REVIEW` resume through `Begin`
   first, so the boundary that reconciles the live workspace is not skipped.

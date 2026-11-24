@@ -255,6 +255,20 @@ immutable.
 
 ### Fixed
 
+- An open task plan can no longer outlive the answer that ended the run. The
+  answer boundary used to withdraw every tool, including `todo`, then tell the
+  model to answer; the durable task then refused completion for the plan the
+  model could no longer update, while the transcript still showed a clean
+  verification. Plan tools now remain offered at the answer boundary, the
+  runtime state names the open items and the reconciliation step, and a
+  completion refused for outstanding work renders a review footer instead of a
+  verified one.
+- A line-count claim that names a brace-expanded component set now accepts a
+  whole-file read under one of those components when its measured total matches.
+  A repository analysis that says `internal/parser/{golang,...}` and annotates
+  the Go extractor with the parser file's line count no longer enters
+  `NEEDS_REVIEW` merely because the component set is not itself a file path.
+  A bare count with no coordinate still requires its own observed measurement.
 - A candidate superseded by the answer audit no longer survives as a visible
   transcript block. The runtime already classified it as internal repair
   context, but the live TUI path published its text as a lifecycle entry and

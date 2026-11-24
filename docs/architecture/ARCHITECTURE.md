@@ -732,9 +732,10 @@ user's request before execution and the evidence the runtime observed.
   matches one — preferring the specific subject over the bare noun a pattern
   matched — names that observation instead of asking for coverage the run
   already has. A
-  concrete line count needs the read's measurement, an independent-deployment
-  conclusion needs a deployment artifact, and a path-scoped inference needs an
-  observation of that path. The evaluator does not judge answer relevance beyond
+  concrete line count needs the read's measurement — a named file, or a
+  whole-file read under a named brace-expanded component set — an
+  independent-deployment conclusion needs a deployment artifact, and a
+  path-scoped inference needs an observation of that path. The evaluator does not judge answer relevance beyond
   these deterministic provenance and claim-scope boundaries.
 - **TUI task path.** `task.Begin` persists the contract, the pre-run target
   snapshot, and later the review reason. `NEEDS_REVIEW` is non-terminal. A
