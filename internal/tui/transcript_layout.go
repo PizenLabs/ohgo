@@ -352,6 +352,8 @@ func fixtureRevision(entry Entry) uint64 {
 	_, _ = h.Write([]byte(entry.AssistantText))
 	_, _ = h.Write([]byte(entry.WithdrawnText))
 	_, _ = h.Write([]byte(entry.WithdrawnReason))
+	_, _ = h.Write([]byte(entry.SupersededText))
+	_, _ = h.Write([]byte(entry.SupersededBy))
 	if entry.Reasoning != nil {
 		_, _ = h.Write([]byte(entry.Reasoning.Text))
 		if entry.Reasoning.Expanded {

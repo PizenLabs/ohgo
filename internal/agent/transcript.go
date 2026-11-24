@@ -92,6 +92,21 @@ func (t Turn) RejectedAnswer() (RejectedAnswer, bool) {
 	return RejectedAnswer{Text: text, Reason: strings.TrimSpace(t.AnswerReview)}, true
 }
 
+// SupersededCandidate is the display text of a candidate a bounded correction
+// replaced. A host keeps it as a lifecycle record of what was emitted before
+// the investigation continued. It is never the answer, never persisted, and
+// never replayed to the model.
+func (t Turn) SupersededCandidate() (string, bool) {
+	if t.Answer != AnswerSuperseded {
+		return "", false
+	}
+	text := SanitizeAnswerText(t.Assistant.Text())
+	if strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	return text, true
+}
+
 func TranscriptTurn(turn Turn) Turn {
 	// A terminal refusal is not conversation. Its prose is projection-only
 	// (RejectedAnswer above), and its results are empty by construction: the

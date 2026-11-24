@@ -97,6 +97,18 @@ type Entry struct {
 	// WithdrawnReason is the control-plane review boundary that withdrew the
 	// draft, verbatim. The renderer never synthesises or substitutes one.
 	WithdrawnReason string
+	// Superseded marks an answer candidate that a bounded correction replaced.
+	// It is a lifecycle state, not a withdrawal: the candidate was visibly
+	// emitted, investigation continued, and the entry stays in the transcript
+	// so the record of what was said is never silently rewritten. Like a
+	// withdrawn draft it is display-only: AssistantText stays empty.
+	Superseded bool
+	// SupersededText is the candidate text a correction replaced.
+	SupersededText string
+	// SupersededBy names the committed answer that replaced this candidate. It
+	// stays empty while the candidate is unresolved: the turn ended without a
+	// final answer, or the investigation has not finished yet.
+	SupersededBy BlockID
 	// Reasoning is set when Kind is EntryReasoning: the model's own thinking
 	// trace, represented as a block rather than inferred from prose.
 	Reasoning *ReasoningEntry
@@ -1200,7 +1212,13 @@ func (s *State) Apply(event Event) {
 		if e.Answer != agent.AnswerCommitted {
 			// Only the response transaction's committed answer may replace a
 			// preview as an answer. A terminal refusal keeps its text for
-			// display; narration and superseded candidates disappear.
+			// display. A superseded candidate stays as a lifecycle entry: its
+			// investigation continues, so it must not vanish. Narration is not
+			// a candidate and is withdrawn.
+			if e.Answer == agent.AnswerSuperseded {
+				s.supersedeCandidate(e.Text, e.At)
+				return
+			}
 			if e.Answer == agent.AnswerRejected {
 				if s.lastProvisionalAssistant() < 0 {
 					s.appendWithheldAssistant(e.Text, e.Reason, e.At)
@@ -3420,7 +3438,7 @@ func (s *State) openAssistant() int {
 		return -1
 	}
 	last := len(s.Entries) - 1
-	if s.Entries[last].Kind != EntryAssistant || s.Entries[last].Discarded {
+	if s.Entries[last].Kind != EntryAssistant || s.Entries[last].Discarded || s.Entries[last].Superseded {
 		return -1
 	}
 	return last
@@ -3641,6 +3659,7 @@ func (s *State) settleAssistant(text string, at time.Time) {
 		s.assignIdentity(index)
 		s.assistantText = true
 		s.closedAssistant = false
+		s.resolveCandidates(index)
 		return
 	}
 	entry := &s.Entries[index]
@@ -3648,6 +3667,77 @@ func (s *State) settleAssistant(text string, at time.Time) {
 	entry.Provisional = false
 	s.assistantText = true
 	s.bumpEntry(index)
+	s.resolveCandidates(index)
+}
+
+// supersedeCandidate keeps a candidate a bounded correction replaced. The
+// correction is an investigation step, not a verdict on the candidate: the
+// text stays in the transcript as a superseded entry until the committed
+// answer names it as replaced. A streamed preview is converted in place so the
+// entry keeps its identity and position; a non-streaming transport appends one.
+// Empty text with no preview has nothing to keep and changes nothing.
+func (s *State) supersedeCandidate(text string, at time.Time) {
+	index := s.lastProvisionalAssistant()
+	if strings.TrimSpace(text) == "" && index >= 0 {
+		text = s.Entries[index].AssistantText
+	}
+	if strings.TrimSpace(text) == "" {
+		if index >= 0 {
+			s.discardProvisionalAssistant(at, "")
+		}
+		return
+	}
+	s.closedAssistant = true
+	if index < 0 {
+		s.Entries = append(s.Entries, Entry{
+			Kind:           EntryAssistant,
+			Superseded:     true,
+			SupersededText: text,
+			AppearedAt:     at,
+		})
+		s.assignIdentity(len(s.Entries) - 1)
+	} else {
+		entry := &s.Entries[index]
+		entry.AssistantText = ""
+		entry.SupersededText = text
+		entry.Provisional = false
+		entry.Superseded = true
+		entry.FinalLineAt = time.Time{}
+		s.bumpEntry(index)
+	}
+	s.refreshAssistantText()
+	if !at.IsZero() {
+		s.closeReasoning(at)
+	}
+}
+
+// resolveCandidates records that the committed answer at index replaces every
+// unresolved candidate of its own turn. The scan stops at the turn's user
+// prompt, so an earlier turn's unresolved candidate is never linked to a later
+// answer. Only the link changes: the candidate text is kept.
+func (s *State) resolveCandidates(index int) {
+	answer := blockIDAt(s.Entries, index)
+	for i := index - 1; i >= 0; i-- {
+		entry := &s.Entries[i]
+		if entry.Kind == EntryUser {
+			return
+		}
+		if entry.Kind == EntryAssistant && entry.Superseded && entry.SupersededBy == "" {
+			entry.SupersededBy = answer
+			s.bumpEntry(i)
+		}
+	}
+}
+
+// refreshAssistantText recomputes whether any block holds accepted answer text.
+func (s *State) refreshAssistantText() {
+	s.assistantText = false
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		if s.Entries[i].Kind == EntryAssistant && strings.TrimSpace(s.Entries[i].AssistantText) != "" {
+			s.assistantText = true
+			break
+		}
+	}
 }
 
 // appendWithheldAssistant records a terminal refusal that never streamed as a
@@ -3709,13 +3799,7 @@ func (s *State) discardProvisionalAssistant(at time.Time, withdrawn string) {
 	entry.Provisional = false
 	entry.Discarded = true
 	entry.FinalLineAt = time.Time{}
-	s.assistantText = false
-	for i := len(s.Entries) - 1; i >= 0; i-- {
-		if s.Entries[i].Kind == EntryAssistant && strings.TrimSpace(s.Entries[i].AssistantText) != "" {
-			s.assistantText = true
-			break
-		}
-	}
+	s.refreshAssistantText()
 	s.bumpEntry(index)
 	if !at.IsZero() {
 		s.closeReasoning(at)

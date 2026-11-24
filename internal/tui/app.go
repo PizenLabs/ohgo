@@ -6336,7 +6336,10 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				At:     time.Now(), Seq: seq,
 			})
 		case agent.AnswerSuperseded:
-			p.publishCritical(AssistantReconcile{Answer: agent.AnswerSuperseded, At: time.Now(), Seq: seq})
+			candidate, _ := turn.SupersededCandidate()
+			p.publishCritical(AssistantReconcile{
+				Text: candidate, Answer: agent.AnswerSuperseded, At: time.Now(), Seq: seq,
+			})
 		case agent.AnswerNarration:
 			p.publishCritical(AssistantReconcile{Answer: agent.AnswerNarration, At: time.Now(), Seq: seq})
 		}

@@ -68,9 +68,9 @@ const DefaultCorrectionToolCalls = 4
 //	candidate → AnswerCommitted    (the response transaction accepts it)
 //
 // AnswerNarration is prose that was never a candidate: a tool-round preamble
-// or an abandoned plan. Superseded and narration prose is model context only.
-// Only AnswerCommitted may be presented as the task's answer, and only
-// AnswerRejected may be presented as a terminal refusal.
+// or an abandoned plan; it is model context only. Only AnswerCommitted may be
+// presented as the task's answer, and only AnswerRejected may be presented as
+// a terminal refusal.
 type AnswerDisposition uint8
 
 const (
@@ -82,8 +82,9 @@ const (
 	// calls and their results remain visible; the prose does not.
 	AnswerNarration
 	// AnswerSuperseded is a candidate a bounded correction replaced. It is
-	// internal repair context: no host may show it as an answer or as a
-	// withdrawal.
+	// repair context for the model and a lifecycle record for a host: it may
+	// be shown only as a superseded candidate, never as the answer or as a
+	// withdrawal, and it is never persisted or replayed.
 	AnswerSuperseded
 	// AnswerRejected is the terminal candidate the publication review
 	// refused. It is not conversation and not an answer. A host may project
