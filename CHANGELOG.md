@@ -255,6 +255,13 @@ immutable.
 
 ### Fixed
 
+- A candidate superseded by the answer audit no longer survives as a visible
+  transcript block. The runtime already classified it as internal repair
+  context, but the live TUI path published its text as a lifecycle entry and
+  the reducer converted the streamed preview into a committed-looking block.
+  Supersession now withdraws the preview into a non-renderable audit tombstone,
+  so only the authoritative committed answer reaches the transcript while the
+  candidate's lineage remains in `SupersededBy` and `ResponseAudit`.
 - Deterministic claim salvage now consumes the clause connector when the
   rejected claim was joined by a semicolon or comma. Removing
   `no tests or package configuration were found` after `; ` previously left the

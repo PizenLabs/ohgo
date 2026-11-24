@@ -527,7 +527,7 @@ The runtime classifies every turn's assistant prose once, as
 | Disposition | Meaning | User-visible projection |
 |---|---|---|
 | `AnswerNarration` | A tool-round preamble or an abandoned plan. | Calls and results stay; any provisional prose preview is withdrawn. |
-| `AnswerSuperseded` | A bounded correction replaced the candidate. | The candidate stays in the transcript as a superseded candidate, never as the answer or a withdrawal. The committed answer later links it through `SupersededBy`. |
+| `AnswerSuperseded` | A bounded correction replaced the candidate. | The provisional preview is withdrawn when the correction starts. The candidate is audit lineage only: never rendered, persisted, or replayed as the answer or a withdrawal. A committed answer of the same turn links the internal tombstone through `SupersededBy`. |
 | `AnswerRejected` | The publication review terminally refused the candidate. | Exactly one labelled draft, or the plain output's `answer withheld` line. `AnswerReview` carries the control-plane reason verbatim. |
 | `AnswerCommitted` | The response transaction accepted the answer. | The one answer, settled with its exact text. |
 
@@ -536,11 +536,13 @@ show streamed deltas as a clearly labelled provisional preview while a
 candidate is under review; reasoning and tool activity remain live as well.
 The committed answer replaces that preview with its exact text. A narration or
 rejected disposition withdraws or relabels it as specified above. A superseded
-disposition keeps the candidate as lifecycle state: continuing investigation
-never deletes an emitted candidate, and only a committed answer of the same turn
-links it as replaced. The renderer does not infer a disposition from event order,
-empty text, stream completion, or its own audit read: an unclassified preview
-at a turn boundary is withdrawn, not promoted. A cancelled stream keeps its
+disposition withdraws the preview immediately: the correction is an internal
+repair step, so the replaced candidate never becomes a transcript artifact.
+Only a committed answer of the same turn links the internal tombstone as
+replaced, and the link is audit state rather than rendered content. The
+renderer does not infer a disposition from event order, empty text, stream
+completion, or its own audit read: an unclassified preview at a turn boundary
+is withdrawn, not promoted. A cancelled stream keeps its
 partial text as one display-only draft labelled with the interruption, never as
 an answer.
 
@@ -561,8 +563,8 @@ claim is reported as preservation loss, and the runtime commits the strongest
 draft with only the refused claims removed rather than the poorer rewrite. A
 draft's lifecycle is `CANDIDATE`, `UNDER_REVIEW`, `REPAIR_REQUIRED`,
 `SUPERSEDED`, `REJECTED_TERMINAL`, or `COMMITTED`. Only `COMMITTED` is a
-user-visible answer; `SUPERSEDED` is lifecycle history the TUI keeps visible as
-a candidate, never a withdrawal.
+user-visible answer; `SUPERSEDED` is internal audit lineage that the TUI keeps
+only as a non-renderable tombstone, never as a candidate or a withdrawal.
 `Loop.LastResponseAudit` records the drafts, lineage, preserved and removed
 claims, rejections, tool calls, reused observations, retries, redundant
 identical calls, and the final claim audit; a second commit for the same run is
