@@ -504,11 +504,16 @@ type Program struct {
 	// setting the loop should use for this turn.
 	reasoningSelect ReasoningSelector
 	// lastTaskDecision records why the last turn attached, detached, or
-	// started a task: NEW_SESSION, EXPLICIT_RESUME, NEW_INTENT, TASK_DETACH,
-	// TASK_COMPLETE, or NO_TASK. It is diagnostics for /audit and tests, never
-	// shown as a blocking prompt. Guarded by mu because runTurn writes it off
-	// the update goroutine.
+	// started a task: NEW_SESSION, NEW_BOUNDARY, EXPLICIT_RESUME, NEW_INTENT,
+	// TASK_DETACH, TASK_COMPLETE, or NO_TASK. It is diagnostics for /audit and
+	// tests, never shown as a blocking prompt. Guarded by mu because runTurn
+	// writes it off the update goroutine.
 	lastTaskDecision string
+	// freshTaskBoundarySession marks the first task intent in a session created
+	// by /new. It prevents that intent from matching an older resumable task;
+	// task state itself remains solely owned by the continuity controller.
+	// Guarded by mu.
+	freshTaskBoundarySession int64
 	// proposal is the human's decided proposal awaiting or serving its turn.
 	// It is set when a proposal is resolved and consumed by the released turn
 	// (plus explicit continuations of the same execution). A new intent clears
@@ -2567,12 +2572,18 @@ func (p *Program) createNewSession(title string) {
 	}
 	p.detachTaskForNewSession()
 	p.adoptSession(sess, opened)
+	if sess != nil {
+		p.mu.Lock()
+		p.freshTaskBoundarySession = sess.ID
+		p.mu.Unlock()
+	}
 	if title != "" && p.sessionActions.Rename != nil && sess != nil {
 		if err := p.sessionActions.Rename(sess.ID, title); err == nil {
 			sess.Title = title
 			p.state.Apply(SessionTitleUpdated{ID: sess.ID, Title: title})
 		}
 	}
+	p.PublishNotice("New task boundary. Previous tasks remain available through /task list.")
 	p.recordTaskDecision("NEW_SESSION")
 }
 
@@ -5674,7 +5685,42 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// model cannot add to or reinterpret it.
 	intent := workspace.BuildIntentContract(text)
 
+	// abortTurn ends a turn that never started execution: it reports the
+	// reason and clears the cancellation handle. The durable task is left
+	// exactly as it was, and the only cancellation path that can store a
+	// terminal claim is cancelTurnNow, scoped to the active turn.
+	abortTurn := func(notice string) {
+		p.publish(Notice{Text: notice})
+		p.publishCritical(AssistantDone{Seq: seq})
+		p.mu.Lock()
+		p.cancelTurn = nil
+		p.mu.Unlock()
+	}
+
+	freshBoundary := p.newTaskBoundaryActive()
 	taskCurrent, _, taskOwned := p.taskContinuationFor(text, activeAuthority)
+	if taskOwned && p.task.Current != nil {
+		if _, active := p.task.Current(); !active {
+			// Matching a persisted candidate is the activation event. Restore
+			// it before authority reconciliation and Begin; startup itself
+			// never binds it to this session.
+			if p.task.ResumeTask == nil {
+				taskOwned = false
+			} else {
+				projection := p.task.ResumeTask(taskCurrent.ID)
+				if projection.Err != "" {
+					abortTurn("task resume: " + projection.Err)
+					return
+				}
+				current, ok := p.task.Current()
+				if !ok {
+					abortTurn("task resume did not attach the matching task")
+					return
+				}
+				taskCurrent = current
+			}
+		}
+	}
 
 	// A task-owned turn runs under the task's persisted authority contract,
 	// not the ambient session default. A new session restores BUILD and a
@@ -5787,19 +5833,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		}
 	}
 
-	// abortTurn ends a turn that never started execution: it reports the
-	// reason and clears the cancellation handle. The durable task is left
-	// exactly as it was, and the unused context is left to be collected; the
-	// only cancellation path that can store the terminal claim is
-	// cancelTurnNow, which is scoped to the active turn.
-	abortTurn := func(notice string) {
-		p.publish(Notice{Text: notice})
-		p.publishCritical(AssistantDone{Seq: seq})
-		p.mu.Lock()
-		p.cancelTurn = nil
-		p.mu.Unlock()
-	}
-
 	// A persisted task is resumable, never mandatory. An explicit continuation
 	// reuses the persisted contract and its pre-run target baseline; any other
 	// prompt is a new intent and starts a new current-session task. The previous
@@ -5823,6 +5856,18 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.Current != nil {
 		current, ok := p.task.Current()
 		switch {
+		case freshBoundary:
+			if ok && p.task.Detach != nil {
+				detached := p.task.Detach()
+				if detached.Err != "" {
+					abortTurn("task state was not recorded: " + detached.Err)
+					return
+				}
+				if detached.ID != "" {
+					p.PublishTask(detached)
+				}
+			}
+			p.recordTaskDecision("NEW_BOUNDARY")
 		case !ok:
 			p.recordTaskDecision("NEW_INTENT")
 		case taskStatusTerminal(current.Status):
@@ -5886,7 +5931,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 		}
 	} else {
-		p.recordTaskDecision("NEW_INTENT")
+		if freshBoundary {
+			p.recordTaskDecision("NEW_BOUNDARY")
+		} else {
+			p.recordTaskDecision("NEW_INTENT")
+		}
 	}
 
 	// The completion contract's targets are captured before execution; the
@@ -5912,6 +5961,9 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		if projection.Err != "" {
 			abortTurn("task state was not recorded: " + projection.Err)
 			return
+		}
+		if freshBoundary {
+			p.clearNewTaskBoundary(turnSessID)
 		}
 	}
 

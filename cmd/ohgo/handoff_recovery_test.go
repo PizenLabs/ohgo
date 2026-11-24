@@ -47,10 +47,20 @@ func approveHandoff(t *testing.T, controller *task.Controller) (task.Handoff, ta
 	return handoff, started
 }
 
-// A crash after the authority switch and before APPLIED was persisted is
-// reconciled at startup from the restored target workspace, without switching
-// again and without resuming a turn.
-func TestStartupReconcilesHandoffWithRestoredTarget(t *testing.T) {
+func resumeRecoveredTask(t *testing.T, controller *task.Controller, id string, role *workspace.Workspace) task.Task {
+	t.Helper()
+	resumed, err := controller.ResumeTask(id)
+	if err != nil {
+		t.Fatalf("ResumeTask: %v", err)
+	}
+	resumed, _ = reconcileHandoff(controller, resumed, func() workspace.Workspace { return *role })
+	return resumed
+}
+
+// A crash after the authority switch and before APPLIED was persisted leaves
+// the task resumable at startup. Reconciliation happens when intent explicitly
+// attaches the task, not while merely opening the project.
+func TestResumeReconcilesHandoffWithRestoredTarget(t *testing.T) {
 	root := t.TempDir()
 	role := workspace.Fuzz
 	controller := installRecovery(t, root, &role)
@@ -59,10 +69,10 @@ func TestStartupReconcilesHandoffWithRestoredTarget(t *testing.T) {
 	// The switch succeeded; the process stopped before Begin recorded it.
 	role = workspace.Build
 	recovered := installRecovery(t, root, &role)
-	current, ok := recovered.Current()
-	if !ok {
-		t.Fatal("recovery lost the task")
+	if _, active := recovered.Current(); active {
+		t.Fatal("startup activated the recovered task")
 	}
+	current := resumeRecoveredTask(t, recovered, started.ID, &role)
 	if current.ID != started.ID {
 		t.Fatalf("recovery changed the task identity: %q -> %q", started.ID, current.ID)
 	}
@@ -81,18 +91,18 @@ func TestStartupReconcilesHandoffWithRestoredTarget(t *testing.T) {
 }
 
 // A crash before the switch is applied leaves the restored workspace at the
-// source. Startup preserves the source role and reports the observed fact.
-func TestStartupKeepsSourceWhenHandoffWasNotApplied(t *testing.T) {
+// source. Explicit resume preserves the source role and reports the observed fact.
+func TestResumeKeepsSourceWhenHandoffWasNotApplied(t *testing.T) {
 	root := t.TempDir()
 	role := workspace.Fuzz
 	controller := installRecovery(t, root, &role)
 	handoff, started := approveHandoff(t, controller)
 
 	recovered := installRecovery(t, root, &role)
-	current, ok := recovered.Current()
-	if !ok {
-		t.Fatal("recovery lost the task")
+	if _, active := recovered.Current(); active {
+		t.Fatal("startup activated the recovered task")
 	}
+	current := resumeRecoveredTask(t, recovered, started.ID, &role)
 	if current.ID != started.ID {
 		t.Fatalf("recovery changed the task identity: %q -> %q", started.ID, current.ID)
 	}
@@ -110,20 +120,20 @@ func TestStartupKeepsSourceWhenHandoffWasNotApplied(t *testing.T) {
 	}
 }
 
-// A restored workspace that matches neither role is reported as a discrepancy;
-// recovery does not rewrite the recorded role or grant authority.
-func TestStartupReportsUnrelatedRestoredWorkspace(t *testing.T) {
+// A workspace that matches neither role is reported on resume; recovery does
+// not rewrite the recorded role or grant authority.
+func TestResumeReportsUnrelatedRestoredWorkspace(t *testing.T) {
 	root := t.TempDir()
 	role := workspace.Fuzz
 	controller := installRecovery(t, root, &role)
-	approveHandoff(t, controller)
+	_, started := approveHandoff(t, controller)
 
 	role = workspace.Ask
 	recovered := installRecovery(t, root, &role)
-	current, ok := recovered.Current()
-	if !ok {
-		t.Fatal("recovery lost the task")
+	if _, active := recovered.Current(); active {
+		t.Fatal("startup activated the recovered task")
 	}
+	current := resumeRecoveredTask(t, recovered, started.ID, &role)
 	if current.Handoff == nil || current.Handoff.Status != task.HandoffInterrupted {
 		t.Fatalf("handoff = %+v, want INTERRUPTED", current.Handoff)
 	}
@@ -141,8 +151,8 @@ func TestStartupReportsUnrelatedRestoredWorkspace(t *testing.T) {
 }
 
 // An applied but unconsumed transition survives a restart and is consumed by
-// exactly one turn. Re-reading the same state is idempotent.
-func TestStartupConsumesAppliedHandoffOnce(t *testing.T) {
+// exactly one resumed turn. Re-reading the same state is idempotent.
+func TestResumeConsumesAppliedHandoffOnce(t *testing.T) {
 	root := t.TempDir()
 	role := workspace.Fuzz
 	controller := installRecovery(t, root, &role)
@@ -157,10 +167,10 @@ func TestStartupConsumesAppliedHandoffOnce(t *testing.T) {
 	}
 
 	recovered := installRecovery(t, root, &role)
-	survived, ok := recovered.Current()
-	if !ok {
-		t.Fatal("recovery lost the task")
+	if _, active := recovered.Current(); active {
+		t.Fatal("startup activated the recovered task")
 	}
+	survived := resumeRecoveredTask(t, recovered, started.ID, &role)
 	if survived.Handoff == nil || survived.Handoff.Status != task.HandoffApplied || survived.Handoff.Consumed {
 		t.Fatalf("handoff = %+v, want APPLIED and unconsumed", survived.Handoff)
 	}
@@ -178,6 +188,7 @@ func TestStartupConsumesAppliedHandoffOnce(t *testing.T) {
 	// The durable state left by a crash during consumption is the same
 	// APPLIED/consumed record; another Begin must not re-apply it.
 	again := installRecovery(t, root, &role)
+	resumeRecoveredTask(t, again, started.ID, &role)
 	replayed, err := again.Begin(intent, nil)
 	if err != nil {
 		t.Fatalf("replayed Begin: %v", err)
@@ -190,22 +201,20 @@ func TestStartupConsumesAppliedHandoffOnce(t *testing.T) {
 	}
 }
 
-// A recovered BUILD workspace with stale FUZZ task metadata must still accept a
-// valid BUILD -> FUZZ narrowing; the source comes from the live authority.
-func TestRecoveredBUILDAcceptsNarrowingDespiteStaleFUZZMetadata(t *testing.T) {
+// A resumed task with stale FUZZ metadata must still accept a valid BUILD ->
+// FUZZ narrowing; the source comes from the live authority.
+func TestResumedBUILDAcceptsNarrowingDespiteStaleFUZZMetadata(t *testing.T) {
 	root := t.TempDir()
 	role := workspace.Fuzz
 	controller := installRecovery(t, root, &role)
-	if _, err := controller.Begin(recoveryIntent("fix the flaky test"), nil); err != nil {
+	started, err := controller.Begin(recoveryIntent("fix the flaky test"), nil)
+	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 
 	role = workspace.Build
 	recovered := installRecovery(t, root, &role)
-	stale, ok := recovered.Current()
-	if !ok {
-		t.Fatal("recovery lost the task")
-	}
+	stale := resumeRecoveredTask(t, recovered, started.ID, &role)
 	if stale.ActiveRole != workspace.Fuzz {
 		t.Fatalf("precondition: recorded role = %s, want the stale FUZZ", stale.ActiveRole)
 	}
@@ -220,9 +229,9 @@ func TestRecoveredBUILDAcceptsNarrowingDespiteStaleFUZZMetadata(t *testing.T) {
 	}
 }
 
-// The production startup boundary reconstructs a checkpoint-only recovery and
-// keeps a valid approved handoff writable.
-func TestStartupRecoversProjectionlessHandoff(t *testing.T) {
+// The production startup boundary archives checkpoint-only recovery without
+// foregrounding it; explicit resume reconstructs and keeps it writable.
+func TestResumeRecoversProjectionlessHandoff(t *testing.T) {
 	root := t.TempDir()
 	role := workspace.Fuzz
 	controller := installRecovery(t, root, &role)
@@ -232,10 +241,11 @@ func TestStartupRecoversProjectionlessHandoff(t *testing.T) {
 	}
 
 	recovered := installRecovery(t, root, &role)
-	current, ok := recovered.Current()
-	if !ok {
-		t.Fatal("recovery lost the task")
+	resumable, err := recovered.ListResumable()
+	if err != nil || len(resumable) != 1 {
+		t.Fatalf("startup resumable tasks: %d err=%v", len(resumable), err)
 	}
+	current := resumeRecoveredTask(t, recovered, resumable[0].ID, &role)
 	if current.Objective != "fix the flaky test" {
 		t.Fatalf("objective = %q, want the contract objective", current.Objective)
 	}

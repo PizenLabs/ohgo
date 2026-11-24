@@ -254,57 +254,25 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 	}
 	program.SetTaskHooks(hooks)
 
-	// A checkpoint recovered from disk is shown before the next turn. A
-	// non-terminal one was interrupted (a crash is normalized to PAUSED), so
-	// the transcript notes it as resumable without blocking the next intent:
-	// the new session starts cleanly and the task stays reachable via /task.
-	recovered, found, err := controller.Restore()
+	// A checkpoint left in the live slot belongs to the process that wrote it.
+	// On startup it becomes resumable history, not the new session's active
+	// task. The controller owns that transition so Current remains empty until
+	// an incoming intent matches or the user explicitly resumes a task.
+	_, found, err := controller.Restore()
 	switch {
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "ohgo: task continuity unavailable: %v\n", err)
 	case found:
-		// The recovery classification describes what the load could actually
-		// restore. It is reported once, before any other recovery narrative, so
-		// a reconstructed or blocked task is never mistaken for an intact one.
-		if report := controller.Recovery(); !report.Empty() && report.State != task.RecoveryIntact {
-			program.PublishNotice("task recovery: " + report.Label())
+		if _, _, detachErr := controller.Detach(); detachErr != nil {
+			fmt.Fprintf(os.Stderr, "ohgo: could not detach recovered task: %v\n", detachErr)
 		}
-		// Approval is not proof that the switch happened, and it is not proof
-		// that it did not. Reconcile an approved record against the authority
-		// that was actually restored before any recovery narrative is shown.
-		// This is the only boundary where both facts are available; the task
-		// data layer never reads the session store.
-		handoffNotice := ""
-		if recovered.Handoff != nil && recovered.Handoff.Status == task.HandoffApproved {
-			recovered, handoffNotice = reconcileHandoff(controller, recovered, role)
-			if handoffNotice != "" {
-				program.PublishNotice(handoffNotice)
-			}
-		}
-		if !recovered.Status.IsTerminal() {
-			program.PublishTask(taskProjection(recovered, nil))
-			if resumable, lerr := controller.ListResumable(); lerr == nil && len(resumable) > 0 {
-				program.PublishNotice(resumableTasksNotice(len(resumable)))
-			}
-		} else {
-			// Listing is also what detects unreadable archives; a terminal live
-			// task must not hide a lost detached one.
-			_, _ = controller.ListResumable()
-		}
-		if problems := controller.ArchiveProblems(); len(problems) > 0 {
-			program.PublishNotice(fmt.Sprintf(
-				"%d detached task file(s) could not be read (see /task list)", len(problems)))
-		}
-		if recovered.Handoff != nil && recovered.Handoff.Status == task.HandoffInterrupted && handoffNotice == "" {
-			// An unapproved proposal is closed at load. Report only what the
-			// durable state establishes rather than asserting a workspace
-			// movement the recovery never observed.
-			notice := "interrupted handoff " + recovered.Handoff.From.Label() + " -> " + recovered.Handoff.To.Label()
-			if recovered.Handoff.Failure != "" {
-				notice += ": " + recovered.Handoff.Failure
-			}
-			program.PublishNotice(notice)
-		}
+	}
+	if resumable, listErr := controller.ListResumable(); listErr == nil && len(resumable) > 0 {
+		program.PublishNotice(resumableTasksNotice(len(resumable)))
+	}
+	if problems := controller.ArchiveProblems(); len(problems) > 0 {
+		program.PublishNotice(fmt.Sprintf(
+			"%d detached task file(s) could not be read (see /task list)", len(problems)))
 	}
 	return controller
 }
@@ -313,10 +281,11 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 // hardcoded singleton. The count is user-facing state and must match
 // /task list.
 func resumableTasksNotice(count int) string {
+	prefix := "No active task. "
 	if count == 1 {
-		return "1 resumable task available (see /task list)"
+		return prefix + "1 resumable task available. Use /task list to inspect.\nUse /new to start a completely new task."
 	}
-	return fmt.Sprintf("%d resumable tasks available (see /task list)", count)
+	return fmt.Sprintf("%s%d resumable tasks available. Use /task list to inspect.\nUse /new to start a completely new task.", prefix, count)
 }
 
 // artifactBuffer captures artifacts recorded by the artifact tool during a

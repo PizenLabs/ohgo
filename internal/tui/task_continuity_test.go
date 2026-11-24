@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/continuity/task"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
@@ -155,6 +156,197 @@ func TestRoleChangeKeepsTaskIdentityAndContext(t *testing.T) {
 	if !found {
 		t.Fatal("the old task was not preserved as resumable")
 	}
+}
+
+func TestMatchingIntentActivatesAnArchivedTaskOnlyAfterSubmission(t *testing.T) {
+	root := t.TempDir()
+	objective := "investigate this project and analyze what this project is about?"
+	contract := workspace.BuildIntentContract(objective)
+
+	first := task.NewController(task.NewStore(root), nil)
+	created, err := first.Begin(contract, nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := first.NeedsReview("the investigation is incomplete"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+
+	// Model a new OHGO process loading the project checkpoint. Startup moves
+	// the checkpoint to resumable storage instead of leaving it in Current.
+	startup := task.NewController(task.NewStore(root), nil)
+	if _, found, err := startup.Restore(); err != nil || !found {
+		t.Fatalf("Restore: found=%v err=%v", found, err)
+	}
+	if _, _, err := startup.Detach(); err != nil {
+		t.Fatalf("startup Detach: %v", err)
+	}
+	if _, active := startup.Current(); active {
+		t.Fatal("startup made the persisted task active")
+	}
+
+	program := continuityTestProgram(t, startup)
+	if candidate, _, matched := program.taskContinuationFor(objective, string(workspace.Build)); !matched ||
+		candidate.ID != created.ID {
+		t.Fatalf("intent resolution = %+v, matched=%v; want task %s", candidate, matched, created.ID)
+	}
+	if _, active := startup.Current(); active {
+		t.Fatal("intent inspection activated a task before the turn boundary")
+	}
+
+	program.runTurn(objective)
+	current, active := startup.Current()
+	if !active || current.ID != created.ID {
+		t.Fatalf("active task = %+v (active=%v), want resumed task %s", current, active, created.ID)
+	}
+	if decision := program.TaskDecision(); decision != "OBJECTIVE_CONTINUATION" {
+		t.Fatalf("decision = %q, want objective continuation", decision)
+	}
+}
+
+func TestUnmatchedIntentCreatesNewTaskWhileOldTaskRemainsResumable(t *testing.T) {
+	root := t.TempDir()
+	first := task.NewController(task.NewStore(root), nil)
+	created, err := first.Begin(workspace.BuildIntentContract("investigate the payments service"), nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := first.NeedsReview("investigation incomplete"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+
+	startup := task.NewController(task.NewStore(root), nil)
+	if _, found, err := startup.Restore(); err != nil || !found {
+		t.Fatalf("Restore: found=%v err=%v", found, err)
+	}
+	if _, _, err := startup.Detach(); err != nil {
+		t.Fatalf("startup Detach: %v", err)
+	}
+	program := continuityTestProgram(t, startup)
+	program.runTurn("summarize the project license")
+
+	current, active := startup.Current()
+	if !active || current.ID == created.ID {
+		t.Fatalf("new intent active task = %+v (active=%v), want a new identity", current, active)
+	}
+	if decision := program.TaskDecision(); decision != "NEW_INTENT" {
+		t.Fatalf("decision = %q, want NEW_INTENT", decision)
+	}
+	resumable, err := startup.ListResumable()
+	if err != nil {
+		t.Fatalf("ListResumable: %v", err)
+	}
+	found := false
+	for _, candidate := range resumable {
+		if candidate.ID == created.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("old task %s disappeared from resumable tasks: %+v", created.ID, resumable)
+	}
+}
+
+func TestNewBoundaryDoesNotAttachOldTaskAndExplicitResumeStillWorks(t *testing.T) {
+	root := t.TempDir()
+	objective := "investigate the project architecture"
+	first := task.NewController(task.NewStore(root), nil)
+	created, err := first.Begin(workspace.BuildIntentContract(objective), nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := first.NeedsReview("investigation incomplete"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+	if _, _, err := first.Detach(); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	program := continuityTestProgram(t, first)
+	program.session = &session.Session{ID: 73}
+	program.freshTaskBoundarySession = 73
+	program.runTurn(objective)
+
+	current, active := first.Current()
+	if !active || current.ID == created.ID {
+		t.Fatalf("/new prompt attached to the old task: %+v (active=%v)", current, active)
+	}
+	if decision := program.TaskDecision(); decision != "NEW_BOUNDARY" {
+		t.Fatalf("decision = %q, want NEW_BOUNDARY", decision)
+	}
+	if program.newTaskBoundaryActive() {
+		t.Fatal("the new-task boundary was not consumed by the first task intent")
+	}
+
+	// A subsequent process again starts with no active task. The task created
+	// after /new survives in project storage, while Task A remains available.
+	restarted := task.NewController(task.NewStore(root), nil)
+	recovered, found, err := restarted.Restore()
+	if err != nil || !found {
+		t.Fatalf("restart Restore: found=%v err=%v", found, err)
+	}
+	if recovered.ID != current.ID {
+		t.Fatalf("restart task = %q, want the task created after /new (%q)", recovered.ID, current.ID)
+	}
+	if _, _, err := restarted.Detach(); err != nil {
+		t.Fatalf("restart Detach: %v", err)
+	}
+	if _, active := restarted.Current(); active {
+		t.Fatal("restart left the new task active without a user intent")
+	}
+	archived, err := restarted.ArchivedTasks()
+	if err != nil {
+		t.Fatalf("ArchivedTasks: %v", err)
+	}
+	if len(archived) != 2 {
+		t.Fatalf("history after restart = %+v, want both task identities", archived)
+	}
+	resumable, err := restarted.ListResumable()
+	if err != nil {
+		t.Fatalf("ListResumable: %v", err)
+	}
+	foundOld := false
+	for _, candidate := range resumable {
+		foundOld = foundOld || candidate.ID == created.ID
+	}
+	if !foundOld {
+		t.Fatalf("Task A is not resumable after restart: %+v", resumable)
+	}
+
+	projection := runtimeProjectionFromTask(restarted, created.ID)
+	if projection.Err != "" {
+		t.Fatalf("explicit resume after /new: %s", projection.Err)
+	}
+	current, active = restarted.Current()
+	if !active || current.ID != created.ID {
+		t.Fatalf("explicit resume active task = %+v (active=%v), want %s", current, active, created.ID)
+	}
+}
+
+func runtimeProjectionFromTask(controller *task.Controller, id string) TaskProjection {
+	recorded, err := controller.ResumeTask(id)
+	return runtimeProjection(recorded, err)
+}
+
+func continuityTestProgram(t *testing.T, controller *task.Controller) *Program {
+	t.Helper()
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content:    []ai.ContentBlock{ai.TextContent{Text: "investigation recorded"}},
+				StopReason: ai.StopEndTurn,
+			}), nil
+		},
+		Tools: runtimeCaps(&idleTool{}),
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	program := NewProgram(loop, "test", 0)
+	program.SetTaskHooks(runtimeHooks(controller))
+	program.SetWorkspaceSwitcher(WorkspaceHooks{Current: func() string { return string(workspace.Build) }})
+	return program
 }
 
 type runtimeWriteTool struct{ path string }
@@ -469,6 +661,10 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 				out = append(out, runtimeResume(t))
 			}
 			return out
+		},
+		ResumeTask: func(id string) TaskProjection {
+			recorded, err := controller.ResumeTask(id)
+			return runtimeProjection(recorded, err)
 		},
 		Detach: func() TaskProjection {
 			detached, _, err := controller.Detach()

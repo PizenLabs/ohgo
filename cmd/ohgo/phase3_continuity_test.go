@@ -108,14 +108,21 @@ func TestPhase3AcceptanceScenarioKeepsIdentityTimelineAndProof(t *testing.T) {
 		t.Fatalf("role transitions replaced the task: %q -> %q", started.ID, resumed.ID)
 	}
 
-	// Simulate a crash: a new process restores the same project state. The
-	// BUILD switch was applied but not consumed, so the approval is the
-	// continuation signal for the next turn.
+	// Simulate a crash: a new process makes the checkpoint resumable without
+	// activating it. The BUILD switch was applied but not consumed, so the
+	// approval remains available when the task is explicitly attached.
 	beforeCrash, _ := controller.Current()
 	controller = install()
-	restored, found, err := controller.Restore()
-	if err != nil || !found {
-		t.Fatalf("Restore: found=%v err=%v", found, err)
+	if _, found, err := controller.Restore(); err != nil || found {
+		t.Fatalf("Restore left an active task: found=%v err=%v", found, err)
+	}
+	resumable, err := controller.ListResumable()
+	if err != nil || len(resumable) != 1 || resumable[0].ID != started.ID {
+		t.Fatalf("resumable after restart = %+v err=%v", resumable, err)
+	}
+	restored, err := controller.ResumeTask(started.ID)
+	if err != nil {
+		t.Fatalf("ResumeTask: %v", err)
 	}
 	if restored.ID != started.ID {
 		t.Fatalf("restart changed the task identity: %q -> %q", started.ID, restored.ID)
@@ -195,15 +202,15 @@ func TestPhase3AcceptanceScenarioKeepsIdentityTimelineAndProof(t *testing.T) {
 
 	// The final checkpoint is restartable and keeps the proven outcome.
 	final := install()
-	restored, found, err = final.Restore()
-	if err != nil || !found {
-		t.Fatalf("final Restore: found=%v err=%v", found, err)
+	archived, err := final.ArchivedTasks()
+	if err != nil || len(archived) != 1 || archived[0].ID != started.ID {
+		t.Fatalf("final history = %+v err=%v", archived, err)
 	}
-	if restored.ObjectiveState() != task.ObjectiveProven {
-		t.Fatalf("persisted objective = %s, want PROVEN", restored.ObjectiveState())
+	if archived[0].ObjectiveState() != task.ObjectiveProven {
+		t.Fatalf("persisted objective = %s, want PROVEN", archived[0].ObjectiveState())
 	}
-	if !strings.Contains(restored.CompletionSummary(), "proven") {
-		t.Fatalf("summary = %q", restored.CompletionSummary())
+	if !strings.Contains(archived[0].CompletionSummary(), "proven") {
+		t.Fatalf("summary = %q", archived[0].CompletionSummary())
 	}
 }
 
