@@ -2061,6 +2061,12 @@ func assistantDisplay(entry Entry) (text, label string) {
 		}
 		return entry.WithdrawnText, "draft withdrawn · " + reason
 	}
+	if entry.Superseded {
+		// The label states the lifecycle fact at any render time. The link to
+		// the committed answer lives in SupersededBy; scrollback is sealed
+		// before the answer may exist, so the label must not depend on it.
+		return entry.SupersededText, "candidate · superseded"
+	}
 	if entry.Provisional {
 		return entry.AssistantText, "draft · answer review pending"
 	}
