@@ -1870,7 +1870,9 @@ func composerRuleStyle(_ State, pal *Palette) lipgloss.Style {
 // mode hue: only the prefix word carries authority identity.
 func composerRule(state State, pal *Palette, layout Layout) string {
 	width := composerRuleWidth(state, layout)
-	return composerRuleStyle(state, pal).Render(composerBorderTitle(state, width))
+	lead, label, trail := composerBorderParts(state, width)
+	rule := composerRuleStyle(state, pal)
+	return rule.Render(lead) + pal.Secondary.Render(label) + rule.Render(trail)
 }
 
 // composerBottomRule draws the closing rule framing the composer. It stays

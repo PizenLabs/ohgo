@@ -40,10 +40,10 @@ type Tokens struct {
 	// prose, and the content the user actually reads.
 	//
 	// TextFaint is the Low Focus tier: timings, key hints, path exclusions, and
-	// other supporting metadata. It is intentionally below the WCAG 4.5:1
-	// normal-text floor (measured in tokens_test.go), so it must never carry
-	// information the user needs to act on; TextMuted is the quiet readable
-	// role for that.
+	// other supporting metadata. It is calibrated to the WCAG 4.5:1 normal-text
+	// floor so hints stay legible in a dim terminal, yet it must remain dimmer
+	// than TextMuted so the hierarchy does not invert (measured in
+	// tokens_test.go).
 	TextTitle     string
 	TextPrimary   string
 	TextSecondary string
@@ -144,7 +144,7 @@ func Dark() Tokens {
 		TextSecondary: "#9DA9BD",
 		TextMuted:     "#7E8BA0",
 		TextDisabled:  "#616D81",
-		TextFaint:     "#4C5769",
+		TextFaint:     "#727F95",
 		TextInverse:   "#0B0E13",
 
 		BorderSubtle:  "#1A202A",
@@ -215,7 +215,7 @@ func Light() Tokens {
 		TextSecondary: "#4A5361",
 		TextMuted:     "#626B7A",
 		TextDisabled:  "#838C99",
-		TextFaint:     "#9AA2AE",
+		TextFaint:     "#667080",
 		TextInverse:   "#FCFCFA",
 
 		BorderSubtle:  "#E8E8E4",

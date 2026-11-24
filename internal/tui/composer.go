@@ -34,6 +34,15 @@ const composerBorderCap = 3
 // to hold even a minimal label the plain rule wins: a broken box is worse than
 // a missing title.
 func composerBorderTitle(state State, width int) string {
+	lead, label, trail := composerBorderParts(state, width)
+	return lead + label + trail
+}
+
+// composerBorderParts splits the upper rule into its rule segments and its
+// label so the label can carry a readable tier while the rule stays quiet.
+// The label is empty when the plain rule wins; the three parts always
+// concatenate to the full rule width.
+func composerBorderParts(state State, width int) (lead, label, trail string) {
 	if width < 1 {
 		width = 1
 	}
@@ -41,17 +50,17 @@ func composerBorderTitle(state State, width int) string {
 	// At least one left dash, two framing spaces, and the trailing cap must
 	// remain around the label.
 	if width < composerBorderCap+5 {
-		return plain
+		return plain, "", ""
 	}
-	label := composerSessionLabel(state, width-composerBorderCap-3)
+	label = composerSessionLabel(state, width-composerBorderCap-3)
 	if label == "" {
-		return plain
+		return plain, "", ""
 	}
 	left := width - CellWidth(label) - composerBorderCap - 2
 	if left < 1 {
-		return plain
+		return plain, "", ""
 	}
-	return strings.Repeat("─", left) + " " + label + " " + strings.Repeat("─", composerBorderCap)
+	return strings.Repeat("─", left) + " ", label, " " + strings.Repeat("─", composerBorderCap)
 }
 
 // composerSessionLabel renders the bracketed session title, bounded to

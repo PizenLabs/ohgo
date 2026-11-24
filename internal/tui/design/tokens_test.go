@@ -215,13 +215,12 @@ func TestTokenContrast(t *testing.T) {
 					t.Errorf("%s %s contrast = %.2f:1, want >= 4.5:1", name, role, got)
 				}
 			}
-			// TextFaint is the Low Focus tier: intentionally below the
-			// normal-text floor so metadata recedes. It still has a visibility
-			// floor, and it must stay dimmer than the readable muted role so
-			// the hierarchy cannot silently invert.
+			// TextFaint is the Low Focus tier: hints and metadata must stay
+			// legible, yet it must remain dimmer than the muted role so the
+			// hierarchy cannot silently invert.
 			faint := contrast(tok.TextFaint, bg)
-			if faint < 2 {
-				t.Errorf("%s faint contrast = %.2f:1, want >= 2:1", name, faint)
+			if faint < 4.5 {
+				t.Errorf("%s faint contrast = %.2f:1, want >= 4.5:1", name, faint)
 			}
 			if faint >= contrast(tok.TextMuted, bg) {
 				t.Errorf("%s faint contrast = %.2f:1, want dimmer than muted", name, faint)
