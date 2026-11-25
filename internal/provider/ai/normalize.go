@@ -497,10 +497,13 @@ func (d *residueDetector) sanitize(text string) (string, bool) {
 // spelling may be decorated by the provider, usually with a call id.
 //
 // The registry decodes exact spellings. A decorated spelling is still the same
-// protocol family, so the scanner must consume the envelope instead of
-// publishing it as prose; it is never decoded into an executable call. A
-// provider that decorates a registered envelope adds its prefix here, not a
-// branch in the TUI or the agent loop.
+// protocol family, so the scanner consumes the envelope instead of publishing
+// it as prose. When parse is set, the body is decoded with the same grammar the
+// registered spelling uses; the decoration itself is ignored, so it can grant
+// no authority. A family without a parser cannot safely decode a body and is
+// reported as unsupported rather than fabricated. A provider that decorates a
+// registered envelope adds its prefix here, not a branch in the TUI or the
+// agent loop.
 type callFamily struct {
 	// name identifies the family in diagnostics.
 	name string
@@ -511,14 +514,17 @@ type callFamily struct {
 	// family historically requires "call" so an ordinary word that merely
 	// starts with the prefix is not consumed as protocol.
 	require string
+	// parse decodes the envelope body when the family has a known grammar.
+	// Nil means the spelling is contained but never decoded.
+	parse func(body string, coercer *argumentCoercer) ([]ToolCall, error)
 }
 
 // callFamilies lists the prefixes this build can contain. The exact registered
-// protocol wins when both match; the family exists only as the safe fallback.
+// protocol wins when both match; the family handles decorated spellings.
 var callFamilies = []callFamily{
 	{name: "dots_call_family", open: "<dots", close: "</dots", require: "call"},
-	{name: "tool_call_family", open: "<tool_call", close: "</tool_call"},
-	{name: "toolcall_family", open: "<toolcall", close: "</toolcall"},
+	{name: "tool_call_family", open: "<tool_call", close: "</tool_call", parse: parseToolCallEnvelope},
+	{name: "toolcall_family", open: "<toolcall", close: "</toolcall", parse: parseToolCallEnvelope},
 }
 
 // familyAt returns the family whose opening prefix starts buf.
@@ -653,27 +659,38 @@ type pseudoProtocol struct {
 	parse func(body string, coercer *argumentCoercer) ([]ToolCall, error)
 }
 
-// unknownFamilyProtocol describes an opening tag in a call family that is not
-// one of the registered spellings.
+// familyProtocol describes an opening tag in a call family that is not one of
+// the registered spellings.
 //
-// It is not parsed: no action may be fabricated from a representation the
-// runtime does not understand. The descriptor exists so the bounded scanner
-// can consume the envelope through its family closing tag and report one
-// truthful diagnostic instead of leaking raw protocol into the live transcript
-// or persisted answer.
-func unknownFamilyProtocol(open []byte, family callFamily) pseudoProtocol {
+// A family with a parser decodes the body with the same grammar as the
+// registered tag: a decoration is transport noise, not authority, and the call
+// still crosses grounding, authorization, schema validation, budget, and the
+// execution gate. A family without a parser is not parsed; no action may be
+// fabricated from a representation the runtime does not understand. Either
+// way the descriptor exists so the bounded scanner consumes the envelope
+// through its family closing tag and never leaks raw protocol into the live
+// transcript or persisted answer.
+func familyProtocol(open []byte, family callFamily) pseudoProtocol {
 	opened := make([]byte, len(open))
 	copy(opened, open)
-	return pseudoProtocol{
+	protocol := pseudoProtocol{
 		name:        family.name,
 		open:        opened,
 		familyClose: true,
 		family:      family,
-		unsupported: true,
-		parse: func(string, *argumentCoercer) ([]ToolCall, error) {
-			return nil, errors.New("unrecognized " + family.name + " tool-call spelling")
-		},
 	}
+	if family.parse != nil {
+		// The family has a grammar, so a closed body that fails to parse is
+		// malformed and an unterminated envelope is incomplete. The decoration
+		// itself is not unsupported evidence.
+		protocol.parse = family.parse
+		return protocol
+	}
+	protocol.unsupported = true
+	protocol.parse = func(string, *argumentCoercer) ([]ToolCall, error) {
+		return nil, errors.New("unrecognized " + family.name + " tool-call spelling")
+	}
+	return protocol
 }
 
 // closingMarkers returns every accepted close for the protocol.
@@ -1004,7 +1021,7 @@ func (n *textNormalizer) process() []parsedItem {
 				// protocol residue, not unbounded prose. Consume its bytes and
 				// look for the family close with the normal envelope caps.
 				open := append([]byte(nil), n.pending...)
-				n.enterEnvelope(unknownFamilyProtocol(open, family), open)
+				n.enterEnvelope(familyProtocol(open, family), open)
 				n.pending = n.pending[:0]
 				continue
 			}
@@ -1071,7 +1088,7 @@ func (n *textNormalizer) earliestOpen(mask []bool) (idx, openLen int, protocol p
 				continue
 			}
 			tag := n.pending[familyIdx:familyEnd]
-			return familyIdx, len(tag), unknownFamilyProtocol(tag, family), false
+			return familyIdx, len(tag), familyProtocol(tag, family), false
 		}
 	}
 	if best >= 0 {
@@ -1712,15 +1729,100 @@ func parseXMLInvokeEnvelope(body string, coercer *argumentCoercer) ([]ToolCall, 
 	return calls, nil
 }
 
-// parseToolCallEnvelope accepts the two payload shapes commonly carried by a
-// generic <tool_call> marker: a JSON function object (one or an array), and
-// the XML invoke grammar. Anything else is rejected and stays visible text.
+// parseToolCallEnvelope accepts the payload shapes commonly carried by a
+// generic <tool_call> marker (including a provider-decorated tag): a JSON
+// function object (one or an array), the XML invoke grammar, and the
+// <function=name><parameter=key>value</parameter></function> grammar.
+// Anything else is rejected and stays visible text.
 func parseToolCallEnvelope(body string, coercer *argumentCoercer) ([]ToolCall, error) {
 	trimmed := strings.TrimSpace(body)
 	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return parseJSONToolCallEnvelope(trimmed)
 	}
+	if strings.HasPrefix(trimmed, functionOpenTag) {
+		return parseFunctionEnvelope(trimmed, coercer)
+	}
 	return parseXMLInvokeEnvelope(body, coercer)
+}
+
+const (
+	functionOpenTag   = "<function="
+	functionCloseTag  = "</function>"
+	parameterOpenTag  = "<parameter="
+	parameterCloseTag = "</parameter>"
+)
+
+// parseFunctionEnvelope parses the equals-delimited function grammar a free
+// gateway emits inside a <tool_call> envelope:
+//
+//	<function=todo>
+//	<parameter=op>done</parameter>
+//	<parameter=task>summarize the project</parameter>
+//	</function>
+//
+// The tag name is the tool name and each parameter tag name is the argument
+// key. The grammar is deliberately narrow: a missing terminator, empty name, or
+// non-parameter content rejects the whole envelope, so malformed serialization
+// can never be fabricated into an executable call. Values are trimmed like the
+// XML invoke grammar and coerced against the offered tool schema.
+func parseFunctionEnvelope(body string, coercer *argumentCoercer) ([]ToolCall, error) {
+	rest := strings.TrimSpace(body)
+	calls := make([]ToolCall, 0, 1)
+	for rest != "" {
+		if !strings.HasPrefix(rest, functionOpenTag) {
+			return nil, fmt.Errorf("expected %s", functionOpenTag)
+		}
+		rest = rest[len(functionOpenTag):]
+		end := strings.IndexByte(rest, '>')
+		if end < 0 {
+			return nil, errors.New("function tag is unterminated")
+		}
+		name := strings.TrimSpace(rest[:end])
+		if name == "" {
+			return nil, errors.New("function has no name")
+		}
+		if strings.ContainsAny(name, " \t\r\n<>=") {
+			return nil, fmt.Errorf("function name %q is not a bare identifier", name)
+		}
+		rest = rest[end+1:]
+
+		args := make(map[string]any)
+		for {
+			rest = strings.TrimSpace(rest)
+			if strings.HasPrefix(rest, functionCloseTag) {
+				rest = rest[len(functionCloseTag):]
+				break
+			}
+			if rest == "" {
+				return nil, errors.New("function is unterminated")
+			}
+			if !strings.HasPrefix(rest, parameterOpenTag) {
+				return nil, fmt.Errorf("expected %s or %s", parameterOpenTag, functionCloseTag)
+			}
+			rest = rest[len(parameterOpenTag):]
+			end = strings.IndexByte(rest, '>')
+			if end < 0 {
+				return nil, errors.New("parameter tag is unterminated")
+			}
+			key := strings.TrimSpace(rest[:end])
+			if key == "" {
+				return nil, errors.New("parameter has no name")
+			}
+			rest = rest[end+1:]
+			closeAt := strings.Index(rest, parameterCloseTag)
+			if closeAt < 0 {
+				return nil, fmt.Errorf("parameter %q is unterminated", key)
+			}
+			value := strings.TrimSpace(rest[:closeAt])
+			rest = rest[closeAt+len(parameterCloseTag):]
+			args[key] = coercer.coerce(name, key, value)
+		}
+		calls = append(calls, ToolCall{Name: name, Arguments: args})
+	}
+	if len(calls) == 0 {
+		return nil, errors.New("envelope contains no function")
+	}
+	return calls, nil
 }
 
 // LongCat's serialized-call grammar.

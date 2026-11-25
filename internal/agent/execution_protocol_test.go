@@ -212,10 +212,16 @@ func normalizedRequestStream(messages ...string) (ai.StreamFn, func() []ai.Reque
 }
 
 // decoratedEnvelope is the registered <tool_call> tag plus a fabricated call
-// id, the spelling that reached a persisted answer and a verified footer.
+// id around the equals-delimited function grammar the gateway emits.
 func decoratedEnvelope(id, path string) string {
 	return "<tool_call_" + id + ">\n<function=read>\n<parameter=limit>\n240\n" +
 		"</parameter>\n<parameter=path>\n" + path + "\n</parameter>\n</function>\n</tool_call_" + id + ">"
+}
+
+// undecodableEnvelope is a decorated tool-call tag whose body is not one of the
+// grammars the runtime can decode. It stays a normalization failure.
+func undecodableEnvelope(id string) string {
+	return "<tool_call_" + id + ">just prose</tool_call_" + id + ">"
 }
 
 // closedAnswerProjection is the answer boundary: the runtime holds enough
@@ -224,10 +230,10 @@ func closedAnswerProjection(ProjectionRequest) ProjectionResult {
 	return ProjectionResult{Report: ProjectionReport{AnswerEligible: true}}
 }
 
-// A decorated tool-call envelope emitted at the answer boundary is not an
-// answer. The surface is closed, so the one recovery asks for prose from the
-// evidence already observed; that answer commits and the diagnostic never
-// becomes the result.
+// A decorated tool-call envelope is decodable, so at a closed answer boundary
+// it is a canonical call the surface must refuse, not an answer and not a
+// protocol failure. The one bounded answer retry then produces the prose answer
+// from the evidence already observed.
 func TestSerializedSyntaxAtAnswerBoundaryIsNotTheAnswer(t *testing.T) {
 	envelope := decoratedEnvelope("24b82c79", "crates/gry-mcp/src/tools.rs")
 	const answer = "The project is a Rust workspace with a CLI, a store, and an MCP server."
@@ -249,38 +255,41 @@ func TestSerializedSyntaxAtAnswerBoundaryIsNotTheAnswer(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(turns) != 2 {
-		t.Fatalf("turns = %d, want the residue turn and the prose answer", len(turns))
+		t.Fatalf("turns = %d, want the refused call and the prose answer", len(turns))
 	}
-	if !turns[0].Assistant.ProtocolResidue {
-		t.Fatal("the decorated envelope was not recorded as protocol residue")
+	if failures := turns[0].Assistant.NormalizationFailures; len(failures) != 0 {
+		t.Fatalf("a decodable envelope was reported as a normalization failure: %+v", failures)
+	}
+	if calls := turns[0].Assistant.ToolCalls(); len(calls) != 1 || calls[0].Name != "read" {
+		t.Fatalf("decoded calls = %+v, want one read", calls)
 	}
 	if turns[0].Answer == AnswerCommitted {
-		t.Fatal("the residue diagnostic was committed as the answer")
+		t.Fatal("a call turn was committed as the answer")
 	}
 	if turns[1].Answer != AnswerCommitted || turns[1].Assistant.Text() != answer {
 		t.Fatalf("final answer = %q (%s), want the prose answer committed", turns[1].Assistant.Text(), turns[1].Answer)
 	}
 	if len(tool.invoked()) != 0 {
-		t.Fatal("a decorated envelope reached execution")
+		t.Fatal("a call on the closed answer surface reached execution")
 	}
 	if got := requests(); len(got) != 2 {
-		t.Fatalf("requests = %d, want residue + one recovery", len(got))
+		t.Fatalf("requests = %d, want refused call + one answer retry", len(got))
 	} else {
 		if len(got[1].Tools) != 0 {
-			t.Fatalf("recovery offered tools %v after the answer boundary closed", got[1].Tools)
+			t.Fatalf("answer retry offered tools %v after the answer boundary closed", got[1].Tools)
 		}
 		if state := lastRuntimeState(t, got[1]); !strings.Contains(state, "no tool is available") {
-			t.Fatalf("recovery did not ask for a prose answer: %q", state)
+			t.Fatalf("answer retry did not ask for prose: %q", state)
 		}
 	}
 }
 
-// The recovery is bounded. A second decorated envelope at the answer boundary
-// ends the run as a protocol failure, and no turn in the run is committed as
-// the answer.
+// A decorated tag whose body cannot be decoded is still a protocol failure. The
+// recovery is bounded: a second failure ends the run as
+// ErrToolNormalizationFailed, and no turn is committed as the answer.
 func TestSerializedSyntaxRecoveryAtAnswerBoundaryIsBounded(t *testing.T) {
-	first := decoratedEnvelope("24b82c79", "crates/gry-mcp/src/tools.rs")
-	second := decoratedEnvelope("24b82c80", "crates/gry-query/src/search.rs")
+	first := undecodableEnvelope("24b82c79")
+	second := undecodableEnvelope("24b82c80")
 	stream, requests := normalizedRequestStream(first, second)
 	loop, err := New(Config{
 		Model:         catalog.MustResolve("anthropic/claude-sonnet-4-5"),
@@ -307,5 +316,47 @@ func TestSerializedSyntaxRecoveryAtAnswerBoundaryIsBounded(t *testing.T) {
 	}
 	if completion := EvaluateCompletion(turns, false); completion.Complete() {
 		t.Fatalf("completion = %#v, want a review verdict for protocol residue", completion)
+	}
+}
+
+// A decorated plan call at the answer boundary is the exact shape a free
+// gateway emitted for the final todo reconciliation. Decoding it lets the plan
+// close and the run commit the answer instead of ending in
+// TOOL_NORMALIZATION_FAILED with an open plan.
+func TestDecoratedPlanCallReconcilesAtAnswerBoundary(t *testing.T) {
+	const item = "Summarize what the project is and conclude the investigation"
+	plan := &scriptedPlanTool{items: []string{item}}
+	envelope := "<tool_call_24b82c79>\n<function=todo>\n<parameter=op>\ndone\n</parameter>\n" +
+		"<parameter=task>\n" + item + "\n</parameter>\n</function>\n</tool_call_24b82c79>"
+	const answer = "The project is a static website with a script and stylesheet."
+	stream, requests := normalizedRequestStream(envelope, answer)
+	loop, err := New(Config{
+		Model:         catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		Stream:        stream,
+		Tools:         []Tool{plan},
+		Project:       closedAnswerProjection,
+		AnswerRequest: "no tool is available; answer from the observed evidence now",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "what is this project?"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if plan.calls != 1 {
+		t.Fatalf("plan executions = %d, want the decoded reconciliation call", plan.calls)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("turns = %d, want the plan call and the committed answer", len(turns))
+	}
+	if turns[len(turns)-1].Answer != AnswerCommitted ||
+		turns[len(turns)-1].Assistant.Text() != answer {
+		t.Fatalf("final answer = %q (%s), want the prose answer committed",
+			turns[len(turns)-1].Assistant.Text(), turns[len(turns)-1].Answer)
+	}
+	if got := requests(); len(got) != 2 {
+		t.Fatalf("requests = %d, want plan reconciliation + answer", len(got))
 	}
 }

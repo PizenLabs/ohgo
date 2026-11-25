@@ -616,6 +616,15 @@ immutable.
 
 ### Fixed
 
+- A decorated `<tool_call>` spelling whose body uses a grammar the runtime
+  understands (JSON, the XML invoke form, or the equals-delimited
+  `<function=name><parameter=key>` form) is decoded into the same canonical call
+  as the registered tag. The earlier containment-only behavior turned a
+  legitimate final plan reconciliation into `TOOL_NORMALIZATION_FAILED` with an
+  open plan. The decoration is ignored and grants no authority; the call still
+  crosses authorization, schema validation, and execution. A decorated body
+  without a recognized grammar remains contained as a malformed or
+  unsupported-envelope diagnostic and is never fabricated into a call.
 - An OpenRouter 403 that failed the
   `Gate Free Endpoints by Agentic Harness` routing step is classified as an
   eligibility restriction and explained, while preserving the HTTP status,

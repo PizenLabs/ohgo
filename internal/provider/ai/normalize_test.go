@@ -1433,16 +1433,19 @@ func TestNormalizeMessageRecordsStructuredFailureStatus(t *testing.T) {
 			want: NormalizationUnsupported,
 		},
 		{
-			name: "decorated tool-call family",
-			text: decoratedToolCallEnvelope("24b82c79", "crates/gry-mcp/src/tools.rs"),
-			want: NormalizationUnsupported,
+			// The tag is a decorated member of the tool-call family, so it is
+			// consumed; the body is not one of the grammars the runtime can
+			// decode and is never fabricated into a call.
+			name: "malformed decorated tool-call family",
+			text: "<tool_call_24b82c79>just prose</tool_call_24b82c79>",
+			want: NormalizationInvalid,
 		},
 		{
-			// An undecodable spelling stays unsupported whether or not it
+			// An undecodable spelling stays contained whether or not it
 			// closed: the build cannot tell what the envelope meant.
 			name: "incomplete decorated tool-call family",
 			text: "<tool_call_24b82c79><function=read><parameter=path>crates/gry-mcp/src/tools.rs",
-			want: NormalizationUnsupported,
+			want: NormalizationIncomplete,
 		},
 	}
 	for _, tc := range cases {
@@ -1473,62 +1476,81 @@ func TestNormalizeMessageRecordsStructuredFailureStatus(t *testing.T) {
 	}
 }
 
-// decoratedToolCallEnvelope is the spelling a free gateway emitted for four
-// reads: the registered <tool_call> tag plus a fabricated call id. It reached a
-// persisted answer and was reported as a verified completion.
+// decoratedToolCallEnvelope is the spelling a free gateway emitted: the
+// registered <tool_call> tag plus a fabricated call id around the
+// equals-delimited function grammar.
 func decoratedToolCallEnvelope(id, path string) string {
 	return "<tool_call_" + id + ">\n<function=read>\n<parameter=limit>\n240\n" +
 		"</parameter>\n<parameter=path>\n" + path + "\n</parameter>\n</function>\n</tool_call_" + id + ">"
 }
 
 // A decorated tool-call tag is the same protocol family as the registered
-// spelling. Its envelope must be consumed as one unsupported diagnostic: no
-// call may be fabricated, no protocol bytes may survive into live text or
-// persistence, and the stop reason must not claim a tool-use turn.
-func TestNormalizeDecoratedToolCallTagIsResidue(t *testing.T) {
+// spelling. When its body uses a grammar the runtime understands, the body is
+// decoded into canonical calls: the decoration is transport noise and grants no
+// authority. The call still passes through the normal authorization and
+// execution path.
+func TestNormalizeDecoratedToolCallTagIsDecoded(t *testing.T) {
 	// Adjacent envelopes are the observed shape: the close of one is
 	// immediately followed by the open of the next, with no separating prose.
 	envelope := decoratedToolCallEnvelope("24b82c79", "crates/gry-mcp/src/tools.rs") +
 		decoratedToolCallEnvelope("24b82c80", "crates/gry-query/src/search.rs")
 	run := runNormalize(t, []string{envelope[:24], envelope[24:60], envelope[60:]}, NormalizeOptions{Provider: "opencode-go"})
 
-	if len(run.calls) != 0 {
-		t.Fatalf("a decorated envelope was executed as a call: %+v", run.calls)
+	if len(run.calls) != 2 {
+		t.Fatalf("live tool calls = %d, want 2", len(run.calls))
 	}
-	if !run.msg.ProtocolResidue {
-		t.Fatal("the decorated envelope was not marked as protocol residue")
+	for i, wantPath := range []string{
+		"crates/gry-mcp/src/tools.rs", "crates/gry-query/src/search.rs",
+	} {
+		call := run.calls[i]
+		if call.Name != "read" {
+			t.Fatalf("call[%d].Name = %q, want read", i, call.Name)
+		}
+		if call.Arguments["path"] != wantPath {
+			t.Fatalf("call[%d].Arguments[path] = %v, want %q", i, call.Arguments["path"], wantPath)
+		}
 	}
-	if len(run.msg.NormalizationFailures) != 2 {
-		t.Fatalf("failures = %+v, want exactly one per envelope", run.msg.NormalizationFailures)
+	if run.msg.ProtocolResidue {
+		t.Fatal("a decoded decorated envelope was marked as protocol residue")
 	}
-	failure := run.msg.NormalizationFailures[0]
-	if failure.Status != NormalizationUnsupported {
-		t.Fatalf("status = %q, want UNSUPPORTED", failure.Status)
+	if len(run.msg.NormalizationFailures) != 0 {
+		t.Fatalf("failures = %+v, want none", run.msg.NormalizationFailures)
 	}
-	if failure.Protocol != "tool_call_family" {
-		t.Fatalf("protocol = %q, want tool_call_family", failure.Protocol)
-	}
-	if run.msg.StopReason == StopToolUse {
-		t.Fatal("an undecoded envelope upgraded the turn to tool use")
+	if run.msg.StopReason != StopToolUse {
+		t.Fatalf("stop reason = %q, want %q", run.msg.StopReason, StopToolUse)
 	}
 	for _, text := range []string{run.text, run.msg.Text()} {
-		if strings.Contains(text, "<tool_call_") || strings.Contains(text, "<function=") ||
-			strings.Contains(text, "crates/gry-mcp/src/tools.rs") ||
-			strings.Contains(text, "crates/gry-query/src/search.rs") {
+		if text != "" {
 			t.Fatalf("protocol bytes survived into assistant text: %q", text)
 		}
-		if !strings.Contains(text, "could not be normalized") {
-			t.Fatalf("text = %q, want the bounded diagnostic", text)
-		}
 	}
-	if run.text != run.msg.Text() {
-		t.Fatalf("live text %q != final text %q", run.text, run.msg.Text())
+}
+
+// The equals-delimited function grammar is also valid inside the exact
+// registered <tool_call> tag, not only a decorated one.
+func TestNormalizeFunctionGrammarInsideRegisteredTag(t *testing.T) {
+	input := "<tool_call>\n<function=todo>\n<parameter=op>\ndone\n</parameter>\n" +
+		"<parameter=task>\nSummarize the project\n</parameter>\n</function>\n</tool_call>"
+	run := runNormalize(t, []string{input}, NormalizeOptions{})
+	if len(run.calls) != 1 {
+		t.Fatalf("calls = %+v, want one decoded todo call", run.calls)
+	}
+	call := run.calls[0]
+	if call.Name != "todo" || call.Arguments["op"] != "done" ||
+		call.Arguments["task"] != "Summarize the project" {
+		t.Fatalf("call = %+v, want todo/done/summarize", call)
+	}
+	if run.msg.ProtocolResidue {
+		t.Fatal("a decoded envelope was marked as protocol residue")
+	}
+	if run.text != "" {
+		t.Fatalf("visible text = %q, want no protocol bytes", run.text)
 	}
 }
 
 // The same decorated envelope in a quoted example is documentation, not
 // protocol. The family detector must not turn a documented wire shape into a
-// completion veto.
+// completion veto or a call.
 func TestNormalizeQuotedDecoratedToolCallTagIsContent(t *testing.T) {
 	input := "The gateway emitted `<tool_call_24b82c79>` around the call."
 	got := NormalizeMessage(AssistantMessage{
