@@ -1871,15 +1871,29 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// protocol failure, not an answer. Spend one bounded recovery
 			// request asking for the canonical call; never execute or invent
 			// the partial envelope. A second failure is terminal for this run.
-			if len(assistant.NormalizationFailures) > 0 && !closed {
+			//
+			// The answer boundary can also produce this shape: the surface is
+			// closed, so there is no canonical call left to re-emit. The one
+			// recovery then asks for the prose answer from the evidence already
+			// observed, and the diagnostic is still never published as the
+			// answer. Without this branch a closed surface accepted the
+			// diagnostic as a committed answer.
+			if len(assistant.NormalizationFailures) > 0 {
 				normalizationPending = true
-				if !normalizationRecoveryAttempted && len(activeTools) > 0 && len(turns) < l.cfg.MaxTurns {
-					normalizationRecoveryAttempted = true
-					if strings.TrimSpace(l.cfg.ProtocolRecoveryRequest) != "" {
-						nudges = append(nudges, l.cfg.ProtocolRecoveryRequest)
+				if !normalizationRecoveryAttempted && len(turns) < l.cfg.MaxTurns {
+					directive := ""
+					switch {
+					case closed:
+						directive = l.cfg.AnswerRequest
+					case len(activeTools) > 0:
+						directive = l.cfg.ProtocolRecoveryRequest
 					}
-					reportTurn()
-					continue
+					if strings.TrimSpace(directive) != "" {
+						normalizationRecoveryAttempted = true
+						nudges = append(nudges, directive)
+						reportTurn()
+						continue
+					}
 				}
 				reportTurn()
 				return turns, fmt.Errorf("%w: %s", ErrToolNormalizationFailed,

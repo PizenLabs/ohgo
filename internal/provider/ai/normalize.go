@@ -467,10 +467,7 @@ func (d *residueDetector) sanitize(text string) (string, bool) {
 		}
 		rel := strings.IndexByte(lower[i:limit], '>')
 		if rel < 0 {
-			tag := lower[i:]
-			if isDotsCallTagPrefix(tag) ||
-				strings.HasPrefix(tag, "<tool_call") ||
-				strings.HasPrefix(tag, "</tool_call") {
+			if isFamilyTagPrefix(lower[i:]) {
 				b.WriteString(protocolFailureText(DiagnosticMalformedPseudoToolCall, "serialized-tool-call"))
 				changed = true
 				break
@@ -481,8 +478,7 @@ func (d *residueDetector) sanitize(text string) (string, bool) {
 		}
 		end := i + rel + 1
 		tag := lower[i:end]
-		if isDotsCallOpenTag(tag) || isDotsCallCloseTag(tag) ||
-			tag == "<tool_call>" || tag == "</tool_call>" {
+		if isFamilyTag(tag) {
 			b.WriteString(protocolFailureText(DiagnosticMalformedPseudoToolCall, "serialized-tool-call"))
 			changed = true
 			i = end
@@ -497,40 +493,93 @@ func (d *residueDetector) sanitize(text string) (string, bool) {
 	return b.String(), true
 }
 
-// isDotsCallOpenTag reports whether tag is an opening tag in the dots-call
-// family, independent of the exact separator spelling.
-func isDotsCallOpenTag(tag string) bool {
+// callFamily names a serialized tool-call tag family whose exact registered
+// spelling may be decorated by the provider, usually with a call id.
+//
+// The registry decodes exact spellings. A decorated spelling is still the same
+// protocol family, so the scanner must consume the envelope instead of
+// publishing it as prose; it is never decoded into an executable call. A
+// provider that decorates a registered envelope adds its prefix here, not a
+// branch in the TUI or the agent loop.
+type callFamily struct {
+	// name identifies the family in diagnostics.
+	name string
+	// open and close are the lower-case tag prefixes.
+	open  string
+	close string
+	// require, when set, is a substring the tag name must contain. The dots
+	// family historically requires "call" so an ordinary word that merely
+	// starts with the prefix is not consumed as protocol.
+	require string
+}
+
+// callFamilies lists the prefixes this build can contain. The exact registered
+// protocol wins when both match; the family exists only as the safe fallback.
+var callFamilies = []callFamily{
+	{name: "dots_call_family", open: "<dots", close: "</dots", require: "call"},
+	{name: "tool_call_family", open: "<tool_call", close: "</tool_call"},
+	{name: "toolcall_family", open: "<toolcall", close: "</toolcall"},
+}
+
+// familyAt returns the family whose opening prefix starts buf.
+func familyAt(buf []byte) (callFamily, bool) {
+	lower := bytes.ToLower(buf)
+	for _, family := range callFamilies {
+		if bytes.HasPrefix(lower, []byte(family.open)) {
+			return family, true
+		}
+	}
+	return callFamily{}, false
+}
+
+// familyTagName returns the lower-case name inside an opening or closing tag.
+func familyTagName(tag string) string {
+	tag = strings.ToLower(strings.TrimSpace(tag))
+	tag = strings.TrimPrefix(tag, "</")
+	tag = strings.TrimPrefix(tag, "<")
+	return strings.TrimSuffix(tag, ">")
+}
+
+// isFamilyOpenTag reports whether tag is a complete opening tag in the family.
+func (f callFamily) isOpenTag(tag string) bool {
 	tag = strings.ToLower(strings.TrimSpace(tag))
 	if !strings.HasPrefix(tag, "<") || strings.HasPrefix(tag, "</") {
 		return false
 	}
-	name := strings.TrimSuffix(strings.TrimPrefix(tag, "<"), ">")
-	return strings.HasPrefix(name, "dots") && strings.Contains(name, "call")
+	if !strings.HasPrefix(tag, f.open) {
+		return false
+	}
+	return f.require == "" || strings.Contains(familyTagName(tag), f.require)
 }
 
-// isDotsCallCloseTag reports whether tag is a closing tag in the family.
-func isDotsCallCloseTag(tag string) bool {
-	tag = strings.ToLower(strings.TrimSpace(tag))
-	if !strings.HasPrefix(tag, "</") {
-		return false
+// isFamilyTag reports whether a complete tag belongs to any call family.
+func isFamilyTag(tag string) bool {
+	for _, family := range callFamilies {
+		if family.isOpenTag(tag) {
+			return true
+		}
+		if strings.HasPrefix(strings.ToLower(tag), family.close) &&
+			(family.require == "" || strings.Contains(familyTagName(tag), family.require)) {
+			return true
+		}
 	}
-	name := strings.TrimSuffix(strings.TrimPrefix(tag, "</"), ">")
-	return strings.HasPrefix(name, "dots") && strings.Contains(name, "call")
+	return false
 }
 
-// isDotsCallTagPrefix reports whether a partial tag could become a dots-call
-// opening or closing tag. It is used only by the residue fallback, where the
-// normalizer has already had the chance to consume a complete tag.
-func isDotsCallTagPrefix(tag string) bool {
-	if !strings.HasPrefix(tag, "<") {
-		return false
+// isFamilyTagPrefix reports whether a partial tag could become one. It is used
+// only by the residue fallback, where the normalizer has already had the chance
+// to consume a complete tag.
+func isFamilyTagPrefix(tag string) bool {
+	lower := strings.ToLower(tag)
+	for _, family := range callFamilies {
+		if !strings.HasPrefix(lower, family.open) && !strings.HasPrefix(lower, family.close) {
+			continue
+		}
+		if family.require == "" || strings.Contains(familyTagName(lower), family.require) {
+			return true
+		}
 	}
-	name := strings.TrimPrefix(tag, "<")
-	name = strings.TrimPrefix(name, "/")
-	if !strings.HasPrefix(name, "dots") {
-		return false
-	}
-	return strings.Contains(name, "call")
+	return false
 }
 
 // appendTextBlock merges adjacent text so normalization never inserts the
@@ -587,12 +636,15 @@ type pseudoProtocol struct {
 	// for one envelope shape; requiring an exact pair would leak the envelope
 	// as prose on the other spelling.
 	extraCloses [][]byte
-	// familyClose reports that the close side is any `</dots...call>` tag
-	// rather than one exact spelling. Unknown dots-family openings use it: the
-	// family is recognizable even when this build has never seen the exact
-	// separator spelling, and the body can still be consumed instead of being
-	// published as assistant prose.
+	// familyClose reports that the close side is any tag in family rather than
+	// one exact spelling. Decorative spellings use it: the family is
+	// recognizable even when this build has never seen the exact separator, and
+	// the body can still be consumed instead of being published as assistant
+	// prose.
 	familyClose bool
+	// family is the tag family an unknown spelling belongs to. It is only set
+	// when familyClose is true.
+	family callFamily
 	// unsupported marks a recognized family spelling this build cannot decode.
 	// It changes the failure classification, never the containment behaviour.
 	unsupported bool
@@ -601,24 +653,25 @@ type pseudoProtocol struct {
 	parse func(body string, coercer *argumentCoercer) ([]ToolCall, error)
 }
 
-// unknownFamilyProtocol describes an opening tag in the dots-call family that
-// is not one of the registered spellings.
+// unknownFamilyProtocol describes an opening tag in a call family that is not
+// one of the registered spellings.
 //
 // It is not parsed: no action may be fabricated from a representation the
 // runtime does not understand. The descriptor exists so the bounded scanner
 // can consume the envelope through its family closing tag and report one
 // truthful diagnostic instead of leaking raw protocol into the live transcript
 // or persisted answer.
-func unknownFamilyProtocol(open []byte) pseudoProtocol {
+func unknownFamilyProtocol(open []byte, family callFamily) pseudoProtocol {
 	opened := make([]byte, len(open))
 	copy(opened, open)
 	return pseudoProtocol{
-		name:        "dots_call_family",
+		name:        family.name,
 		open:        opened,
 		familyClose: true,
+		family:      family,
 		unsupported: true,
 		parse: func(string, *argumentCoercer) ([]ToolCall, error) {
-			return nil, errors.New("unrecognized dots-family tool-call spelling")
+			return nil, errors.New("unrecognized " + family.name + " tool-call spelling")
 		},
 	}
 }
@@ -946,12 +999,12 @@ func (n *textNormalizer) process() []parsedItem {
 			// tag until its terminator (or the bounded fallback) resolves it.
 			out = n.emitText(out, string(n.pending[:idx]))
 			n.pending = append(n.pending[:0], n.pending[idx:]...)
-			if bytes.HasPrefix(bytes.ToLower(n.pending), []byte("<dots")) && len(n.pending) >= maxOpenTagBytes {
+			if family, ok := familyAt(n.pending); ok && len(n.pending) >= maxOpenTagBytes {
 				// A family tag that has not terminated within the bound is
 				// protocol residue, not unbounded prose. Consume its bytes and
 				// look for the family close with the normal envelope caps.
 				open := append([]byte(nil), n.pending...)
-				n.enterEnvelope(unknownFamilyProtocol(open), open)
+				n.enterEnvelope(unknownFamilyProtocol(open, family), open)
 				n.pending = n.pending[:0]
 				continue
 			}
@@ -1006,18 +1059,20 @@ func (n *textNormalizer) earliestOpen(mask []bool) (idx, openLen int, protocol p
 		}
 	}
 
-	familyIdx, state, familyEnd := n.earliestFamilyOpen(mask)
-	switch state {
-	case familyTagPartial:
-		if best < 0 || familyIdx < best {
-			return familyIdx, 0, pseudoProtocol{}, true
+	for _, family := range callFamilies {
+		familyIdx, state, familyEnd := n.earliestFamilyOpen(mask, family)
+		switch state {
+		case familyTagPartial:
+			if best < 0 || familyIdx < best {
+				return familyIdx, 0, pseudoProtocol{}, true
+			}
+		case familyTagComplete:
+			if best >= 0 && best <= familyIdx {
+				continue
+			}
+			tag := n.pending[familyIdx:familyEnd]
+			return familyIdx, len(tag), unknownFamilyProtocol(tag, family), false
 		}
-	case familyTagComplete:
-		if best >= 0 && best <= familyIdx {
-			return best, bestLen, match, false
-		}
-		tag := n.pending[familyIdx:familyEnd]
-		return familyIdx, len(tag), unknownFamilyProtocol(tag), false
 	}
 	if best >= 0 {
 		return best, bestLen, match, false
@@ -1025,12 +1080,12 @@ func (n *textNormalizer) earliestOpen(mask []bool) (idx, openLen int, protocol p
 	return -1, 0, pseudoProtocol{}, false
 }
 
-// earliestFamilyOpen finds the earliest live dots-family opening tag even when
-// its separator spelling is not registered. A complete tag must contain
-// "call"; a tag shorter than the bound but without its terminator is partial
-// and must be retained.
-func (n *textNormalizer) earliestFamilyOpen(mask []bool) (int, familyTagState, int) {
-	const prefix = "<dots"
+// earliestFamilyOpen finds the earliest live opening tag in one family even
+// when its exact spelling is not registered. A complete tag must satisfy the
+// family's own rule; a tag shorter than the bound but without its terminator is
+// partial and must be retained.
+func (n *textNormalizer) earliestFamilyOpen(mask []bool, family callFamily) (int, familyTagState, int) {
+	prefix := []byte(family.open)
 	for i := 0; i < len(n.pending); i++ {
 		if mask[i] || n.pending[i] != '<' {
 			continue
@@ -1040,12 +1095,12 @@ func (n *textNormalizer) earliestFamilyOpen(mask []bool) (int, familyTagState, i
 		}
 		rest := bytes.ToLower(n.pending[i:])
 		if len(rest) < len(prefix) {
-			if bytes.HasPrefix([]byte(prefix), rest) {
+			if bytes.HasPrefix(prefix, rest) {
 				return i, familyTagPartial, -1
 			}
 			continue
 		}
-		if !bytes.HasPrefix(rest, []byte(prefix)) {
+		if !bytes.HasPrefix(rest, prefix) {
 			continue
 		}
 		limit := i + maxOpenTagBytes
@@ -1057,7 +1112,7 @@ func (n *textNormalizer) earliestFamilyOpen(mask []bool) (int, familyTagState, i
 			return i, familyTagPartial, -1
 		}
 		end := i + rel + 1
-		if isDotsCallOpenTag(string(n.pending[i:end])) {
+		if family.isOpenTag(string(n.pending[i:end])) {
 			return i, familyTagComplete, end
 		}
 		i = end - 1
@@ -1068,8 +1123,10 @@ func (n *textNormalizer) earliestFamilyOpen(mask []bool) (int, familyTagState, i
 // earliestStrayClose finds a live closing marker with no envelope to close.
 func (n *textNormalizer) earliestStrayClose(mask []bool) (int, int) {
 	best, bestLen := indexAnyLive(n.pending, mask, n.closes)
-	if idx, length := indexFamilyCloseLive(n.pending, mask); idx >= 0 && (best < 0 || idx < best) {
-		return idx, length
+	for _, family := range callFamilies {
+		if idx, length := indexFamilyCloseLive(n.pending, mask, family.close); idx >= 0 && (best < 0 || idx < best) {
+			best, bestLen = idx, length
+		}
 	}
 	return best, bestLen
 }
@@ -1083,13 +1140,15 @@ func (n *textNormalizer) retainedSuffix(mask []bool) int {
 			keep = length
 		}
 	}
-	if length := longestSuffixPrefixLive(bytes.ToLower(n.pending), mask, []byte("<dots")); length > keep {
-		keep = length
+	for _, family := range callFamilies {
+		if length := longestSuffixPrefixLive(bytes.ToLower(n.pending), mask, []byte(family.open)); length > keep {
+			keep = length
+		}
+		if length := familyCloseLiveSuffix(n.pending, mask, family.close); length > keep {
+			keep = length
+		}
 	}
 	if length := longestSuffixPrefixAnyLive(n.pending, mask, n.closes); length > keep {
-		keep = length
-	}
-	if length := familyCloseLiveSuffix(n.pending, mask); length > keep {
 		keep = length
 	}
 	return keep
@@ -1098,7 +1157,7 @@ func (n *textNormalizer) retainedSuffix(mask []bool) int {
 // findClose returns the next closing marker for the active envelope.
 func (n *textNormalizer) findClose(buf []byte) (int, int) {
 	if n.proto.familyClose {
-		return indexFamilyClose(buf)
+		return indexFamilyClose(buf, n.proto.family.close)
 	}
 	return indexAny(buf, n.proto.closingMarkers())
 }
@@ -1106,7 +1165,7 @@ func (n *textNormalizer) findClose(buf []byte) (int, int) {
 // retainedCloseSuffix holds only a suffix that could begin the active close.
 func (n *textNormalizer) retainedCloseSuffix(buf []byte) int {
 	if n.proto.familyClose {
-		return familyCloseSuffix(buf)
+		return familyCloseSuffix(buf, n.proto.family.close)
 	}
 	return longestSuffixPrefixAny(buf, n.proto.closingMarkers())
 }
@@ -1221,13 +1280,14 @@ func longestSuffixPrefixAnyLive(buf []byte, mask []bool, markers [][]byte) int {
 	return keep
 }
 
-// indexFamilyClose finds any `</dots...call>` closing tag. It is used for an
+// indexFamilyClose finds any closing tag in the family. It is used for an
 // unknown family spelling whose exact close was never registered.
-func indexFamilyClose(buf []byte) (int, int) {
+func indexFamilyClose(buf []byte, prefix string) (int, int) {
 	lower := bytes.ToLower(buf)
+	closePrefix := []byte(prefix)
 	offset := 0
 	for offset < len(lower) {
-		rel := bytes.Index(lower[offset:], []byte("</dots"))
+		rel := bytes.Index(lower[offset:], closePrefix)
 		if rel < 0 {
 			return -1, 0
 		}
@@ -1246,8 +1306,9 @@ func indexFamilyClose(buf []byte) (int, int) {
 }
 
 // indexFamilyCloseLive is indexFamilyClose restricted to live bytes.
-func indexFamilyCloseLive(buf []byte, mask []bool) (int, int) {
+func indexFamilyCloseLive(buf []byte, mask []bool, prefix string) (int, int) {
 	lower := bytes.ToLower(buf)
+	closePrefix := []byte(prefix)
 	for i := 0; i < len(lower); i++ {
 		if mask[i] || lower[i] != '<' {
 			continue
@@ -1255,7 +1316,7 @@ func indexFamilyCloseLive(buf []byte, mask []bool) (int, int) {
 		if i+1 >= len(lower) || lower[i+1] != '/' {
 			continue
 		}
-		if !bytes.HasPrefix(lower[i:], []byte("</dots")) {
+		if !bytes.HasPrefix(lower[i:], closePrefix) {
 			continue
 		}
 		limit := i + maxOpenTagBytes
@@ -1270,7 +1331,7 @@ func indexFamilyCloseLive(buf []byte, mask []bool) (int, int) {
 		if mask[end-1] {
 			continue
 		}
-		if isDotsCallCloseTag(string(lower[i:end])) {
+		if bytes.Contains(lower[i:end], []byte("call")) {
 			return i, end - i
 		}
 	}
@@ -1279,20 +1340,21 @@ func indexFamilyCloseLive(buf []byte, mask []bool) (int, int) {
 
 // familyCloseSuffix is the retained close prefix for an unknown family
 // envelope.
-func familyCloseSuffix(buf []byte) int {
+func familyCloseSuffix(buf []byte, prefix string) int {
 	lower := bytes.ToLower(buf)
+	closePrefix := []byte(prefix)
 	for i := len(buf) - 1; i >= 0; i-- {
 		if buf[i] != '<' {
 			continue
 		}
 		tail := lower[i:]
-		if len(tail) <= len("</dots") {
-			if bytes.HasPrefix([]byte("</dots"), tail) {
+		if len(tail) <= len(closePrefix) {
+			if bytes.HasPrefix(closePrefix, tail) {
 				return len(tail)
 			}
 			return 0
 		}
-		if !bytes.HasPrefix(tail, []byte("</dots")) {
+		if !bytes.HasPrefix(tail, closePrefix) {
 			return 0
 		}
 		if bytes.IndexByte(tail, '>') < 0 && len(tail) < maxOpenTagBytes {
@@ -1304,20 +1366,21 @@ func familyCloseSuffix(buf []byte) int {
 }
 
 // familyCloseLiveSuffix is familyCloseSuffix restricted to live bytes.
-func familyCloseLiveSuffix(buf []byte, mask []bool) int {
+func familyCloseLiveSuffix(buf []byte, mask []bool, prefix string) int {
 	lower := bytes.ToLower(buf)
+	closePrefix := []byte(prefix)
 	for i := len(buf) - 1; i >= 0; i-- {
 		if mask[i] || buf[i] != '<' {
 			continue
 		}
 		tail := lower[i:]
-		if len(tail) <= len("</dots") {
-			if bytes.HasPrefix([]byte("</dots"), tail) {
+		if len(tail) <= len(closePrefix) {
+			if bytes.HasPrefix(closePrefix, tail) {
 				return len(tail)
 			}
 			return 0
 		}
-		if !bytes.HasPrefix(tail, []byte("</dots")) {
+		if !bytes.HasPrefix(tail, closePrefix) {
 			return 0
 		}
 		if bytes.IndexByte(tail, '>') < 0 && len(tail) < maxOpenTagBytes {

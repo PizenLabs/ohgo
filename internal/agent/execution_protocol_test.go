@@ -182,3 +182,130 @@ func TestBatchMayMutateUsesPerCallCapability(t *testing.T) {
 		t.Fatal("an execution-only invocation was treated as a mutation")
 	}
 }
+
+// normalizedRequestStream serves normalized responses and records every request
+// the loop sent, so a test can assert the surface the recovery actually saw.
+func normalizedRequestStream(messages ...string) (ai.StreamFn, func() []ai.Request) {
+	var (
+		mu       sync.Mutex
+		index    int
+		requests []ai.Request
+	)
+	stream := func(ctx context.Context, req ai.Request) (*ai.Stream, error) {
+		mu.Lock()
+		position := index
+		index++
+		requests = append(requests, req)
+		mu.Unlock()
+		if position >= len(messages) {
+			return ai.NewCompletedStream(ai.AssistantMessage{}), nil
+		}
+		return ai.NormalizeStream(ctx, ai.NewTextStream(messages[position]), ai.NormalizeOptions{
+			Provider: "test",
+		}), nil
+	}
+	return stream, func() []ai.Request {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]ai.Request(nil), requests...)
+	}
+}
+
+// decoratedEnvelope is the registered <tool_call> tag plus a fabricated call
+// id, the spelling that reached a persisted answer and a verified footer.
+func decoratedEnvelope(id, path string) string {
+	return "<tool_call_" + id + ">\n<function=read>\n<parameter=limit>\n240\n" +
+		"</parameter>\n<parameter=path>\n" + path + "\n</parameter>\n</function>\n</tool_call_" + id + ">"
+}
+
+// closedAnswerProjection is the answer boundary: the runtime holds enough
+// evidence, so the loop withdraws every tool before the model answers.
+func closedAnswerProjection(ProjectionRequest) ProjectionResult {
+	return ProjectionResult{Report: ProjectionReport{AnswerEligible: true}}
+}
+
+// A decorated tool-call envelope emitted at the answer boundary is not an
+// answer. The surface is closed, so the one recovery asks for prose from the
+// evidence already observed; that answer commits and the diagnostic never
+// becomes the result.
+func TestSerializedSyntaxAtAnswerBoundaryIsNotTheAnswer(t *testing.T) {
+	envelope := decoratedEnvelope("24b82c79", "crates/gry-mcp/src/tools.rs")
+	const answer = "The project is a Rust workspace with a CLI, a store, and an MCP server."
+	stream, requests := normalizedRequestStream(envelope, answer)
+	tool := newScriptedTool("read", "result")
+	loop, err := New(Config{
+		Model:         catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		Stream:        stream,
+		Tools:         []Tool{tool},
+		Project:       closedAnswerProjection,
+		AnswerRequest: "no tool is available; answer from the observed evidence now",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "what is this project?"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("turns = %d, want the residue turn and the prose answer", len(turns))
+	}
+	if !turns[0].Assistant.ProtocolResidue {
+		t.Fatal("the decorated envelope was not recorded as protocol residue")
+	}
+	if turns[0].Answer == AnswerCommitted {
+		t.Fatal("the residue diagnostic was committed as the answer")
+	}
+	if turns[1].Answer != AnswerCommitted || turns[1].Assistant.Text() != answer {
+		t.Fatalf("final answer = %q (%s), want the prose answer committed", turns[1].Assistant.Text(), turns[1].Answer)
+	}
+	if len(tool.invoked()) != 0 {
+		t.Fatal("a decorated envelope reached execution")
+	}
+	if got := requests(); len(got) != 2 {
+		t.Fatalf("requests = %d, want residue + one recovery", len(got))
+	} else {
+		if len(got[1].Tools) != 0 {
+			t.Fatalf("recovery offered tools %v after the answer boundary closed", got[1].Tools)
+		}
+		if state := lastRuntimeState(t, got[1]); !strings.Contains(state, "no tool is available") {
+			t.Fatalf("recovery did not ask for a prose answer: %q", state)
+		}
+	}
+}
+
+// The recovery is bounded. A second decorated envelope at the answer boundary
+// ends the run as a protocol failure, and no turn in the run is committed as
+// the answer.
+func TestSerializedSyntaxRecoveryAtAnswerBoundaryIsBounded(t *testing.T) {
+	first := decoratedEnvelope("24b82c79", "crates/gry-mcp/src/tools.rs")
+	second := decoratedEnvelope("24b82c80", "crates/gry-query/src/search.rs")
+	stream, requests := normalizedRequestStream(first, second)
+	loop, err := New(Config{
+		Model:         catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		Stream:        stream,
+		Tools:         []Tool{newScriptedTool("read", "result")},
+		Project:       closedAnswerProjection,
+		AnswerRequest: "no tool is available; answer from the observed evidence now",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "what is this project?"}})
+	if !errors.Is(err, ErrToolNormalizationFailed) {
+		t.Fatalf("Run error = %v, want ErrToolNormalizationFailed", err)
+	}
+	if len(requests()) != 2 {
+		t.Fatalf("requests = %d, want exactly one recovery attempt", len(requests()))
+	}
+	for _, turn := range turns {
+		if turn.Answer == AnswerCommitted {
+			t.Fatalf("a protocol failure was committed as the answer: %q", turn.Assistant.Text())
+		}
+	}
+	if completion := EvaluateCompletion(turns, false); completion.Complete() {
+		t.Fatalf("completion = %#v, want a review verdict for protocol residue", completion)
+	}
+}
