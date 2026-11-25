@@ -255,6 +255,14 @@ immutable.
 
 ### Fixed
 
+- A serialized tool call whose tag carries a provider decoration, such as
+  `<tool_call_24b82c79>`, is recognized as the `<tool_call>` family. The
+  envelope is consumed as one unsupported-envelope diagnostic instead of being
+  persisted as assistant prose; no call is fabricated. The decoration cannot
+  survive into a committed answer or a `verified` footer: completion reports
+  protocol residue as `NEEDS_REVIEW`, and at a closed answer boundary the one
+  bounded recovery asks for the prose answer from observed evidence instead of
+  a canonical call the runtime no longer offers.
 - An open task plan can no longer outlive the answer that ended the run. The
   answer boundary used to withdraw every tool, including `todo`, then tell the
   model to answer; the durable task then refused completion for the plan the
