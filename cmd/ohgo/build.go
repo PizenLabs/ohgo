@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
@@ -183,10 +185,34 @@ func structuralCacheFor(source *tools.StructuralSource) structural.Cache {
 // semanticProvider configures the discovered language servers. Starting is
 // lazy: a machine with no server reports semantic evidence unavailable, and a
 // machine with several starts only the one the request selects.
+//
+// Root discovery is lazy too. Resolving each server's project root walks the
+// workspace, and doing that during composition made a large checkout (a Rust
+// project with a built target/ directory, for example) pay one full scan per
+// installed language server before the first prompt. Discovery here only
+// performs PATH lookups; the first semantic request resolves every root once.
 func semanticProvider(root string, source *tools.StructuralSource, lookPath lookPathFunc) *investigate.SemanticProvider {
-	specs := languageServerSpecs(root, lookPath)
-	if len(specs) == 0 {
+	return semanticProviderWithWalk(root, source, lookPath, filepath.WalkDir)
+}
+
+// semanticProviderWithWalk is semanticProvider with the workspace walk injected
+// so a test can prove composition does not scan the tree.
+func semanticProviderWithWalk(root string, source *tools.StructuralSource, lookPath lookPathFunc, walk projectWalkFunc) *investigate.SemanticProvider {
+	commands := languageServerCommands(lookPath)
+	if len(commands) == 0 {
 		return &investigate.SemanticProvider{}
+	}
+	// Start is called per semantic step. Resolving the roots once and reusing
+	// them keeps a multi-step investigation from rescanning the tree.
+	var (
+		once  sync.Once
+		specs []semantic.Spec
+	)
+	resolve := func() []semantic.Spec {
+		once.Do(func() {
+			specs = resolveProjectRoots(root, commands, walk)
+		})
+		return specs
 	}
 	return &investigate.SemanticProvider{
 		Root: root,
@@ -196,7 +222,8 @@ func semanticProvider(root string, source *tools.StructuralSource, lookPath look
 		DefaultLanguage: func() string { return dominantLanguage(source) },
 		SnapshotID:      func() string { return structuralSnapshotID(source) },
 		Start: func(context.Context) (*semantic.Manager, error) {
-			return semantic.NewManager(root, specs, len(specs)), nil
+			resolved := resolve()
+			return semantic.NewManager(root, resolved, len(resolved)), nil
 		},
 	}
 }

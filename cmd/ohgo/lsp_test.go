@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,6 +92,70 @@ func TestNearestProjectRootKeepsAmbiguousMonorepoRoot(t *testing.T) {
 	writeProjectMarker(t, root, "packages/b/package.json")
 	if got := nearestProjectRoot(root, "package.json"); got != root {
 		t.Fatalf("root = %q, want %q", got, root)
+	}
+}
+
+// TestSemanticProviderDefersProjectRootWalkUntilStart pins the startup
+// contract: composing the semantic provider must not scan the workspace, and
+// the first semantic step must scan it once even when several servers are
+// installed. A reintroduced eager scan makes a large checkout pay seconds of
+// filesystem work before the first frame.
+func TestSemanticProviderDefersProjectRootWalkUntilStart(t *testing.T) {
+	root := t.TempDir()
+	writeProjectMarker(t, root, "Cargo.toml")
+	writeProjectMarker(t, root, "go.mod")
+	walks := 0
+	walk := func(root string, fn fs.WalkDirFunc) error {
+		walks++
+		return filepath.WalkDir(root, fn)
+	}
+	provider := semanticProviderWithWalk(root, nil, fakeLookPath(map[string]string{
+		"rust-analyzer": "/bin/rust-analyzer",
+		"gopls":         "/bin/gopls",
+	}), walk)
+	if !provider.Available(context.Background()) {
+		t.Fatal("provider with installed servers reported unavailable")
+	}
+	if walks != 0 {
+		t.Fatalf("composing the provider walked the workspace %d time(s)", walks)
+	}
+
+	first, err := provider.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+	if walks != 1 {
+		t.Fatalf("first Start walked the workspace %d time(s), want one shared scan", walks)
+	}
+
+	second, err := provider.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start again: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+	if walks != 1 {
+		t.Fatalf("a later Start rescanned the workspace (%d walks), want the cached result", walks)
+	}
+}
+
+// TestLanguageServerRootsSkipBuildOutput proves a generated Cargo.toml under
+// target/ is not mistaken for a second project: the server still loads the
+// repository's real crate instead of falling back to the workspace root.
+func TestLanguageServerRootsSkipBuildOutput(t *testing.T) {
+	root := t.TempDir()
+	writeProjectMarker(t, root, "crates/app/Cargo.toml")
+	writeProjectMarker(t, root, "target/debug/Cargo.toml")
+
+	specs := languageServerSpecsWithWalk(root, fakeLookPath(map[string]string{
+		"rust-analyzer": "/bin/rust-analyzer",
+	}), filepath.WalkDir)
+	if len(specs) != 1 {
+		t.Fatalf("specs = %+v, want the one installed server", specs)
+	}
+	want := filepath.Join(root, "crates", "app")
+	if specs[0].Root != want {
+		t.Fatalf("rust-analyzer root = %q, want the real crate %q", specs[0].Root, want)
 	}
 }
 

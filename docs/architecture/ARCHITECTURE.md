@@ -556,12 +556,18 @@ Recognition is an incremental, bounded state machine:
   assistant prose: the provider's serialization is not persisted as an answer
   and no call is fabricated. The message is marked as protocol residue, so
   completion reports `NEEDS_REVIEW` instead of success.
-- A registered tag with a provider decoration is the same family: a decorated
-  `<tool_call>` spelling (for example an appended call id) is consumed as one
-  unsupported-envelope diagnostic and is never decoded into an executable call.
-  At an answer boundary, where no tool is offered, the one bounded recovery asks
-  for the prose answer from observed evidence rather than a canonical call the
-  surface no longer offers; the diagnostic is never committed as the answer.
+- A registered tag with a provider decoration is the same family. When the body
+  uses a grammar the runtime understands (JSON, the XML invoke form, or the
+  equals-delimited `<function=name><parameter=key>` form), a decorated
+  `<tool_call>` spelling is decoded with that grammar into the same canonical
+  call; the decoration itself is ignored and grants no authority. The call still
+  crosses authorization, schema validation, and execution like any native call.
+  If the body cannot be decoded, the envelope is consumed as one malformed or
+  unsupported-envelope diagnostic and is never fabricated into an executable
+  call. At an answer boundary, where no evidence tool is offered, the one
+  bounded recovery asks for the prose answer from observed evidence rather than
+  a canonical call the surface no longer offers; the diagnostic is never
+  committed as the answer.
 - Every failed decision also becomes a structured
   `ToolNormalizationFailure` on the assembled message: `INCOMPLETE`, `INVALID`,
   or `UNSUPPORTED`, with the provider, protocol, a sanitized reason, a bounded

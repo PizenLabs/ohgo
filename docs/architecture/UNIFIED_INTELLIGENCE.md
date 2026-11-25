@@ -328,7 +328,7 @@ Provider adapters:
 |---|---|---|
 | structural | shared `ast.Index` + analysis cache | source configured |
 | retrieval | shared `retrieval.Workspace` | workspace and source configured |
-| semantic | LSP manager (starts lazily, closes after the step) | a server spec exists (composition checks the binary) |
+| semantic | LSP manager (starts lazily, closes after the step) | a server spec exists (composition checks the binary); project-root discovery is deferred to the first semantic step, never run during startup |
 | runtime | already-authorized `runtime.Session` | session alive and STOPPED; never launched here |
 
 The `investigate` tool is the model-facing entrypoint. It returns bounded
