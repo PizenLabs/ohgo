@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os"
+	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,13 +16,41 @@ import (
 // installed.
 type lookPathFunc func(string) (string, error)
 
-// languageServerSpecs discovers the language servers available on PATH.
+// projectWalkFunc is the workspace-walk seam for project-root discovery.
+// Tests substitute it so they can observe whether a startup path touched the
+// tree without depending on timing or filesystem size.
+type projectWalkFunc func(root string, fn fs.WalkDirFunc) error
+
+// maxProjectRootEntries bounds the one project-root walk. It is a safety cap,
+// not a target: a repository larger than this is treated as ambiguous and the
+// server loads the workspace root, which is always safe.
+const maxProjectRootEntries = 20000
+
+// languageServerSpecs discovers the language servers available on PATH and
+// resolves the project root each one should load.
+//
+// This is the explicit diagnostic path (doctor, tests). Startup composition
+// must use languageServerCommands plus resolveProjectRoots on demand: resolving
+// every root walks the workspace once per server, which is measurable on a
+// large checkout (a Rust tree with a built target/ directory is the canonical
+// case).
+func languageServerSpecs(root string, lookPath lookPathFunc) []semantic.Spec {
+	return languageServerSpecsWithWalk(root, lookPath, filepath.WalkDir)
+}
+
+// languageServerSpecsWithWalk is languageServerSpecs with the walk injected.
+func languageServerSpecsWithWalk(root string, lookPath lookPathFunc, walk projectWalkFunc) []semantic.Spec {
+	return resolveProjectRoots(root, languageServerCommands(lookPath), walk)
+}
+
+// languageServerCommands discovers the language servers available on PATH.
 //
 // Discovery is explicit and local: no server is started here, and a missing
-// server is simply absent from the roster. The manager starts only the server
-// a request's language selects. This is the single owner of the known-server
-// table; a new server is added here, not in an investigation call site.
-func languageServerSpecs(root string, lookPath lookPathFunc) []semantic.Spec {
+// server is simply absent from the roster. It performs no filesystem walk, so
+// it is safe on a startup path. The manager starts only the server a request's
+// language selects. This is the single owner of the known-server table; a new
+// server is added here, not in an investigation call site.
+func languageServerCommands(lookPath lookPathFunc) []semantic.Spec {
 	if lookPath == nil {
 		lookPath = exec.LookPath
 	}
@@ -37,7 +65,7 @@ func languageServerSpecs(root string, lookPath lookPathFunc) []semantic.Spec {
 		}
 		command[0] = path
 		specs = append(specs, semantic.Spec{
-			Name: name, Languages: languages, Command: command, Root: root,
+			Name: name, Languages: languages, Command: command,
 		})
 	}
 
@@ -56,30 +84,159 @@ func languageServerSpecs(root string, lookPath lookPathFunc) []semantic.Spec {
 	add("ruby-lsp", []string{"ruby"}, "ruby-lsp")
 	add("csharp-ls", []string{"csharp"}, "csharp-ls")
 	add("kotlin-language-server", []string{"kotlin"}, "kotlin-language-server")
+	return specs
+}
 
-	for i := range specs {
-		switch specs[i].Name {
-		case "gopls":
-			specs[i].Root = semanticWorkspaceRoot(root)
-		case "typescript-language-server":
-			specs[i].Root = nearestProjectRoot(root, "tsconfig.json", "package.json")
-		case "pyright", "pylsp":
-			specs[i].Root = nearestProjectRoot(root, "pyproject.toml", "setup.py", "requirements.txt")
-		case "rust-analyzer":
-			specs[i].Root = nearestProjectRoot(root, "Cargo.toml")
-		case "jdtls":
-			specs[i].Root = nearestProjectRoot(root, "pom.xml", "build.gradle", "build.gradle.kts")
-		case "clangd":
-			specs[i].Root = nearestProjectRoot(root, "compile_commands.json", "CMakeLists.txt")
-		case "ruby-lsp":
-			specs[i].Root = nearestProjectRoot(root, "Gemfile")
-		case "csharp-ls":
-			specs[i].Root = nearestProjectRoot(root, "*.csproj", "*.sln")
-		case "kotlin-language-server":
-			specs[i].Root = nearestProjectRoot(root, "build.gradle.kts", "build.gradle")
+// projectRootMarkers names the files that identify the project a server owns.
+// Empty means the server loads the workspace root.
+func projectRootMarkers(server string) []string {
+	switch server {
+	case "gopls":
+		return []string{"go.mod"}
+	case "typescript-language-server":
+		return []string{"tsconfig.json", "package.json"}
+	case "pyright", "pylsp":
+		return []string{"pyproject.toml", "setup.py", "requirements.txt"}
+	case "rust-analyzer":
+		return []string{"Cargo.toml"}
+	case "jdtls":
+		return []string{"pom.xml", "build.gradle", "build.gradle.kts"}
+	case "clangd":
+		return []string{"compile_commands.json", "CMakeLists.txt"}
+	case "ruby-lsp":
+		return []string{"Gemfile"}
+	case "csharp-ls":
+		return []string{"*.csproj", "*.sln"}
+	case "kotlin-language-server":
+		return []string{"build.gradle.kts", "build.gradle"}
+	default:
+		return nil
+	}
+}
+
+// resolveProjectRoots assigns each server the single project directory that
+// owns its language.
+//
+// One bounded walk collects every marker any server needs, so a machine with
+// several language servers still scans the workspace once rather than once per
+// server. Skip rules match the structural index, so build output such as
+// Rust's target/ is never mistaken for a project.
+func resolveProjectRoots(root string, specs []semantic.Spec, walk projectWalkFunc) []semantic.Spec {
+	if len(specs) == 0 {
+		return specs
+	}
+	if walk == nil {
+		walk = filepath.WalkDir
+	}
+	needed := make(map[string]struct{})
+	for _, spec := range specs {
+		for _, marker := range projectRootMarkers(spec.Name) {
+			needed[marker] = struct{}{}
 		}
 	}
-	return specs
+	scan := scanProjectMarkers(root, needed, walk)
+	resolved := make([]semantic.Spec, len(specs))
+	copy(resolved, specs)
+	for i := range resolved {
+		markers := projectRootMarkers(resolved[i].Name)
+		resolved[i].Root = scan.rootFor(root, markers)
+	}
+	return resolved
+}
+
+// projectMarkerScan is the result of one bounded workspace walk.
+type projectMarkerScan struct {
+	// dirs maps a marker to the directories that contain it.
+	dirs map[string]map[string]struct{}
+	// truncated reports that the entry cap was reached. A truncated scan is
+	// ambiguous by construction, so callers keep the workspace root.
+	truncated bool
+}
+
+// scanProjectMarkers walks root once and indexes every requested marker.
+func scanProjectMarkers(root string, markers map[string]struct{}, walk projectWalkFunc) projectMarkerScan {
+	scan := projectMarkerScan{dirs: make(map[string]map[string]struct{}, len(markers))}
+	if len(markers) == 0 || walk == nil {
+		return scan
+	}
+	entries := 0
+	_ = walk(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		entries++
+		if entries > maxProjectRootEntries {
+			scan.truncated = true
+			return filepath.SkipAll
+		}
+		if entry.IsDir() {
+			if path == root {
+				return nil
+			}
+			if skipProjectRootDir(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := entry.Name()
+		for marker := range markers {
+			if !markerMatches(marker, name) {
+				continue
+			}
+			dirs := scan.dirs[marker]
+			if dirs == nil {
+				dirs = make(map[string]struct{})
+				scan.dirs[marker] = dirs
+			}
+			dirs[filepath.Dir(path)] = struct{}{}
+		}
+		return nil
+	})
+	return scan
+}
+
+// rootFor returns the single directory carrying any of markers, or root when
+// none or several do. Ambiguity is never guessed.
+func (s projectMarkerScan) rootFor(root string, markers []string) string {
+	if s.truncated {
+		return root
+	}
+	found := make(map[string]struct{})
+	for _, marker := range markers {
+		for dir := range s.dirs[marker] {
+			found[dir] = struct{}{}
+		}
+	}
+	if len(found) != 1 {
+		return root
+	}
+	for dir := range found {
+		return dir
+	}
+	return root
+}
+
+// markerMatches reports whether a file name satisfies a marker. A marker of
+// the form "*.ext" matches any name with that suffix; every other marker is an
+// exact file name.
+func markerMatches(marker, name string) bool {
+	if strings.HasPrefix(marker, "*.") {
+		return strings.HasSuffix(name, marker[1:])
+	}
+	return marker == name
+}
+
+// skipProjectRootDir mirrors the structural index's exclusions. A project
+// marker found under target/, node_modules/, or another build/cache directory
+// describes generated or vendored output, not the repository's project.
+func skipProjectRootDir(name string) bool {
+	if name == "testdata" {
+		return true
+	}
+	if ast.BuiltinExcludedDir(name) {
+		return true
+	}
+	return strings.HasPrefix(name, ".") && name != "." && name != ".."
 }
 
 // semanticWorkspaceRoot picks the module gopls should load. It never guesses
@@ -99,42 +256,11 @@ func nearestProjectRoot(root string, markers ...string) string {
 	if len(markers) == 0 {
 		return root
 	}
-	found := map[string]bool{}
-	entries := 0
-	truncated := false
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		entries++
-		if entries > 20000 {
-			truncated = true
-			return filepath.SkipAll
-		}
-		if entry.IsDir() {
-			if path == root {
-				return nil
-			}
-			name := entry.Name()
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		for _, marker := range markers {
-			if marker == entry.Name() || (strings.HasPrefix(marker, "*") && strings.HasSuffix(entry.Name(), marker[1:])) {
-				found[filepath.Dir(path)] = true
-				return nil
-			}
-		}
-		return nil
-	})
-	if len(found) == 1 && !truncated {
-		for dir := range found {
-			return dir
-		}
+	wanted := make(map[string]struct{}, len(markers))
+	for _, marker := range markers {
+		wanted[marker] = struct{}{}
 	}
-	return root
+	return scanProjectMarkers(root, wanted, filepath.WalkDir).rootFor(root, markers)
 }
 
 // structuralSnapshotID is the identity a semantic observation is correlated
