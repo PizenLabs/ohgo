@@ -478,6 +478,49 @@ func TestObservedLineCountCompletes(t *testing.T) {
 	}
 }
 
+// A component-set coordinate in a table row scopes the count to the files under
+// those components. The extractor's file was read whole, so the count is
+// supported even though the sentence names the component set rather than the
+// file.
+func TestObservedLineCountWithinNamedComponentCompletes(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimRead("internal/parser/golang/parser.go", "package golang", 1009),
+		claimRead("internal/parser/treesitter/parser.go", "package treesitter", 321),
+	}}}
+	answer := "| Parsing | `internal/parser/{golang,treesitter,contracts}` | `go/ast` extractor (1009 lines), Tree-sitter extractor |"
+	if verdict := claimVerdict(turns, answer); !verdict.Complete() {
+		t.Fatalf("a line count observed under the named component was reviewed: %s", verdict.Reason)
+	}
+}
+
+// A component-set coordinate still fails truthfulness when the observed file
+// under that component reports a different total.
+func TestContradictedLineCountWithinNamedComponentIsReviewed(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimRead("internal/parser/golang/parser.go", "package golang", 42),
+	}}}
+	answer := "| Parsing | internal/parser/{golang,treesitter} | go/ast extractor (1009 lines) |"
+	verdict := claimVerdict(turns, answer)
+	if verdict.Complete() {
+		t.Fatal("a component-scoped line count contradicted by the observed read was accepted")
+	}
+	if !strings.Contains(verdict.Reason, "42") {
+		t.Fatalf("reason = %q, want the observed total", verdict.Reason)
+	}
+}
+
+// A bare count with no coordinate still cannot borrow an unrelated file's
+// measurement. Component scoping must not become "some read in the run had this
+// number".
+func TestUnscopedLineCountStillRequiresACoordinate(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimRead("internal/parser/golang/parser.go", "package golang", 1009),
+	}}}
+	if verdict := claimVerdict(turns, "The project is 1009 lines in total."); verdict.Complete() {
+		t.Fatal("an unscoped line count was accepted from an unrelated read")
+	}
+}
+
 // Compose mounting the migrations directory into the PostgreSQL init hook is
 // the configuration evidence that supports an auto-apply claim. A Compose file
 // without that hook does not.

@@ -238,7 +238,14 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 	// a whole repository after the runtime already had enough to answer, and
 	// burn the turn budget without ever producing one.
 	if suff.Stage == StageComplete || informationalEvidenceBoundary(shape, suff) {
-		return "the objective's evidence is complete; answer without further tools", true
+		// A plan tool records the model's own guidance; it acquires no evidence.
+		// Withdrawing it at the answer boundary froze an open plan in place, so
+		// the model could answer but could not reconcile the plan the durable
+		// task then refused to complete. An open plan tool stays offered; a
+		// reconciled one closes like every other tool.
+		if !agent.HasActionClass(tool, agent.ActionPlan) || len(agent.OpenPlanTools([]agent.Tool{tool})) == 0 {
+			return "the objective's evidence is complete; answer without further tools", true
+		}
 	}
 	if suff.Stage == StageBlocked && suff.Kind == BlockCapabilityFailure {
 		// The failed capability cannot make progress, and the remaining tools

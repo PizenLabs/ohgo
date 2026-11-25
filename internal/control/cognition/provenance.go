@@ -49,8 +49,9 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 	summary.ImplementationPaths = claims.ImplementationPaths
 	summary.ConfigurationPaths = claims.ConfigurationPaths
 	summary.DocumentationPaths = claims.DocumentationPaths
-	var documentation, implementation, external []string
+	var documentation, implementation, configuration, structural, external []string
 	var manifests []string
+	var manifestText []string
 	identity := map[string]bool{}
 	for _, item := range s.Items {
 		if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
@@ -80,19 +81,36 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 					}
 				}
 				implementation = append(implementation, text)
+			} else if isStructuralFact(item) {
+				// A structural observation is names, paths, and edges queried
+				// from the repository. It is the "structural fact" the
+				// documentation-only test promises to check, so a term the run
+				// saw there cannot be documentation-only.
+				structural = append(structural, item.Value)
 			}
 		case ProvenanceManifest:
 			implementation = append(implementation, item.Value)
+			manifestText = append(manifestText, item.Value)
 			if path := strings.TrimSpace(item.Source.Path); path != "" {
 				manifests = append(manifests, path)
 			}
+		case ProvenanceConfiguration:
+			// A Makefile target or Compose service is a declared artifact of
+			// the repository, not prose about it. It cannot prove execution,
+			// but a term that appears there is not documentation-only either,
+			// so it must clear the attribution requirement.
+			configuration = append(configuration, item.Value)
 		}
 	}
-	// External content is not implementation, but a term confirmed there is
-	// not documentation-only either. Subtract it so an answer grounded in a
-	// successful external observation is not forced to attribute what it
-	// actually observed.
-	observed := termSet(append(append([]string(nil), implementation...), external...))
+	// External, configuration, and structural content are not implementation,
+	// but a term confirmed there is not documentation-only either. Subtract
+	// them so an answer grounded in what the run observed is not forced to
+	// attribute it.
+	observedText := append([]string(nil), implementation...)
+	observedText = append(observedText, external...)
+	observedText = append(observedText, configuration...)
+	observedText = append(observedText, structural...)
+	observed := termSet(observedText)
 	// The workspace probe and a module manifest read by the agent both
 	// establish the implementation language even when the short token ("go",
 	// "js") is below the content-term length floor. A language is an observed
@@ -116,8 +134,24 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 			addLanguageIdentity(observed, language)
 		}
 	}
-	summary.DocumentationTerms = documentationOnlyTerms(documentation, observed, identity)
+	summary.DocumentationTerms = documentationOnlyTerms(documentation, observed, identity, termSet(manifestText))
 	return summary
+}
+
+// isStructuralFact reports a structural observation: paths, symbols, or edges
+// queried from the repository itself. Its payload is not prose about the
+// project, so its vocabulary counts as observed.
+//
+// Source reads and grep results are excluded because their payload needs
+// source-only extraction; a grep can carry documentation matches beside source
+// matches. An investigation payload is a provider's conclusion, not a
+// repository fact, so it is excluded too.
+func isStructuralFact(item EvidenceItem) bool {
+	if item.Provenance != ProvenanceObservation || item.Retention != RetentionStructural {
+		return false
+	}
+	return !strings.HasPrefix(item.ID, "search:grep:") &&
+		!strings.HasPrefix(item.ID, "investigation:")
 }
 
 // addLanguageIdentity marks the answer vocabulary tokens that name one
@@ -146,12 +180,12 @@ func addLanguageIdentity(observed map[string]bool, language string) {
 // and concrete metrics are. Identity terms are not claims: the answer may name
 // the project the documentation names without attributing an implementation
 // fact.
-func documentationOnlyTerms(documentation []string, observed, identity map[string]bool) []string {
+func documentationOnlyTerms(documentation []string, observed, identity map[string]bool, dependencies map[string]bool) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, text := range documentation {
 		for _, term := range documentationClaimTerms(text) {
-			if seen[term] || observed[term] || identity[term] {
+			if seen[term] || observed[term] || identity[term] || dependencyNamesTerm(term, dependencies) {
 				continue
 			}
 			seen[term] = true
@@ -163,6 +197,27 @@ func documentationOnlyTerms(documentation []string, observed, identity map[strin
 	}
 	sort.Strings(out)
 	return out
+}
+
+// dependencyNamesTerm reports a documented name corroborated by a dependency
+// identifier that concatenates it: the README writes "Bubble Tea" while go.mod
+// declares "bubbletea". Both are one name, and a declared dependency is
+// observed evidence that the package exists.
+//
+// The comparison is limited to manifest vocabulary and to names of at least
+// four characters. A source identifier that merely starts with the same
+// letters ("react" beside "reactive") must not clear a documentation claim, and
+// a two- or three-letter name is too ambiguous to prefix-match.
+func dependencyNamesTerm(term string, dependencies map[string]bool) bool {
+	if len(term) < 4 {
+		return false
+	}
+	for dependency := range dependencies {
+		if len(dependency) > len(term) && strings.HasPrefix(dependency, term) {
+			return true
+		}
+	}
+	return false
 }
 
 // identityDefinition recognises an opening line that defines the subject:
@@ -345,15 +400,38 @@ func termSet(texts []string) map[string]bool {
 	out := map[string]bool{}
 	for _, text := range texts {
 		for _, raw := range strings.Fields(splitTermText(text)) {
-			token := strings.ToLower(strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_#|/-"))
+			raw = strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_#|/-")
+			token := strings.ToLower(raw)
 			token = stripVersionSuffix(token)
-			if len(token) < 3 || genericProvenanceTerm(token) {
+			if token == "" || genericProvenanceTerm(token) {
+				continue
+			}
+			// Two-character vocabulary is normally grammar or an abbreviation
+			// too generic to identify a claim. An all-uppercase token is a
+			// proper noun the source actually names ("AI", "UI", "DB"), and
+			// documented names of that shape would otherwise be unobservable:
+			// the length floor alone made "AI" permanently documentation-only.
+			if len(token) < 3 && (len(token) != 2 || !isUpperWord(raw)) {
 				continue
 			}
 			out[token] = true
 		}
 	}
 	return out
+}
+
+// isUpperWord reports an identifier written entirely in uppercase ASCII, the
+// spelling of a short proper noun rather than an ordinary word.
+func isUpperWord(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 // ContentTerms returns lower-case content terms in text.

@@ -255,6 +255,41 @@ immutable.
 
 ### Fixed
 
+- A serialized tool call whose tag carries a provider decoration, such as
+  `<tool_call_24b82c79>`, is recognized as the `<tool_call>` family. The
+  envelope is consumed as one unsupported-envelope diagnostic instead of being
+  persisted as assistant prose; no call is fabricated. The decoration cannot
+  survive into a committed answer or a `verified` footer: completion reports
+  protocol residue as `NEEDS_REVIEW`, and at a closed answer boundary the one
+  bounded recovery asks for the prose answer from observed evidence instead of
+  a canonical call the runtime no longer offers.
+- An open task plan can no longer outlive the answer that ended the run. The
+  answer boundary used to withdraw every tool, including `todo`, then tell the
+  model to answer; the durable task then refused completion for the plan the
+  model could no longer update, while the transcript still showed a clean
+  verification. Plan tools now remain offered at the answer boundary, the
+  runtime state names the open items and the reconciliation step, and a
+  completion refused for outstanding work renders a review footer instead of a
+  verified one.
+- A line-count claim that names a brace-expanded component set now accepts a
+  whole-file read under one of those components when its measured total matches.
+  A repository analysis that says `internal/parser/{golang,...}` and annotates
+  the Go extractor with the parser file's line count no longer enters
+  `NEEDS_REVIEW` merely because the component set is not itself a file path.
+  A bare count with no coordinate still requires its own observed measurement.
+- A candidate superseded by the answer audit no longer survives as a visible
+  transcript block. The runtime already classified it as internal repair
+  context, but the live TUI path published its text as a lifecycle entry and
+  the reducer converted the streamed preview into a committed-looking block.
+  Supersession now withdraws the preview into a non-renderable audit tombstone,
+  so only the authoritative committed answer reaches the transcript while the
+  candidate's lineage remains in `SupersededBy` and `ResponseAudit`.
+- Deterministic claim salvage now consumes the clause connector when the
+  rejected claim was joined by a semicolon or comma. Removing
+  `no tests or package configuration were found` after `; ` previously left the
+  semicolon and glued the next heading into the committed answer
+  (`…; ## Purpose`). The surviving clause now ends with the removed clause's
+  terminal punctuation and paragraph break.
 - Browser verification now checks extracted page text instead of serialized
   HTML. Styled text split across adjacent elements and whitespace/layout
   boundaries no longer produce false failures, while markup-only content such

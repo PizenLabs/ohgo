@@ -394,6 +394,9 @@ func TestPostfreezeActiveTaskPlusNew(t *testing.T) {
 	if _, _ = p.choosePicker(); p.session == nil || p.session.ID != second.ID {
 		t.Fatalf("session = %+v, want the new session %d", p.session, second.ID)
 	}
+	if !p.newTaskBoundaryActive() {
+		t.Fatal("/new did not mark the first prompt as a fresh task boundary")
+	}
 	if len(p.history) != 0 {
 		t.Fatalf("new session inherited history: %+v", p.history)
 	}

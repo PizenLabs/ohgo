@@ -44,21 +44,25 @@ var (
 	negativeAbsenceOfPattern = regexp.MustCompile(
 		`(?i)\babsence\s+of\s+([a-z0-9][a-z0-9 _./-]{0,40}?)(?:\s+(?:is|are|was|were|in|within|at|on|for|to)\b|[.,;:]|$)`)
 	// changeReportPattern follows a negated quantity with a run predicate.
-	// "No files were modified" and "no source files were read" report what the
-	// run did, not what the repository contains. No file scan can establish
-	// them, and they are not the existence claim the negative-conclusion check
-	// exists to police.
+	// "No files were modified", "no source files were read", and "no
+	// application or test was executed" report what the run did, not what the
+	// repository contains. No file scan can establish them, and they are not
+	// the existence claim the negative-conclusion check exists to police.
 	changeReportPattern = regexp.MustCompile(
 		`(?i)^\s*(?:content\s+)?(?:(?:was|were|is|are|has\s+been|have\s+been|had\s+been|got)\s+)?` +
 			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited` +
-			`|read|inspected|examined|reviewed|opened|loaded|queried|searched|sampled|observed)\b`)
+			`|read|inspected|examined|reviewed|opened|loaded|queried|searched|sampled|observed` +
+			`|executed|run|ran|performed|started|launched|invoked|triggered)\b`)
 	// runReportPattern names a coordinated report about what this run did:
 	// "no build, test, or runtime session was executed". The subject list ends
 	// at the passive run verb, so the ordinary changeReportPattern (anchored at
 	// the end of the negative match) cannot see it. It is a limitation of the
-	// run, not a claim that the repository contains no tests or builds.
+	// run, not a claim that the repository contains no tests or builds. "run",
+	// "suite", and "application" are heads of the same noun phrases ("test
+	// run", "test suite"); omitting them made "no application or test run was
+	// performed" read as a repository absence.
 	runReportPattern = regexp.MustCompile(
-		`(?i)\b(?:build|builds|test|tests|runtime|command|commands|check|checks|execution|session|probe|probes)\b` +
+		`(?i)\b(?:build|builds|test|tests|runtime|command|commands|check|checks|execution|session|probe|probes|run|runs|suite|suites|application|applications|app|apps)\b` +
 			`[^.;\n]{0,60}\b(?:was|were|is|are|has\s+been|have\s+been|had\s+been)\s+` +
 			`(?:executed|run|performed|started|launched|invoked|observed|queried)\b`)
 	globalScopePattern = regexp.MustCompile(

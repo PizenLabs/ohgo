@@ -203,9 +203,9 @@ func TestLiveToolBatchStaysExpandedUntilSettled(t *testing.T) {
 	}
 }
 
-// The fade is a three-phase RGB ramp, not a single frame pop. The plain text
-// is unchanged at every phase; only the entrance colour/dim flag moves.
-func TestFadeStepsThroughThreeRGBPhases(t *testing.T) {
+// The entrance uses one eased RGB ramp: adjacent presentation frames differ
+// gently, and the block reaches its palette color without changing its text.
+func TestFadeEasesInWithoutColorJumps(t *testing.T) {
 	forceFadeRendering(t)
 
 	at := time.Now()
@@ -214,37 +214,57 @@ func TestFadeStepsThroughThreeRGBPhases(t *testing.T) {
 	s.Apply(AssistantDelta{Text: "fade target", At: at})
 	s.Apply(FrameTick{At: at})
 
-	vapor := Render(s)
-	if !strings.Contains(vapor, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) || !strings.Contains(vapor, "\x1b[2m") {
-		t.Fatalf("vapour phase lost its dark neutral/dim frame:\n%q", vapor)
+	entrance := Render(s)
+	if !strings.Contains(entrance, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
+		t.Fatalf("fade did not start at the soft surface color:\n%q", entrance)
 	}
-	if got := ansi.Strip(vapor); !strings.Contains(got, "fade target") {
+	if got := ansi.Strip(entrance); !strings.Contains(got, "fade target") {
 		t.Fatalf("fade changed the block text:\n%s", got)
 	}
 
-	s.Apply(FrameTick{At: at.Add(60 * time.Millisecond)})
-	solid := Render(s)
-	if solid == vapor {
-		t.Fatal("solidifying phase did not change the frame")
+	firstFrame := fadeColorAt(30*time.Millisecond, fadeTarget(ThemeDark), DarkTokens().SurfaceSelection)
+	nextFrame := fadeColorAt(30*time.Millisecond+frameInterval, fadeTarget(ThemeDark), DarkTokens().SurfaceSelection)
+	if delta := maxRGBDelta(firstFrame, nextFrame); delta > 28 {
+		t.Fatalf("one 60 Hz frame jumped %d color levels, want a subtle transition", delta)
 	}
-	if strings.Contains(solid, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
-		t.Fatalf("solidifying phase kept the vapour colour:\n%q", solid)
+	if firstFrame == nextFrame {
+		t.Fatal("continuous fade did not advance between presentation frames")
+	}
+
+	s.Apply(FrameTick{At: at.Add(60 * time.Millisecond)})
+	midpoint := Render(s)
+	wantMidpoint := "38;2;" + rgbSeq(fadeColorAt(60*time.Millisecond, fadeTarget(ThemeDark), DarkTokens().SurfaceSelection))
+	if !strings.Contains(midpoint, wantMidpoint) {
+		t.Fatalf("midpoint did not use the eased interpolation:\n%q", midpoint)
 	}
 
 	s.Apply(FrameTick{At: at.Add(fadeDuration)})
 	settled := Render(s)
-	if strings.Contains(settled, "\x1b[2m") || strings.Contains(settled, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
-		t.Fatalf("settled block kept an entrance frame:\n%q", settled)
+	if strings.Contains(settled, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
+		t.Fatalf("settled block kept the entrance color:\n%q", settled)
 	}
 	if got := ansi.Strip(settled); !strings.Contains(got, "fade target") {
 		t.Fatalf("settled text changed:\n%s", got)
 	}
+}
 
-	if fadePhaseAt(0) != fadeVapor || fadePhaseAt(60*time.Millisecond) != fadeSolidify ||
-		fadePhaseAt(100*time.Millisecond) != fadeFinal || fadePhaseAt(fadeDuration) != fadeSettled {
-		t.Fatalf("fade phases = %d/%d/%d/%d, want vapour/solidify/final/settled",
-			fadePhaseAt(0), fadePhaseAt(60*time.Millisecond), fadePhaseAt(100*time.Millisecond), fadePhaseAt(fadeDuration))
+func maxRGBDelta(a, b string) int {
+	ar, ag, ab := parseHexColor(a)
+	br, bg, bb := parseHexColor(b)
+	maxDelta := func(a, b int) int {
+		if a > b {
+			return a - b
+		}
+		return b - a
 	}
+	delta := maxDelta(ar, br)
+	if next := maxDelta(ag, bg); next > delta {
+		delta = next
+	}
+	if next := maxDelta(ab, bb); next > delta {
+		delta = next
+	}
+	return delta
 }
 
 // The closing answer line eases in on AssistantDone even when the block itself
@@ -263,14 +283,14 @@ func TestAssistantFinalLineFadesOnSettle(t *testing.T) {
 	s.Apply(FrameTick{At: doneAt})
 
 	entering := Render(s)
-	if !strings.Contains(entering, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) || !strings.Contains(entering, "\x1b[2m") {
+	if !strings.Contains(entering, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
 		t.Fatalf("settled answer line skipped its entrance fade:\n%q", entering)
 	}
 	if got := ansi.Strip(entering); !strings.Contains(got, "streamed answer") {
 		t.Fatalf("final-line fade changed the answer text:\n%s", got)
 	}
 
-	s.Apply(FrameTick{At: doneAt.Add(fadeFinalAt)})
+	s.Apply(FrameTick{At: doneAt.Add(fadeDuration)})
 	if settled := Render(s); strings.Contains(settled, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
 		t.Fatalf("final-line fade survived the target instant:\n%q", settled)
 	}
@@ -413,8 +433,8 @@ func TestCompletedToolTweensStatusColor(t *testing.T) {
 	s.Apply(FrameTick{At: settle})
 
 	begin := Render(s)
-	if !strings.Contains(begin, "\x1b[2;") {
-		t.Fatalf("completion did not start at the dim boundary frame:\n%q", begin)
+	if !strings.Contains(begin, "38;2;"+rgbSeq(DarkTokens().Running)) {
+		t.Fatalf("completion did not start at the running color:\n%q", begin)
 	}
 	if got := ansi.Strip(begin); !strings.Contains(got, "✔ read a.go") {
 		t.Fatalf("terminal glyph did not occupy the running slot:\n%s", got)
@@ -425,10 +445,6 @@ func TestCompletedToolTweensStatusColor(t *testing.T) {
 	if mid == begin {
 		t.Fatal("completion tween did not move between frames")
 	}
-	if strings.Contains(mid, "\x1b[2;") {
-		t.Fatalf("mid-tween kept the dim boundary:\n%q", mid)
-	}
-
 	s.Apply(FrameTick{At: settle.Add(statusSettleDuration)})
 	settled := Render(s)
 	if settled == begin || settled == mid {

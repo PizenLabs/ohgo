@@ -382,6 +382,35 @@ func TestTodoNextActionableFallsBackToPending(t *testing.T) {
 	}
 }
 
+// The runtime's plan report must agree with the durable task's open-work rule:
+// completed and abandoned items are terminal, while pending, in-progress, and
+// blocked items still need a disposition.
+func TestOpenPlanItemsReportsUnfinishedWork(t *testing.T) {
+	tool := NewTodoTool()
+	init := tool.Execute(testContext(), map[string]any{
+		"op": "init", "tasks": []any{"done", "active", "pending"},
+	})
+	if init.IsError {
+		t.Fatalf("init: %s", init.Text)
+	}
+	if done := tool.Execute(testContext(), map[string]any{"op": "start", "task": "active"}); done.IsError {
+		t.Fatalf("start: %s", done.Text)
+	}
+	if done := tool.Execute(testContext(), map[string]any{"op": "done", "task": "done"}); done.IsError {
+		t.Fatalf("done: %s", done.Text)
+	}
+	if blocked := tool.Execute(testContext(), map[string]any{
+		"op": "block", "task": "pending", "reason": "needs a live runtime",
+	}); blocked.IsError {
+		t.Fatalf("block: %s", blocked.Text)
+	}
+
+	open := agent.OpenPlanItems([]agent.Tool{tool})
+	if strings.Join(open, ",") != "active,pending" {
+		t.Fatalf("open plan = %v, want the in-progress and blocked items", open)
+	}
+}
+
 func TestTodoRenderMarksEveryStatus(t *testing.T) {
 	// A user reading the list must be able to tell the statuses apart without a
 	// legend.

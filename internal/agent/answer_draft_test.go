@@ -80,6 +80,44 @@ func TestSalvageDraftRemovesOnlyTheRejectedClaim(t *testing.T) {
 	}
 }
 
+// Removing a clause after a semicolon must remove the connector too. The
+// observed investigation answer ended "…`.gitignore`; no tests or package
+// configuration were found." Review rejected the second clause; salvage left
+// "…`.gitignore`; ## Purpose", gluing the next heading onto a dangling
+// semicolon. The rejection is the clause, not the punctuation that joined it.
+func TestSalvageDraftRemovesAClauseConnectorAtAHeading(t *testing.T) {
+	const answer = "## Data and architecture\n\n" +
+		"The repository contains only the main HTML, CSS, JavaScript, favicon, and `.gitignore`; " +
+		"no tests or package configuration were found.\n\n" +
+		"## Purpose\n\n" +
+		"Its goal is to showcase the owner's work.\n"
+	draft := newAnswerDraft(1, 0, answer, []contract.GroundingIssue{{
+		Code:     "unsupported_negative_conclusion",
+		Claim:    "test",
+		Location: "The repository contains only the main HTML, CSS, JavaScript, favicon, and `.gitignore`; no tests or package configuration were found.",
+		Category: "absence",
+	}})
+	text, salvaged, ok := salvageDraft(draft)
+	if !ok {
+		t.Fatal("salvage refused a claim it could locate")
+	}
+	if strings.Contains(text, "no tests") {
+		t.Fatalf("salvage kept the rejected clause:\n%s", text)
+	}
+	if strings.Contains(text, "; ##") || strings.Contains(text, "`.gitignore`;") {
+		t.Fatalf("salvage left a dangling clause connector:\n%s", text)
+	}
+	if !strings.Contains(text, "`.gitignore`.\n\n## Purpose") {
+		t.Fatalf("salvage did not preserve the sentence and heading boundary:\n%s", text)
+	}
+	if !strings.Contains(text, "## Data and architecture") {
+		t.Fatalf("salvage lost the preceding section:\n%s", text)
+	}
+	if got := len(salvaged.ValidClaims()); got == 0 {
+		t.Fatal("salvage kept no valid claims")
+	}
+}
+
 // An unlocated finding cannot be repaired by deleting a guessed sentence.
 func TestSalvageDraftRefusesAnUnlocatedFinding(t *testing.T) {
 	draft := newAnswerDraft(1, 0, "The module is ohgo. It is small.", []contract.GroundingIssue{{

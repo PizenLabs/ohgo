@@ -206,6 +206,13 @@ var (
 	// for a sentence that names a directory rather than a file.
 	claimDirectoryPattern = regexp.MustCompile(`(?i)(?:[a-z0-9_.-]+/)+`)
 
+	// claimComponentSetPattern extracts a brace-expanded component coordinate
+	// such as internal/parser/{golang,treesitter,contracts}. A repository
+	// analysis often names a component set in a table cell and annotates its
+	// extractor with a line count; the count is supported when a whole-file read
+	// under one of those components measured it.
+	claimComponentSetPattern = regexp.MustCompile(`(?i)(?:[a-z0-9_.-]+/)+[a-z0-9_.-]*\{[a-z0-9_.,\s-]+\}`)
+
 	// speculativeContentPattern names content categories that can be checked
 	// against the observed text for the referenced path.
 	speculativeContentPattern = regexp.MustCompile(
@@ -364,15 +371,53 @@ func lineCountClaimIssue(sentence string, turns []Turn) *claimIssue {
 			if commandLineCountObserved(turns, claimed) {
 				continue
 			}
-			return &claimIssue{
-				Code: "unsupported_line_count",
-				Detail: fmt.Sprintf(
-					"the answer gives a line count of about %d but the run never measured one; read the file or run a line-count command, or remove the count",
-					claimed),
-				Claim:       fmt.Sprintf("%d lines", claimed),
-				Category:    "line_count",
-				Requirement: "an observed line count",
-				Action:      "read the file, run a line-count command, or remove the count",
+			// A component-set coordinate is a valid scope even though it is not
+			// a file. The claim is supported only by a whole-file read under one
+			// of the named components whose observed total matches. A bare count
+			// with no coordinate still fails: matching any file in the repository
+			// by number alone would let an unscoped claim borrow unrelated
+			// evidence.
+			if dirs, coordinate := nearestClaimComponentSet(sentence, match[0], match[1]); len(dirs) > 0 {
+				totals := observedReadLineTotalsUnder(turns, dirs)
+				matched := false
+				for _, total := range totals {
+					if lineCountMatches(total, claimed) {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					continue
+				}
+				detail := fmt.Sprintf(
+					"the answer gives a line count of about %d for %s but the run measured no file there with that total; cite the file and its observed line count, or remove the count",
+					claimed, coordinate)
+				if len(totals) == 1 {
+					detail = fmt.Sprintf(
+						"the answer says %s has about %d lines, but the observed reads there reported %d; correct the count or cite the file measurement",
+						coordinate, claimed, totals[0])
+				}
+				return &claimIssue{
+					Code:        "unsupported_line_count",
+					Detail:      detail,
+					Claim:       fmt.Sprintf("%s: %d lines", coordinate, claimed),
+					Location:    claimLocation(sentence, coordinate),
+					Category:    "line_count",
+					Requirement: "an observed line count",
+					Reference:   coordinate,
+					Action:      "cite the observed file and its line count, read the whole file, or remove the count",
+				}
+			} else {
+				return &claimIssue{
+					Code: "unsupported_line_count",
+					Detail: fmt.Sprintf(
+						"the answer gives a line count of about %d but the run never measured one; read the file or run a line-count command, or remove the count",
+						claimed),
+					Claim:       fmt.Sprintf("%d lines", claimed),
+					Category:    "line_count",
+					Requirement: "an observed line count",
+					Action:      "read the file, run a line-count command, or remove the count",
+				}
 			}
 		}
 		total, observed := observedReadLineCount(turns, path)
@@ -1184,6 +1229,114 @@ func nearestClaimPath(sentence string, start, end int) string {
 		return ""
 	}
 	return strings.Trim(best, "`'\" ")
+}
+
+// nearestClaimComponentSet returns the expanded directories and the source
+// coordinate of the brace-expanded component set closest to a metric span.
+//
+// The coordinate is an answer-side path expression, not a file. It scopes a
+// line-count claim to the components the sentence names; the caller still needs
+// a matching whole-file read under one of those directories.
+func nearestClaimComponentSet(sentence string, start, end int) ([]string, string) {
+	const maxDistance = 96
+	bestDistance := 1 << 30
+	var best []string
+	var bestToken string
+	for _, match := range claimComponentSetPattern.FindAllStringIndex(sentence, -1) {
+		distance := 0
+		switch {
+		case match[1] <= start:
+			distance = start - match[1]
+		case match[0] >= end:
+			distance = match[0] - end
+		default:
+			continue
+		}
+		if distance >= bestDistance {
+			continue
+		}
+		token := strings.Trim(sentence[match[0]:match[1]], "`'\" ")
+		if dirs := expandComponentSet(token); len(dirs) > 0 {
+			bestDistance = distance
+			best = dirs
+			bestToken = token
+		}
+	}
+	if bestDistance > maxDistance {
+		return nil, ""
+	}
+	return best, bestToken
+}
+
+// expandComponentSet expands internal/parser/{golang,treesitter} into the
+// directory prefixes internal/parser/golang/ and internal/parser/treesitter/.
+// A brace entry with a file extension is a file coordinate instead.
+func expandComponentSet(token string) []string {
+	open := strings.IndexByte(token, '{')
+	close := strings.LastIndexByte(token, '}')
+	if open < 1 || close <= open {
+		return nil
+	}
+	prefix := filepath.ToSlash(token[:open])
+	var dirs []string
+	for _, raw := range strings.Split(token[open+1:close], ",") {
+		entry := strings.Trim(strings.TrimSpace(raw), "`'\" ")
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, ".") {
+			dirs = append(dirs, prefix+entry)
+			continue
+		}
+		dirs = append(dirs, strings.TrimSuffix(prefix+entry, "/")+"/")
+	}
+	return dirs
+}
+
+// observedReadLineTotalsUnder returns the distinct whole-file line totals the
+// run observed under any of dirs.
+func observedReadLineTotalsUnder(turns []Turn, dirs []string) []int {
+	seen := make(map[int]bool)
+	var totals []int
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.ToolName != "read" || outcome.Result.IsError || outcome.Refused() {
+				continue
+			}
+			path := strings.ToLower(strings.Trim(filepath.ToSlash(strings.TrimSpace(outcomePath(outcome))), "/"))
+			if !pathUnderAny(path, dirs) {
+				continue
+			}
+			total := claimDetailInt(outcome.Result.Details, "totalLines")
+			if total <= 0 || seen[total] {
+				continue
+			}
+			seen[total] = true
+			totals = append(totals, total)
+		}
+	}
+	sort.Ints(totals)
+	return totals
+}
+
+// pathUnderAny reports whether path is one of dirs or below one of them.
+func pathUnderAny(path string, dirs []string) bool {
+	normalize := func(value string) string {
+		value = strings.ToLower(filepath.ToSlash(strings.TrimSpace(value)))
+		value = strings.Trim(value, "/")
+		return strings.TrimPrefix(value, "./")
+	}
+	path = normalize(path)
+	for _, dir := range dirs {
+		dir = normalize(dir)
+		if dir == "" {
+			continue
+		}
+		if path == dir || strings.HasPrefix(path, dir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // nearestReferencePath returns the file or directory coordinate closest to a

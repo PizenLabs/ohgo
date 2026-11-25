@@ -556,6 +556,12 @@ Recognition is an incremental, bounded state machine:
   assistant prose: the provider's serialization is not persisted as an answer
   and no call is fabricated. The message is marked as protocol residue, so
   completion reports `NEEDS_REVIEW` instead of success.
+- A registered tag with a provider decoration is the same family: a decorated
+  `<tool_call>` spelling (for example an appended call id) is consumed as one
+  unsupported-envelope diagnostic and is never decoded into an executable call.
+  At an answer boundary, where no tool is offered, the one bounded recovery asks
+  for the prose answer from observed evidence rather than a canonical call the
+  surface no longer offers; the diagnostic is never committed as the answer.
 - Every failed decision also becomes a structured
   `ToolNormalizationFailure` on the assembled message: `INCOMPLETE`, `INVALID`,
   or `UNSUPPORTED`, with the provider, protocol, a sanitized reason, a bounded
@@ -705,13 +711,15 @@ user's request before execution and the evidence the runtime observed.
   around it; a draft is never the user-visible answer. Empty or whitespace
   text is `NEEDS_REVIEW`. Every turn's prose carries one runtime disposition
   (`UNIFIED_INTELLIGENCE.md` §12.7):
-  narration and superseded candidates are withheld, a terminal refusal leaves
-  one labelled draft with the control-plane reason, and only a committed
-  answer is the answer. A provisional preview is never promoted by a turn
+  narration is withheld, a superseded candidate is withdrawn when the
+  correction starts and never becomes a transcript artifact
+  (`UNIFIED_INTELLIGENCE.md` §12.7), a terminal refusal leaves one labelled
+  draft with the control-plane reason, and only a committed answer is the
+  answer. A provisional preview is never promoted by a turn
   boundary; an interrupted preview is labelled as interrupted, not published.
-  The full-screen TUI and output-first live surface do not publish answer
-  deltas at all: the first answer prose a host may render is the committed
-  artifact, published once. Committed text is never withdrawn. A request that
+  The TUI may show streamed answer deltas only as a labelled provisional
+  preview. The committed disposition replaces that preview with the exact
+  answer or withdraws it; committed text is never withdrawn. A request that
   explicitly required external knowledge also needs
   a successful external observation; a local answer does not satisfy it.
   A broad repository account keeps documentation claims distinguishable from
@@ -730,9 +738,10 @@ user's request before execution and the evidence the runtime observed.
   matches one — preferring the specific subject over the bare noun a pattern
   matched — names that observation instead of asking for coverage the run
   already has. A
-  concrete line count needs the read's measurement, an independent-deployment
-  conclusion needs a deployment artifact, and a path-scoped inference needs an
-  observation of that path. The evaluator does not judge answer relevance beyond
+  concrete line count needs the read's measurement — a named file, or a
+  whole-file read under a named brace-expanded component set — an
+  independent-deployment conclusion needs a deployment artifact, and a
+  path-scoped inference needs an observation of that path. The evaluator does not judge answer relevance beyond
   these deterministic provenance and claim-scope boundaries.
 - **TUI task path.** `task.Begin` persists the contract, the pre-run target
   snapshot, and later the review reason. `NEEDS_REVIEW` is non-terminal. A

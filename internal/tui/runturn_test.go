@@ -165,10 +165,10 @@ func TestRunTurnPublishesReusedOutcomeBeforeFinalAnswer(t *testing.T) {
 	}
 }
 
-// The TUI must publish exactly one assistant answer for a task even when the
-// model produces a rejected draft, acquires evidence, and answers again. The
-// draft may exist in the internal provider context; it must never become a
-// transcript delta.
+// The TUI must settle exactly one assistant answer for a task even when the
+// model streams a rejected preview, acquires evidence, and answers again.
+// Provisional deltas may be visible, but they must not survive reconciliation
+// as the committed transcript answer.
 func TestRunTurnPublishesOnlyTheCommittedAnswer(t *testing.T) {
 	read := &orderReadTool{}
 	index := 0
@@ -358,6 +358,112 @@ func TestRunTurnPersistsExactlyOneAssistantAnswer(t *testing.T) {
 	}
 	if strings.Contains(rendered, "draft withdrawn") {
 		t.Fatalf("replay invented a withdrawal that never happened:\n%s", rendered)
+	}
+}
+
+// A superseded candidate must not reappear after the session is persisted and
+// replayed. The live surface and the historical projection are two consumers of
+// one lifecycle: if the live TUI hides the candidate but the store keeps it, a
+// restart resurrects the old answer.
+func TestSupersededCandidateDoesNotReappearAfterPersistenceAndResume(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("session.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sess, err := store.Create(t.TempDir(), "m")
+	if err != nil {
+		t.Fatalf("session.Create: %v", err)
+	}
+
+	responses := []ai.AssistantMessage{
+		{Content: []ai.ContentBlock{ai.TextContent{Text: runtimeCandidate}}, StopReason: ai.StopEndTurn},
+		{Content: []ai.ContentBlock{ai.ToolCall{ID: "c1", Name: "read", Arguments: map[string]any{"path": "cmd/ohgo/main.go"}}}, StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: runtimeFinal}}, StopReason: ai.StopEndTurn},
+	}
+	next := 0
+	stream := func(context.Context, ai.Request) (*ai.Stream, error) {
+		if next >= len(responses) {
+			t.Fatalf("provider request %d exceeded the script", next+1)
+		}
+		response := responses[next]
+		index := next
+		next++
+		if index == 0 || index == 2 {
+			return ai.NewTextStream(response.Text()), nil
+		}
+		return ai.NewCompletedStream(response), nil
+	}
+	read := &orderReadTool{}
+	loop, err := agent.New(agent.Config{
+		Model:                   ai.Model{ID: "m", Provider: "p"},
+		Stream:                  stream,
+		Tools:                   []agent.Tool{read},
+		CompletionReviewRequest: "Runtime completion review: {{reason}}. Correct the answer or state the limitation.",
+		MaxTurns:                6,
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	p.AttachSession(store, &sess, nil)
+	p.task.ProjectionReview = func() string {
+		if read.calls == 0 {
+			return "the project structure has not been read"
+		}
+		return ""
+	}
+	p.runTurn("describe the project")
+	for drained := false; !drained; {
+		select {
+		case event := <-p.events:
+			p.state.Apply(event)
+		default:
+			drained = true
+		}
+	}
+
+	if got := p.state.AssistantText(); got != runtimeFinal {
+		t.Fatalf("live answer projection = %q, want only the committed answer", got)
+	}
+	live := renderStateEntries(p.state)
+	if strings.Contains(live, runtimeCandidate) {
+		t.Fatalf("live transcript retained the superseded candidate:\n%s", live)
+	}
+
+	rows, err := store.Messages(sess.ID, 0)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var answers []string
+	for _, row := range rows {
+		if strings.Contains(row.Text, runtimeCandidate) {
+			t.Fatalf("the superseded candidate was persisted: %+v", row)
+		}
+		if row.Role == "assistant" && strings.TrimSpace(row.Text) != "" {
+			answers = append(answers, row.Text)
+		}
+	}
+	if len(answers) != 1 || answers[0] != runtimeFinal {
+		t.Fatalf("persisted answers = %#v, want only %q", answers, runtimeFinal)
+	}
+
+	replayed, err := session.Replay(rows)
+	if err != nil {
+		t.Fatalf("session.Replay: %v", err)
+	}
+	history := New()
+	history.Apply(TerminalResized{Width: 100, Height: 30})
+	history.Apply(HistoryReplaced{Entries: EntriesFromMessages(replayed)})
+	rendered := Render(history)
+	if strings.Contains(rendered, runtimeCandidate) {
+		t.Fatalf("resume resurrected the superseded candidate:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "candidate · superseded") {
+		t.Fatalf("resume invented a superseded transcript label:\n%s", rendered)
+	}
+	if strings.Count(rendered, runtimeFinal) != 1 {
+		t.Fatalf("resumed answer count = %d, want exactly one:\n%s", strings.Count(rendered, runtimeFinal), rendered)
 	}
 }
 

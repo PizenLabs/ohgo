@@ -1432,6 +1432,18 @@ func TestNormalizeMessageRecordsStructuredFailureStatus(t *testing.T) {
 				`npx live-server</parameter></invoke></dots_protocol_call>`,
 			want: NormalizationUnsupported,
 		},
+		{
+			name: "decorated tool-call family",
+			text: decoratedToolCallEnvelope("24b82c79", "crates/gry-mcp/src/tools.rs"),
+			want: NormalizationUnsupported,
+		},
+		{
+			// An undecodable spelling stays unsupported whether or not it
+			// closed: the build cannot tell what the envelope meant.
+			name: "incomplete decorated tool-call family",
+			text: "<tool_call_24b82c79><function=read><parameter=path>crates/gry-mcp/src/tools.rs",
+			want: NormalizationUnsupported,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1458,5 +1470,77 @@ func TestNormalizeMessageRecordsStructuredFailureStatus(t *testing.T) {
 				t.Fatal("a failed envelope did not mark protocol residue")
 			}
 		})
+	}
+}
+
+// decoratedToolCallEnvelope is the spelling a free gateway emitted for four
+// reads: the registered <tool_call> tag plus a fabricated call id. It reached a
+// persisted answer and was reported as a verified completion.
+func decoratedToolCallEnvelope(id, path string) string {
+	return "<tool_call_" + id + ">\n<function=read>\n<parameter=limit>\n240\n" +
+		"</parameter>\n<parameter=path>\n" + path + "\n</parameter>\n</function>\n</tool_call_" + id + ">"
+}
+
+// A decorated tool-call tag is the same protocol family as the registered
+// spelling. Its envelope must be consumed as one unsupported diagnostic: no
+// call may be fabricated, no protocol bytes may survive into live text or
+// persistence, and the stop reason must not claim a tool-use turn.
+func TestNormalizeDecoratedToolCallTagIsResidue(t *testing.T) {
+	// Adjacent envelopes are the observed shape: the close of one is
+	// immediately followed by the open of the next, with no separating prose.
+	envelope := decoratedToolCallEnvelope("24b82c79", "crates/gry-mcp/src/tools.rs") +
+		decoratedToolCallEnvelope("24b82c80", "crates/gry-query/src/search.rs")
+	run := runNormalize(t, []string{envelope[:24], envelope[24:60], envelope[60:]}, NormalizeOptions{Provider: "opencode-go"})
+
+	if len(run.calls) != 0 {
+		t.Fatalf("a decorated envelope was executed as a call: %+v", run.calls)
+	}
+	if !run.msg.ProtocolResidue {
+		t.Fatal("the decorated envelope was not marked as protocol residue")
+	}
+	if len(run.msg.NormalizationFailures) != 2 {
+		t.Fatalf("failures = %+v, want exactly one per envelope", run.msg.NormalizationFailures)
+	}
+	failure := run.msg.NormalizationFailures[0]
+	if failure.Status != NormalizationUnsupported {
+		t.Fatalf("status = %q, want UNSUPPORTED", failure.Status)
+	}
+	if failure.Protocol != "tool_call_family" {
+		t.Fatalf("protocol = %q, want tool_call_family", failure.Protocol)
+	}
+	if run.msg.StopReason == StopToolUse {
+		t.Fatal("an undecoded envelope upgraded the turn to tool use")
+	}
+	for _, text := range []string{run.text, run.msg.Text()} {
+		if strings.Contains(text, "<tool_call_") || strings.Contains(text, "<function=") ||
+			strings.Contains(text, "crates/gry-mcp/src/tools.rs") ||
+			strings.Contains(text, "crates/gry-query/src/search.rs") {
+			t.Fatalf("protocol bytes survived into assistant text: %q", text)
+		}
+		if !strings.Contains(text, "could not be normalized") {
+			t.Fatalf("text = %q, want the bounded diagnostic", text)
+		}
+	}
+	if run.text != run.msg.Text() {
+		t.Fatalf("live text %q != final text %q", run.text, run.msg.Text())
+	}
+}
+
+// The same decorated envelope in a quoted example is documentation, not
+// protocol. The family detector must not turn a documented wire shape into a
+// completion veto.
+func TestNormalizeQuotedDecoratedToolCallTagIsContent(t *testing.T) {
+	input := "The gateway emitted `<tool_call_24b82c79>` around the call."
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: input}},
+	}, NormalizeOptions{})
+	if got.Text() != input {
+		t.Fatalf("quoted content changed: %q", got.Text())
+	}
+	if got.ProtocolResidue {
+		t.Fatal("quoted content was classified as protocol residue")
+	}
+	if calls := got.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("a quoted example executed as a call: %+v", calls)
 	}
 }

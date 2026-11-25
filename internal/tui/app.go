@@ -89,19 +89,17 @@ type tickMsg time.Time
 // faster than this.
 const spinnerInterval = 90 * time.Millisecond
 
-// frameInterval is the presentation clock: 30 FPS (~33ms). It is faster than
-// the spinner so a three-phase fade and a 150ms dwell can actually be painted
-// on distinct frames, while the spinner is advanced only once per
-// spinnerInterval.
-const frameInterval = 33 * time.Millisecond
+// frameInterval is the presentation clock. The 60 Hz cadence gives color
+// transitions enough distinct frames to read as a fade; the spinner still
+// advances only once per spinnerInterval.
+const frameInterval = time.Second / 60
 
 // renderFPS is the viewport paint ceiling. Token deltas can arrive hundreds of
 // times a second, but the terminal only needs a coherent frame: the renderer
 // keeps the latest View and paints at this rate, so stream bursts are folded
-// into one repaint instead of racing the emulator with partial rows. 30 Hz is
-// fast enough to read as continuous text while leaving headroom for the
-// spinner's 90ms tick.
-const renderFPS = 30
+// into one repaint instead of racing the emulator with partial rows. 60 Hz
+// keeps the short color ramps fluid without coupling paints to token arrival.
+const renderFPS = 60
 
 // Program drives the interactive session.
 //
@@ -179,7 +177,7 @@ type Program struct {
 	mouseReports int
 	// eventsApplied and viewsRendered are cadence diagnostics: one Update
 	// can fold many runtime events into one state transition, while Bubble
-	// Tea's renderer paints at its own 60 Hz cadence from the latest View.
+	// Tea's renderer paints at its own cadence from the latest View.
 	// They are never rendered.
 	eventsApplied int
 	viewsRendered int
@@ -506,11 +504,16 @@ type Program struct {
 	// setting the loop should use for this turn.
 	reasoningSelect ReasoningSelector
 	// lastTaskDecision records why the last turn attached, detached, or
-	// started a task: NEW_SESSION, EXPLICIT_RESUME, NEW_INTENT, TASK_DETACH,
-	// TASK_COMPLETE, or NO_TASK. It is diagnostics for /audit and tests, never
-	// shown as a blocking prompt. Guarded by mu because runTurn writes it off
-	// the update goroutine.
+	// started a task: NEW_SESSION, NEW_BOUNDARY, EXPLICIT_RESUME, NEW_INTENT,
+	// TASK_DETACH, TASK_COMPLETE, or NO_TASK. It is diagnostics for /audit and
+	// tests, never shown as a blocking prompt. Guarded by mu because runTurn
+	// writes it off the update goroutine.
 	lastTaskDecision string
+	// freshTaskBoundarySession marks the first task intent in a session created
+	// by /new. It prevents that intent from matching an older resumable task;
+	// task state itself remains solely owned by the continuity controller.
+	// Guarded by mu.
+	freshTaskBoundarySession int64
 	// proposal is the human's decided proposal awaiting or serving its turn.
 	// It is set when a proposal is resolved and consumed by the released turn
 	// (plus explicit continuations of the same execution). A new intent clears
@@ -1030,8 +1033,8 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if at.IsZero() {
 			at = time.Now()
 		}
-		// The frame clock drives fade phases and dwell floors. It runs faster
-		// than the spinner so a block can step through three visible phases.
+		// The frame clock drives color fades and dwell floors. It runs faster
+		// than the spinner so presentation can ease independently of activity.
 		p.state.Apply(FrameTick{At: at})
 		// The commit activity shares the one spinner cadence. Advancing it
 		// keeps the elapsed clocks and the label sweep moving without a
@@ -2569,12 +2572,18 @@ func (p *Program) createNewSession(title string) {
 	}
 	p.detachTaskForNewSession()
 	p.adoptSession(sess, opened)
+	if sess != nil {
+		p.mu.Lock()
+		p.freshTaskBoundarySession = sess.ID
+		p.mu.Unlock()
+	}
 	if title != "" && p.sessionActions.Rename != nil && sess != nil {
 		if err := p.sessionActions.Rename(sess.ID, title); err == nil {
 			sess.Title = title
 			p.state.Apply(SessionTitleUpdated{ID: sess.ID, Title: title})
 		}
 	}
+	p.PublishNotice("New task boundary. Previous tasks remain available through /task list.")
 	p.recordTaskDecision("NEW_SESSION")
 }
 
@@ -5676,7 +5685,42 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// model cannot add to or reinterpret it.
 	intent := workspace.BuildIntentContract(text)
 
+	// abortTurn ends a turn that never started execution: it reports the
+	// reason and clears the cancellation handle. The durable task is left
+	// exactly as it was, and the only cancellation path that can store a
+	// terminal claim is cancelTurnNow, scoped to the active turn.
+	abortTurn := func(notice string) {
+		p.publish(Notice{Text: notice})
+		p.publishCritical(AssistantDone{Seq: seq})
+		p.mu.Lock()
+		p.cancelTurn = nil
+		p.mu.Unlock()
+	}
+
+	freshBoundary := p.newTaskBoundaryActive()
 	taskCurrent, _, taskOwned := p.taskContinuationFor(text, activeAuthority)
+	if taskOwned && p.task.Current != nil {
+		if _, active := p.task.Current(); !active {
+			// Matching a persisted candidate is the activation event. Restore
+			// it before authority reconciliation and Begin; startup itself
+			// never binds it to this session.
+			if p.task.ResumeTask == nil {
+				taskOwned = false
+			} else {
+				projection := p.task.ResumeTask(taskCurrent.ID)
+				if projection.Err != "" {
+					abortTurn("task resume: " + projection.Err)
+					return
+				}
+				current, ok := p.task.Current()
+				if !ok {
+					abortTurn("task resume did not attach the matching task")
+					return
+				}
+				taskCurrent = current
+			}
+		}
+	}
 
 	// A task-owned turn runs under the task's persisted authority contract,
 	// not the ambient session default. A new session restores BUILD and a
@@ -5789,19 +5833,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		}
 	}
 
-	// abortTurn ends a turn that never started execution: it reports the
-	// reason and clears the cancellation handle. The durable task is left
-	// exactly as it was, and the unused context is left to be collected; the
-	// only cancellation path that can store the terminal claim is
-	// cancelTurnNow, which is scoped to the active turn.
-	abortTurn := func(notice string) {
-		p.publish(Notice{Text: notice})
-		p.publishCritical(AssistantDone{Seq: seq})
-		p.mu.Lock()
-		p.cancelTurn = nil
-		p.mu.Unlock()
-	}
-
 	// A persisted task is resumable, never mandatory. An explicit continuation
 	// reuses the persisted contract and its pre-run target baseline; any other
 	// prompt is a new intent and starts a new current-session task. The previous
@@ -5825,6 +5856,18 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.Current != nil {
 		current, ok := p.task.Current()
 		switch {
+		case freshBoundary:
+			if ok && p.task.Detach != nil {
+				detached := p.task.Detach()
+				if detached.Err != "" {
+					abortTurn("task state was not recorded: " + detached.Err)
+					return
+				}
+				if detached.ID != "" {
+					p.PublishTask(detached)
+				}
+			}
+			p.recordTaskDecision("NEW_BOUNDARY")
 		case !ok:
 			p.recordTaskDecision("NEW_INTENT")
 		case taskStatusTerminal(current.Status):
@@ -5888,7 +5931,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 		}
 	} else {
-		p.recordTaskDecision("NEW_INTENT")
+		if freshBoundary {
+			p.recordTaskDecision("NEW_BOUNDARY")
+		} else {
+			p.recordTaskDecision("NEW_INTENT")
+		}
 	}
 
 	// The completion contract's targets are captured before execution; the
@@ -5914,6 +5961,9 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		if projection.Err != "" {
 			abortTurn("task state was not recorded: " + projection.Err)
 			return
+		}
+		if freshBoundary {
+			p.clearNewTaskBoundary(turnSessID)
 		}
 	}
 
@@ -6073,13 +6123,17 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// at construction, because the program is the only thing that can turn
 	// it into UI events.
 	//
-	// Visible model text is not forwarded while the stream is open. Answer
-	// prose is a candidate until the Control Plane commits it; publishing
-	// deltas would make the transcript show a draft, and later withdraw it,
-	// before the claim review finished. Reasoning and tool activity still
-	// stream, so the turn remains observable while the answer is internal.
-	// The committed value is published once after Run.
-	p.loop.SetTextDeltaHook(nil)
+	// Answer deltas are shown only as a labelled provisional preview. The
+	// reducer keeps them out of the committed answer contract, and the exact
+	// committed value (or withdrawal) replaces that preview after Run.
+	// Loop.drain sanitizes each delta before this hook, so streaming the preview
+	// observes the same runtime-state boundary as the settled answer.
+	p.loop.SetTextDeltaHook(func(delta string) {
+		for _, chunk := range splitAssistantChunks(delta) {
+			p.publishOK(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
+		}
+	})
+	defer p.loop.SetTextDeltaHook(nil)
 	var liveThinking strings.Builder
 	// A stream with tool calls is investigation narration, not an answer. The
 	// provisional preview is withdrawn before the tool card opens so the two
@@ -6282,7 +6336,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				At:     time.Now(), Seq: seq,
 			})
 		case agent.AnswerSuperseded:
-			p.publishCritical(AssistantReconcile{Answer: agent.AnswerSuperseded, At: time.Now(), Seq: seq})
+			// A bounded correction replaces this candidate internally. The
+			// event withdraws the provisional preview; the candidate text is
+			// audit lineage on the turn, never a transcript artifact.
+			p.publishCritical(AssistantReconcile{
+				Answer: agent.AnswerSuperseded, At: time.Now(), Seq: seq,
+			})
 		case agent.AnswerNarration:
 			p.publishCritical(AssistantReconcile{Answer: agent.AnswerNarration, At: time.Now(), Seq: seq})
 		}
@@ -6626,13 +6685,19 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			switch {
 			case hasOpenTaskItems(projection) || p.task.NeedsReview == nil:
 				// Work remains or no review seam is installed: the task stays
-				// active with the recorded error, never falsely done.
+				// active with the recorded error, never falsely done. The turn
+				// footer must not report a clean verification either: the
+				// answer was accepted but the task boundary did not complete.
+				if hasOpenTaskItems(projection) {
+					reviewNotice = "completion is not proven: work remains in the task plan"
+				}
 				p.PublishTask(projection)
 			default:
 				// The evaluator said complete but the durable task could not
 				// prove or commit it. Review is the truthful non-terminal
-				// transition.
-				p.PublishTask(p.task.NeedsReview("completion evidence: "+projection.Err, nil))
+				// transition, and the footer must carry the same verdict.
+				reviewNotice = "completion evidence: " + projection.Err
+				p.PublishTask(p.task.NeedsReview(reviewNotice, nil))
 			}
 			projection = TaskProjection{}
 		}

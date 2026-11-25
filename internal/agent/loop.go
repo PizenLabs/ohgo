@@ -68,9 +68,9 @@ const DefaultCorrectionToolCalls = 4
 //	candidate → AnswerCommitted    (the response transaction accepts it)
 //
 // AnswerNarration is prose that was never a candidate: a tool-round preamble
-// or an abandoned plan. Superseded and narration prose is model context only.
-// Only AnswerCommitted may be presented as the task's answer, and only
-// AnswerRejected may be presented as a terminal refusal.
+// or an abandoned plan; it is model context only. Only AnswerCommitted may be
+// presented as the task's answer, and only AnswerRejected may be presented as
+// a terminal refusal.
 type AnswerDisposition uint8
 
 const (
@@ -83,7 +83,8 @@ const (
 	AnswerNarration
 	// AnswerSuperseded is a candidate a bounded correction replaced. It is
 	// internal repair context: no host may show it as an answer or as a
-	// withdrawal.
+	// withdrawal. Its lineage remains in the turn's draft audit, but its prose
+	// is withheld from the transcript, persistence, and replay.
 	AnswerSuperseded
 	// AnswerRejected is the terminal candidate the publication review
 	// refused. It is not conversation and not an answer. A host may project
@@ -270,7 +271,7 @@ type Config struct {
 	// the run so far and the candidate answer and returns a non-empty reason
 	// when the answer cannot be published as complete. It can only request a
 	// correction; authority, completion, and publication remain the runtime's.
-	// A nil hook accepts every answer.
+	// A nil hook accepts every answer with no open plan.
 	AnswerReview func(turns []Turn, answer string) string
 	// EvidenceGap returns the control plane's current evidence-frontier gap.
 	// It is read when an answer is reviewed and again when it is finalized.
@@ -992,7 +993,8 @@ func (l *Loop) SetConclusionMode(mode contract.ConclusionMode) {
 }
 
 // SetAnswerReview installs the bounded answer-level completion gate for the
-// next run, or nil to accept every answer. The gate can ask for bounded,
+// next run, or nil to accept every answer with no open plan. The gate can ask
+// for bounded,
 // progress-gated corrected answers; it cannot authorize an action, widen the
 // tool set beyond the loop's constructed capabilities, or mark the run
 // complete.
@@ -1600,10 +1602,21 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// withdraw every tool rather than trusting a projector to also
 			// return an empty slice. Otherwise a model could execute a call on
 			// a surface the runtime already declared closed.
+			//
+			// A plan tool is the exception at an answer boundary: it records
+			// the model's own guidance rather than evidence, and withdrawing it
+			// left an open plan frozen after the answer. Keeping only a plan
+			// tool with open items lets the model reconcile it; once the plan
+			// is closed, the surface is empty again. A terminal closure still
+			// withdraws everything: the task cannot progress.
 			if answerEligible || terminal {
-				activeTools = []Tool{}
+				if terminal {
+					activeTools = []Tool{}
+				} else {
+					activeTools = OpenPlanTools(activeTools)
+				}
 			}
-			closed = answerEligible || terminal || len(activeTools) == 0
+			closed = terminal || len(activeTools) == 0
 			// The previous answer failed the answer-level review. Reopen the
 			// surface the projection described for this correction request:
 			// the missing evidence may be one read away, while the projection
@@ -1612,7 +1625,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// This never widens authority; every call still crosses grounding
 			// and the security gate, and a terminal capability/stall stop is
 			// not overridden.
-			if correcting && !terminal {
+			// A closed window is not an empty projected surface to recover from:
+			// when the allowance is spent, the projector has deliberately
+			// withdrawn every tool. Restoring the constructed set here would
+			// turn the "repair window is closed" notice into a lie and let a
+			// stale tool call execute after the lifecycle refused its budget.
+			if correcting && !terminal && l.remainingCorrectionCalls() > 0 {
 				if len(correctionSurface) > 0 {
 					activeTools = correctionSurface
 				} else {
@@ -1853,15 +1871,29 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// protocol failure, not an answer. Spend one bounded recovery
 			// request asking for the canonical call; never execute or invent
 			// the partial envelope. A second failure is terminal for this run.
-			if len(assistant.NormalizationFailures) > 0 && !closed {
+			//
+			// The answer boundary can also produce this shape: the surface is
+			// closed, so there is no canonical call left to re-emit. The one
+			// recovery then asks for the prose answer from the evidence already
+			// observed, and the diagnostic is still never published as the
+			// answer. Without this branch a closed surface accepted the
+			// diagnostic as a committed answer.
+			if len(assistant.NormalizationFailures) > 0 {
 				normalizationPending = true
-				if !normalizationRecoveryAttempted && len(activeTools) > 0 && len(turns) < l.cfg.MaxTurns {
-					normalizationRecoveryAttempted = true
-					if strings.TrimSpace(l.cfg.ProtocolRecoveryRequest) != "" {
-						nudges = append(nudges, l.cfg.ProtocolRecoveryRequest)
+				if !normalizationRecoveryAttempted && len(turns) < l.cfg.MaxTurns {
+					directive := ""
+					switch {
+					case closed:
+						directive = l.cfg.AnswerRequest
+					case len(activeTools) > 0:
+						directive = l.cfg.ProtocolRecoveryRequest
 					}
-					reportTurn()
-					continue
+					if strings.TrimSpace(directive) != "" {
+						normalizationRecoveryAttempted = true
+						nudges = append(nudges, directive)
+						reportTurn()
+						continue
+					}
 				}
 				reportTurn()
 				return turns, fmt.Errorf("%w: %s", ErrToolNormalizationFailed,
@@ -3148,7 +3180,10 @@ func (l *Loop) execute(
 	// Conclude records a control observation, not evidence. It must remain
 	// available after the evidence allowance is spent; refusing it forces
 	// another full answer and turns the terminal control action into a failure.
-	if l.correctionActive.Load() && call.Name != "conclude" {
+	// A plan tool is the same kind of control action: it records the model's own
+	// guidance and acquires no evidence, so spending the investigation allowance
+	// must not make an open plan impossible to reconcile before the answer.
+	if l.correctionActive.Load() && call.Name != "conclude" && !isPlanTool(tool) {
 		limit := int64(l.correctionToolBudget())
 		if used := l.correctionCalls.Add(1); used > limit {
 			return failClass(ToolFailureCorrectionBudget,

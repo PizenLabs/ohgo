@@ -1261,12 +1261,81 @@ func (p *Program) openTask() (TaskResume, bool) {
 // authority. It is side-effect-free; the turn boundary records the decision
 // only after this has determined that the task owns the prompt.
 func (p *Program) taskContinuationFor(text, active string) (TaskResume, string, bool) {
-	current, ok := p.openTask()
-	if !ok {
+	// /new is a hard boundary for the first intent in its session. Resumable
+	// tasks remain listed and explicitly resumable, but this prompt cannot
+	// attach to one of them.
+	if p.newTaskBoundaryActive() {
 		return TaskResume{}, "", false
 	}
-	decision, owned := taskTurnDecision(current, text, active, workspace.BuildIntentContract(text))
-	return current, decision, owned
+	current, ok := p.openTask()
+	if ok {
+		decision, owned := taskTurnDecision(current, text, active, workspace.BuildIntentContract(text))
+		return current, decision, owned
+	}
+	if p.task.ListResumable == nil || p.task.ResumeTask == nil {
+		return TaskResume{}, "", false
+	}
+
+	// A persisted task is only activated in response to an intent that matches
+	// it. Search newest-first so an exact repeat after /new continues the most
+	// recently-created identity when older tasks have the same objective.
+	candidates := p.task.ListResumable()
+	var selected TaskResume
+	selectedDecision := ""
+	next := workspace.BuildIntentContract(text)
+	for i := len(candidates) - 1; i >= 0; i-- {
+		candidate := candidates[i]
+		if candidate.ID == "" || taskStatusTerminal(candidate.Status) {
+			continue
+		}
+		decision, owned := taskTurnDecision(candidate, text, active, next)
+		// Archived tasks need a strong intent match. Continuation words such
+		// as "continue" rely on a live task's subject and must not guess which
+		// historical task the user meant; those remain available through the
+		// explicit resume path.
+		if !owned || (decision != "OBJECTIVE_CONTINUATION" && decision != "ROLE_CONTINUATION") {
+			continue
+		}
+		if selectedDecision == "" {
+			selected, selectedDecision = candidate, decision
+			continue
+		}
+		// Duplicate exact objectives have an unambiguous newest owner. Other
+		// overlapping candidate matches are left for explicit /task resume
+		// rather than guessed.
+		if selectedDecision == "OBJECTIVE_CONTINUATION" && decision == selectedDecision &&
+			strings.EqualFold(strings.TrimSpace(selected.Contract.Objective), strings.TrimSpace(candidate.Contract.Objective)) &&
+			selected.Contract.Kind == candidate.Contract.Kind {
+			continue
+		}
+		return TaskResume{}, "", false
+	}
+	return selected, selectedDecision, selectedDecision != ""
+}
+
+// newTaskBoundaryActive reports whether the live session is the first prompt
+// boundary created by /new. It is a request-scoped policy marker, not task
+// state; the task controller remains the only owner of task activation.
+func (p *Program) newTaskBoundaryActive() bool {
+	sessionID := p.activeSessionID()
+	if sessionID == 0 {
+		return false
+	}
+	p.mu.Lock()
+	active := p.freshTaskBoundarySession == sessionID
+	p.mu.Unlock()
+	return active
+}
+
+func (p *Program) clearNewTaskBoundary(sessionID int64) {
+	if sessionID == 0 {
+		return
+	}
+	p.mu.Lock()
+	if p.freshTaskBoundarySession == sessionID {
+		p.freshTaskBoundarySession = 0
+	}
+	p.mu.Unlock()
 }
 
 // continuesOpenTask reports whether the open task already owns the prompt in a

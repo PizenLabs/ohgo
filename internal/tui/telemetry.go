@@ -4,7 +4,7 @@ package tui
 //
 // This file owns the two time-based presentation rules that make streaming
 // execution legible: a minimum dwell for a fast call's intent frame, and a
-// short three-phase fade for a block that has just appeared. Neither rule
+// short eased fade for a block that has just appeared. Neither rule
 // changes runtime state, measured durations, or ordering. They only decide
 // which already-known frame a renderer may show at a given instant.
 
@@ -25,56 +25,18 @@ const (
 	// A 2ms read must not flash from nothing to a checkmark: the user gets
 	// one readable intent frame before the settled outcome replaces it.
 	toolMinDwell = 150 * time.Millisecond
-	// fadeVaporEnd is the end of the dim neutral entrance phase.
-	fadeVaporEnd = 30 * time.Millisecond
-	// fadeSolidifyEnd is the end of the muted accent phase. The colour ramps
-	// from here to the target over the next 10ms.
-	fadeSolidifyEnd = 90 * time.Millisecond
-	// fadeFinalAt is when the full palette target is reached. The short final
-	// window keeps the target stable until the cached projection returns.
-	fadeFinalAt = 100 * time.Millisecond
-	// fadeDuration is the complete entrance window. Settled history never
-	// carries a fade.
-	fadeDuration = 120 * time.Millisecond
+	// fadeDuration is the complete eased entrance window. Settled history
+	// never carries a fade.
+	fadeDuration = 150 * time.Millisecond
 	// statusSettleDuration is the completion tween. A terminal frame keeps its
 	// semantic glyph immediately but morphs its status colour from the running
 	// amber into the final success/error role over this window.
-	statusSettleDuration = 120 * time.Millisecond
+	statusSettleDuration = 180 * time.Millisecond
 	// statusSlotCells is the ghost box reserved for a status glyph. Every
 	// state paints one cell in this slot, so a spinner can become a check
 	// without shifting the invocation to the left or right.
 	statusSlotCells = 1
 )
-
-// fadePhase is one discrete step in the entrance sequence. Tests and
-// diagnostics use it; the renderer uses the age directly so the colour can
-// interpolate within a phase.
-type fadePhase int
-
-const (
-	fadeSettled fadePhase = iota
-	fadeVapor
-	fadeSolidify
-	fadeFinal
-)
-
-// fadePhaseAt maps a block's age to its discrete phase. The three visible
-// phases exist so a 30ms presentation tick can step a new block through
-// vapour, solidifying, and target instead of popping in at full brightness.
-func fadePhaseAt(age time.Duration) fadePhase {
-	switch {
-	case age < 0:
-		return fadeVapor
-	case age < fadeVaporEnd:
-		return fadeVapor
-	case age < fadeFinalAt:
-		return fadeSolidify
-	case age < fadeDuration:
-		return fadeFinal
-	default:
-		return fadeSettled
-	}
-}
 
 // entryFading reports whether a block is inside its entrance window at now.
 func entryFading(entry Entry, now time.Time) bool {
@@ -89,7 +51,7 @@ func entryFading(entry Entry, now time.Time) bool {
 		return false
 	}
 	// A frame timestamp can be a few milliseconds older than a block created
-	// between ticks. Treat that as the first phase rather than skipping the
+	// between ticks. Treat that as the first frame rather than skipping the
 	// entrance entirely.
 	return now.Sub(entry.AppearedAt) < fadeDuration
 }
@@ -115,12 +77,9 @@ func fadeTarget(theme string) string {
 	return design.For(theme).TextPrimary
 }
 
-// fadeColorAt interpolates the entrance colour for one age. It is a pure
-// function: the same age and target always produce the same RGB triple.
-// fadeColorAt interpolates the entrance colour for one age. origin is the
-// appearance's dim surface, so a light terminal never flashes a dark block
-// before settling to dark text. It is pure: the same inputs always produce the
-// same RGB triple.
+// fadeColorAt eases the entrance color from the appearance's soft surface into
+// the text color. The continuous ramp avoids both a dark flash on light themes
+// and a visible step between frames.
 func fadeColorAt(age time.Duration, target, origin string) string {
 	switch {
 	case age < 0:
@@ -128,19 +87,19 @@ func fadeColorAt(age time.Duration, target, origin string) string {
 	case age >= fadeDuration:
 		return target
 	}
-	if age < fadeVaporEnd {
-		return origin
+	progress := float64(age) / float64(fadeDuration)
+	return blendHex(origin, target, easeInOut(progress))
+}
+
+// easeInOut removes the hard start and stop of a linear color ramp.
+func easeInOut(progress float64) float64 {
+	if progress <= 0 {
+		return 0
 	}
-	solid := blendHex(origin, target, 0.5)
-	if age < fadeSolidifyEnd {
-		t := float64(age-fadeVaporEnd) / float64(fadeSolidifyEnd-fadeVaporEnd)
-		return blendHex(origin, solid, t)
+	if progress >= 1 {
+		return 1
 	}
-	if age < fadeFinalAt {
-		t := float64(age-fadeSolidifyEnd) / float64(fadeFinalAt-fadeSolidifyEnd)
-		return blendHex(solid, target, t)
-	}
-	return target
+	return progress * progress * (3 - 2*progress)
 }
 
 // blendHex linearly interpolates two #rrggbb colours. A malformed token falls
@@ -176,7 +135,7 @@ func hexRGB(r, g, b int) string {
 //
 // Terminal cells have no alpha, so the whole projection is flattened to its
 // plain text for the short window. Inner syntax colours would otherwise win
-// over the interpolation; the block settles back to the full palette at
+// over the eased interpolation; the block settles back to the full palette at
 // fadeDuration, when the cached projection is re-rendered normally.
 func fadeRenderedBlock(rendered string, age time.Duration, theme string) string {
 	if rendered == "" || !fadeSupported() {
@@ -188,10 +147,6 @@ func fadeRenderedBlock(rendered string, age time.Duration, theme string) string 
 	color := fadeColorAt(age, fadeTarget(theme), design.For(theme).SurfaceSelection)
 	r, g, b := parseHexColor(color)
 	prefix := truecolorPrefix(r, g, b)
-	switch fadePhaseAt(age) {
-	case fadeVapor, fadeSolidify:
-		prefix += "\x1b[2m"
-	}
 	var sb strings.Builder
 	sb.Grow(len(rendered) + 24)
 	lines := strings.Split(rendered, "\n")
@@ -346,7 +301,7 @@ func (t *ToolEntry) statusSettleAge(now time.Time) (time.Duration, bool) {
 }
 
 // statusTweenColor interpolates the running role into the terminal role.
-// The terminal has no alpha, so a short colour ramp is the honest way to
+// The terminal has no alpha, so a short eased colour ramp is the honest way to
 // morph a status in place without changing the glyph's cell width. The
 // endpoints match the palette roles, so the tween hands off without a final
 // hue jump.
@@ -368,7 +323,7 @@ func statusTweenColor(status ToolStatus, age time.Duration, theme string) (strin
 		return target, false
 	}
 	progress := float64(age) / float64(statusSettleDuration)
-	return blendHex(t.Running, target, progress), true
+	return blendHex(t.Running, target, easeInOut(progress)), true
 }
 
 // phaseLabel is the batch's measured authority span. Empty means the producer

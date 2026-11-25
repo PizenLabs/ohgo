@@ -288,10 +288,14 @@ func TestReadinessD02CrashAfterSwitchBeforeApplied(t *testing.T) {
 
 	got := installTaskContinuity(tui.NewProgram(nil, "test", 0), root,
 		[]agent.Tool{tools.NewTodoTool()}, func() workspace.Workspace { return role })
-	current, ok := got.Current()
-	if !ok {
-		t.Fatal("RD-D02: the fresh process lost the task")
+	if _, active := got.Current(); active {
+		t.Fatal("RD-D02: startup activated the recovered task")
 	}
+	current, err := got.ResumeTask(taskID)
+	if err != nil {
+		t.Fatalf("RD-D02: ResumeTask: %v", err)
+	}
+	current, _ = reconcileHandoff(got, current, func() workspace.Workspace { return role })
 	if current.ID != taskID {
 		t.Fatalf("RD-D02: restart changed identity: %q -> %q", taskID, current.ID)
 	}
@@ -331,10 +335,14 @@ func TestReadinessD03CrashAfterApprovalBeforeSwitch(t *testing.T) {
 	}
 	got := installTaskContinuity(tui.NewProgram(nil, "test", 0), root,
 		[]agent.Tool{tools.NewTodoTool()}, func() workspace.Workspace { return role })
-	current, ok := got.Current()
-	if !ok || current.ID != taskID {
-		t.Fatalf("RD-D03: task not restored: ok=%v id=%q", ok, current.ID)
+	if _, active := got.Current(); active {
+		t.Fatal("RD-D03: startup activated the recovered task")
 	}
+	current, err := got.ResumeTask(taskID)
+	if err != nil || current.ID != taskID {
+		t.Fatalf("RD-D03: task not resumed: id=%q err=%v", current.ID, err)
+	}
+	current, _ = reconcileHandoff(got, current, func() workspace.Workspace { return role })
 	if current.Handoff == nil || current.Handoff.Status != task.HandoffInterrupted {
 		t.Fatalf("RD-D03: handoff = %+v, want INTERRUPTED", current.Handoff)
 	}

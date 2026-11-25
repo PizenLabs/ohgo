@@ -166,6 +166,13 @@ func TestRefusedCompletionNeverClaimsSuccess(t *testing.T) {
 		if entry == nil || entry.Status != "RUNNING" {
 			t.Fatalf("task entry = %+v, want RUNNING with the refusal", entry)
 		}
+		last := program.state.Entries[len(program.state.Entries)-1]
+		if last.Kind != EntryFooter || last.Footer == nil || last.Footer.Kind != FooterReview {
+			t.Fatalf("footer = %+v, want a review verdict when the task cannot complete", last)
+		}
+		if !strings.Contains(last.Footer.Detail, "work remains") {
+			t.Fatalf("footer detail = %q, want the outstanding-plan reason", last.Footer.Detail)
+		}
 	})
 
 	t.Run("an uncommitted completion status is not published", func(t *testing.T) {

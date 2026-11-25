@@ -1870,7 +1870,9 @@ func composerRuleStyle(_ State, pal *Palette) lipgloss.Style {
 // mode hue: only the prefix word carries authority identity.
 func composerRule(state State, pal *Palette, layout Layout) string {
 	width := composerRuleWidth(state, layout)
-	return composerRuleStyle(state, pal).Render(composerBorderTitle(state, width))
+	lead, label, trail := composerBorderParts(state, width)
+	rule := composerRuleStyle(state, pal)
+	return rule.Render(lead) + pal.Secondary.Render(label) + rule.Render(trail)
 }
 
 // composerBottomRule draws the closing rule framing the composer. It stays
@@ -2026,7 +2028,7 @@ type entryRenderContext struct {
 func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, ctx entryRenderContext) {
 	if entryFading(entry, ctx.now) {
 		age := ctx.now.Sub(entry.AppearedAt)
-		if age < fadeFinalAt {
+		if age < fadeDuration {
 			var inner strings.Builder
 			renderEntryContent(&inner, entry, pal, layout, ctx)
 			sb.WriteString(fadeRenderedBlock(inner.String(), age, ctx.theme))
@@ -2058,6 +2060,13 @@ func assistantDisplay(entry Entry) (text, label string) {
 			return entry.WithdrawnText, "draft withdrawn"
 		}
 		return entry.WithdrawnText, "draft withdrawn · " + reason
+	}
+	if entry.Superseded {
+		// A superseded candidate is internal repair lineage, not transcript
+		// content. The reducer already moved its text out of AssistantText;
+		// returning no projection here keeps SupersededText audit-only even if
+		// a future display path is added.
+		return "", ""
 	}
 	if entry.Provisional {
 		return entry.AssistantText, "draft · answer review pending"
@@ -2096,7 +2105,7 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		// never inflates the budget. Never re-wrap styled output here.
 		rendered := RenderMarkdownWrapped(text, pal, textWidth(layout))
 		if !entryFading(entry, ctx.now) {
-			if age, ok := assistantFinalLineAge(entry, ctx.now); ok && age < fadeFinalAt {
+			if age, ok := assistantFinalLineAge(entry, ctx.now); ok && age < fadeDuration {
 				rendered = fadeRenderedTail(rendered, age, ctx.theme)
 			}
 		}
@@ -2506,9 +2515,6 @@ func toolStatusStyle(tool *ToolEntry, status ToolStatus, pal *Palette, theme str
 	if age, ok := tool.statusSettleAge(now); ok && fadeSupported() {
 		if hex, tweening := statusTweenColor(status, age, theme); tweening {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(hex))
-			if age < fadeVaporEnd {
-				style = style.Faint(true)
-			}
 			return style
 		}
 	}

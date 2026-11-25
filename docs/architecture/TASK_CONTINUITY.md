@@ -54,12 +54,17 @@ survive a session, an interruption, a restart, and a role change. A role change
 never by itself recreates the task: the same objective continues. An automatic
 BUILD ↔ FUZZ handoff is recorded as an applied control-plane transition, so the
 same task and evidence continue. A new session keeps the task durably
-resumable, an explicit continuation or a natural verification request about the
-task's own result re-attaches it, and a genuinely new objective starts a new
-task. The task layer resolves that ownership before workspace prediction or
-routing. A terminal task owns no continuation: a repeated verification prompt
-reports the finished state instead of replacing the proof with a duplicate
-task. A terminal task is archived through
+resumable but starts with no active task: startup moves any live project
+checkpoint into the detached archive instead of projecting it as the new
+session's current task. A submitted prompt with the same normalized objective
+and contract may attach the matching resumable task; a different or ambiguous
+prompt starts fresh, and older work remains available through `/task list` and
+`/task resume`. `/new` marks a hard boundary for the first prompt in its new
+session, so even an exact repeat starts a new task without deleting older work.
+The task layer resolves ownership before workspace prediction or routing. A
+terminal task owns no continuation: a repeated verification prompt reports the
+finished state instead of replacing the proof with a duplicate task. A terminal
+task is archived through
 the same detach path before the new objective starts, so its objective,
 evidence, proof, and timeline remain inspectable through `/task history`
 rather than being overwritten by the replacement checkpoint.
@@ -71,19 +76,22 @@ them.
 
 | Situation | What happens |
 | --- | --- |
-| `/new`, or a prompt that names a new subject | the live task is detached (archived, resumable) and a new task starts under the live role; no objective, evidence, proof, role, or budget is inherited |
+| `/new` | the live task is detached (archived, resumable), and the first prompt in the new session starts a fresh task even if its wording matches an older objective; history remains available |
+| a prompt that names a new subject | the live task is detached (archived, resumable) and a new task starts under the live role; no objective, evidence, proof, role, or budget is inherited |
 | explicit continuation (`continue`, `carry on`) on a non-terminal live task | the same task and objective continue; its persisted authority is restored (2.1) and its evidence, budget, and timeline are reused |
 | verification wording on an execution or mutation task (`check whether the fix worked`) | the same task continues at its verification boundary; an informational task does not acquire a result it never had |
 | a short follow-up to the task's own object (`fix it`, `implement the fix`) | the same task continues; the follow-up does not replace the task's completion contract with a targetless one |
 | a bare depth request on an open informational task (`more info`, `tell me more`, `go deeper`) | the same task continues with its evidence and subject; the request adds depth instead of archiving the task and starting an empty one that repeats the investigation. A request that names a subject (`more info about the auth flow`) is a new objective |
 | the same objective submitted again while the task is open | the same task continues only when the prompt states the objective or the role changed; otherwise it is routed as a new request |
 | the same objective submitted again after the task finished | a new invocation: the terminal task is archived with its proof and a new task identity starts |
+| exact same normalized objective and contract with no live task | the matching resumable task attaches because of the submitted intent; an ambiguous or merely related prompt does not |
 | continuation wording with no live task | it is an ordinary request, not a silent resurrection of archived work; detached work needs `/task resume` |
 
 The session's workspace is the authority for the session. It is never evidence
 that an open task may run under it; 2.1 restores the task's contract before the
-model is asked. A prompt is not an identity: text similarity never re-attaches a
-task, and a repeated prompt never inherits one.
+model is asked. A merely related prompt does not re-attach archived work. The
+only implicit archived-task match is the same normalized objective with the same
+contract kind; vague continuation wording still requires `/task resume`.
 
 An implementation delta belongs to the objective already in progress. When the
 open contract is a mutation objective under BUILD and the next prompt carries no
@@ -908,7 +916,13 @@ Specific rules:
   change, not every current check;
 - open todo work refuses completion and leaves the task active; a fully
   completed todo list is not evidence for a mutation or execution objective,
-  because the todo tool records a model plan and not an observed result;
+  because the todo tool records a model plan and not an observed result. The
+  answer boundary keeps an open plan's tool offered after it closes every
+  evidence tool, and an answer with open items is sent back for one bounded
+  reconciliation before publication. The plan tool is bookkeeping, not
+  evidence, so the correction allowance does not consume it. An unreconciled
+  plan leaves the task `RUNNING` and renders a review footer, never a clean
+  verification;
 - a non-complete evaluation is refused;
 - a task must be `RUNNING`: `PAUSED` and `NEEDS_REVIEW` resume through `Begin`
   first, so the boundary that reconciles the live workspace is not skipped.

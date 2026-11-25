@@ -146,13 +146,63 @@ func TestInstallTaskContinuityWritesAndRecoversArtifacts(t *testing.T) {
 		}
 	}
 
-	recovered := installTaskContinuity(tui.NewProgram(nil, "test", 0), root, []agent.Tool{tools.NewTodoTool()}, nil)
-	taskState, found, err := recovered.Restore()
-	if err != nil {
-		t.Fatalf("Restore: %v", err)
+	startup := tui.NewProgram(nil, "test", 0)
+	recovered := installTaskContinuity(startup, root, []agent.Tool{tools.NewTodoTool()}, nil)
+	if _, active := recovered.Current(); active {
+		t.Fatal("a recovered project task became active in the new session")
 	}
-	if !found || taskState.Status != task.StatusPaused {
-		t.Fatalf("recovered = %+v (found=%v), want PAUSED", taskState, found)
+	resumable, err := recovered.ListResumable()
+	if err != nil {
+		t.Fatalf("ListResumable: %v", err)
+	}
+	if len(resumable) != 1 || resumable[0].Status != task.StatusPaused ||
+		resumable[0].Objective != "ship phase 1" {
+		t.Fatalf("resumable = %+v, want the recovered PAUSED task", resumable)
+	}
+	notice := resumableTasksNotice(len(resumable))
+	for _, want := range []string{"No active task", "/task list", "/new"} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("startup notice %q does not explain %q", notice, want)
+		}
+	}
+}
+
+func TestInstallTaskContinuityStartupLeavesAllRecoveredTasksResumable(t *testing.T) {
+	root := t.TempDir()
+	controller := task.NewController(task.NewStore(root), nil)
+	for _, objective := range []string{"inspect the routing layer", "review the persistence boundary"} {
+		if _, err := controller.Begin(contract.IntentContract{
+			Objective: objective, Kind: contract.ObjectiveInformational,
+		}, nil); err != nil {
+			t.Fatalf("Begin %q: %v", objective, err)
+		}
+		if _, _, err := controller.Detach(); err != nil {
+			t.Fatalf("Detach %q: %v", objective, err)
+		}
+	}
+	if _, err := controller.Begin(contract.IntentContract{
+		Objective: "inspect the session loader", Kind: contract.ObjectiveInformational,
+	}, nil); err != nil {
+		t.Fatalf("Begin live task: %v", err)
+	}
+	if _, err := controller.Pause("interrupted"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	startup := installTaskContinuity(tui.NewProgram(nil, "test", 0), root, nil, nil)
+	if _, active := startup.Current(); active {
+		t.Fatal("startup left the project's live checkpoint active")
+	}
+	resumable, err := startup.ListResumable()
+	if err != nil {
+		t.Fatalf("ListResumable: %v", err)
+	}
+	if len(resumable) != 3 {
+		t.Fatalf("resumable tasks = %d, want 3: %+v", len(resumable), resumable)
+	}
+	if got := resumableTasksNotice(len(resumable)); !strings.Contains(got, "3 resumable tasks") ||
+		!strings.Contains(got, "/task list") || !strings.Contains(got, "/new") {
+		t.Fatalf("startup notice = %q", got)
 	}
 }
 
@@ -258,10 +308,12 @@ func TestTaskResumeCarriesAnExplicitSwitch(t *testing.T) {
 }
 
 func TestResumableTasksNoticeReportsTheRealCount(t *testing.T) {
-	if got := resumableTasksNotice(1); !strings.Contains(got, "1 resumable task") {
+	if got := resumableTasksNotice(1); !strings.Contains(got, "1 resumable task") ||
+		!strings.Contains(got, "/task list") || !strings.Contains(got, "/new") {
 		t.Fatalf("singular notice = %q", got)
 	}
-	if got := resumableTasksNotice(13); !strings.Contains(got, "13 resumable tasks") {
+	if got := resumableTasksNotice(13); !strings.Contains(got, "13 resumable tasks") ||
+		!strings.Contains(got, "/task list") || !strings.Contains(got, "/new") {
 		t.Fatalf("plural notice = %q", got)
 	}
 }

@@ -226,13 +226,17 @@ type TodoTool struct {
 	list TodoList
 }
 
+var _ agent.PlanReporter = (*TodoTool)(nil)
+
 // NewTodoTool returns an empty task list.
 func NewTodoTool() *TodoTool {
 	tool := &TodoTool{}
 	tool.Base = NewBase("todo",
 		"Track a task list for the current session. One task may be in progress "+
 			"at a time; starting one demotes the previous to pending. A phase is an "+
-			"optional planning group, not the runtime mode.",
+			"optional planning group, not the runtime mode. Reconcile every item "+
+			"before your final answer: mark it done, or remove it if you will not "+
+			"do it. A blocked or open item keeps the task active instead of completing.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -289,6 +293,30 @@ func (t *TodoTool) Reset() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.list = TodoList{}
+}
+
+// OpenPlanItems implements agent.PlanReporter.
+//
+// Only completed and abandoned items are terminal. A blocked item is still open
+// because it can be unblocked, and an in-progress item is the work the run says
+// it is doing now. The runtime uses this report to keep an open plan from
+// outliving the answer; it never changes a status itself.
+func (t *TodoTool) OpenPlanItems() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	var out []string
+	for _, phase := range t.list.Phases {
+		for _, task := range phase.Tasks {
+			switch task.Status {
+			case TaskCompleted, TaskAbandoned:
+				continue
+			default:
+				out = append(out, task.Content)
+			}
+		}
+	}
+	return out
 }
 
 // Snapshot returns a deep copy of the current list.
