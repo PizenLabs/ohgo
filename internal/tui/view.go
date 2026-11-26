@@ -2048,6 +2048,9 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 // out of that field, so copy, persistence, and answer projections cannot see
 // it. WithdrawnText is display-only history.
 func assistantDisplay(entry Entry) (text, label string) {
+	if entry.Runtime {
+		return entry.AssistantText, "runtime conclusion"
+	}
 	if entry.Discarded {
 		if strings.TrimSpace(entry.WithdrawnText) == "" {
 			return "", ""
@@ -2103,7 +2106,17 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		// The markdown layer owns wrapping: it measures plain cells first
 		// and styles after, so one width calculation governs and ANSI
 		// never inflates the budget. Never re-wrap styled output here.
-		rendered := RenderMarkdownWrapped(text, pal, textWidth(layout))
+		//
+		// A runtime conclusion is a status record, not prose: markdown would
+		// read the underscores in a reason code as emphasis and publish
+		// `verificationnotestablished`. Render it as plain wrapped text so
+		// the machine-readable code survives exactly.
+		rendered := ""
+		if entry.Runtime {
+			rendered = strings.Join(wrapPlain(text, layout), "\n")
+		} else {
+			rendered = RenderMarkdownWrapped(text, pal, textWidth(layout))
+		}
 		if !entryFading(entry, ctx.now) {
 			if age, ok := assistantFinalLineAge(entry, ctx.now); ok && age < fadeDuration {
 				rendered = fadeRenderedTail(rendered, age, ctx.theme)

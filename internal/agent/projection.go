@@ -155,6 +155,11 @@ type ProjectionReport struct {
 	ObjectiveComplete bool `json:"objective_complete,omitempty"`
 	// StopReason explains a terminal verdict in evidence terms.
 	StopReason string `json:"stop_reason,omitempty"`
+	// Conclusion is the terminal semantic outcome when the runtime cannot
+	// continue this run. It is set with a terminal verdict, so a host can
+	// report UNRESOLVED and publish an authoritative explanation even when the
+	// model produced no closing answer. It never completes or fails a task.
+	Conclusion *RunConclusion `json:"conclusion,omitempty"`
 	// Missing names the unresolved requirements the projection withheld an
 	// action for. It is audit data and the correction request's vocabulary:
 	// a premature answer must name the evidence frontier it did not close.

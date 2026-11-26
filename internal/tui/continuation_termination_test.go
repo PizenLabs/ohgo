@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/continuity/task"
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
@@ -11,6 +13,33 @@ import (
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
+
+// A runtime conclusion carries machine-readable vocabulary. It must render as
+// a status record, not markdown prose: underscore emphasis would publish
+// `verificationnotestablished` and destroy the reason a host or user reads.
+func TestRuntimeConclusionPreservesTheReasonCode(t *testing.T) {
+	state := New()
+	state.Apply(TerminalResized{Width: 100, Height: 30})
+	state.Apply(UserSubmitted{Text: "fix it", Seq: 1})
+	state.Apply(ConclusionPublished{
+		Seq: 1,
+		Conclusion: agent.RunConclusion{
+			Status:  agent.ConclusionUnresolved,
+			Reason:  agent.ConclusionVerificationNotEstablished,
+			Summary: "the requested verification was not established",
+		},
+	})
+	frame := ansi.Strip(Render(state))
+	if !strings.Contains(frame, "runtime conclusion") {
+		t.Fatalf("the runtime conclusion label is missing:\n%s", frame)
+	}
+	if !strings.Contains(frame, "UNRESOLVED · verification_not_established") {
+		t.Fatalf("the reason code was mangled or missing:\n%s", frame)
+	}
+	if strings.Contains(frame, "verificationnotestablished") {
+		t.Fatalf("markdown emphasis consumed the reason code:\n%s", frame)
+	}
+}
 
 // A continuation after an interrupted change must resume at verification. A
 // model that keeps reading instead is stopped by the verification window, not
@@ -78,6 +107,59 @@ func TestResumedMutationStopsAtTheVerificationWindow(t *testing.T) {
 	}
 	if strings.Contains(reason, "turn limit") {
 		t.Fatalf("review reason = %q, want the semantic bound rather than the resource cap", current.ReviewReason)
+	}
+	// The lifecycle status alone is not an outcome. The review carries the
+	// terminal semantic conclusion, and the transcript shows that conclusion
+	// as the final explanation because the model produced no answer.
+	if current.Conclusion == nil {
+		t.Fatal("the stalled task recorded no conclusion")
+	}
+	if current.Conclusion.Status != agent.ConclusionUnresolved {
+		t.Fatalf("conclusion status = %q, want UNRESOLVED", current.Conclusion.Status)
+	}
+	if current.Conclusion.Reason != agent.ConclusionVerificationNotEstablished {
+		t.Fatalf("conclusion reason = %q, want verification_not_established", current.Conclusion.Reason)
+	}
+	if !strings.Contains(strings.ToLower(current.Conclusion.Summary), "verification") {
+		t.Fatalf("conclusion summary = %q, want the missing verification", current.Conclusion.Summary)
+	}
+	var conclusionEntry, footerEntry = -1, -1
+	for i, entry := range resuming.program.state.Entries {
+		if entry.Kind == EntryAssistant && entry.Runtime {
+			conclusionEntry = i
+		}
+		if entry.Kind == EntryFooter {
+			footerEntry = i
+		}
+	}
+	if conclusionEntry < 0 {
+		t.Fatal("the run ended with no final answer after the verification block")
+	}
+	if footerEntry < 0 || conclusionEntry > footerEntry {
+		t.Fatalf("conclusion entry %d is not before the terminal footer %d", conclusionEntry, footerEntry)
+	}
+	final := resuming.program.state.Entries[conclusionEntry].AssistantText
+	if !strings.Contains(final, "UNRESOLVED") ||
+		!strings.Contains(final, "verification_not_established") {
+		t.Fatalf("final answer = %q, want the unresolved verification conclusion", final)
+	}
+	for _, message := range resuming.program.history {
+		assistant, ok := message.(agent.AssistantMessage)
+		if ok && strings.Contains(assistant.Message.Text(), "verification_not_established") {
+			t.Fatalf("the runtime conclusion entered the model conversation: %q", assistant.Message.Text())
+		}
+	}
+	frame := ansi.Strip(Render(resuming.program.state))
+	if !strings.Contains(frame, "runtime conclusion") {
+		t.Fatalf("the conclusion block is missing its provenance label:\n%s", frame)
+	}
+	conclusionAt := strings.Index(frame, "UNRESOLVED · verification_not_established")
+	footerAt := strings.Index(frame, "⚠ needs review:")
+	if conclusionAt < 0 {
+		t.Fatalf("the final explanation is not rendered:\n%s", frame)
+	}
+	if footerAt < 0 || conclusionAt > footerAt {
+		t.Fatalf("the final explanation is not before the review footer:\n%s", frame)
 	}
 	results := resuming.toolResults()
 	if len(results) != cognition.MaxVerifyObservationTurns {

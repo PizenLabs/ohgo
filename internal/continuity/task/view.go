@@ -149,6 +149,13 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	// presenting it as current would make resolved uncertainty look live.
 	if t.Status == StatusNeedsReview {
 		b.addBlock("Review reason", t.ReviewReason)
+		if t.Conclusion != nil {
+			conclusion := t.Conclusion.Label()
+			if summary := strings.TrimSpace(t.Conclusion.Summary); summary != "" {
+				conclusion += " — " + summary
+			}
+			b.addBlock("Conclusion", conclusion)
+		}
 		if claims := agent.RepairInstructions(t.ReviewIssues); claims != "" {
 			b.addBlock("Rejected claims", claims)
 		}

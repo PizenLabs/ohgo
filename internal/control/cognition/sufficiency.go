@@ -402,6 +402,10 @@ type Sufficiency struct {
 	// unavailable, which is a limitation to report rather than an incomplete
 	// objective.
 	VerificationLimited string
+	// Conclusion is the terminal semantic outcome when the runtime closes the
+	// task without an answer. It is set only with a terminal verdict, so a
+	// host can report UNRESOLVED instead of ending with no conclusion.
+	Conclusion *agent.RunConclusion
 	// Next names the highest-value evidence to acquire next, when insufficient.
 	Next []string
 	// VerificationConflict reports that an open user-reported contradiction of

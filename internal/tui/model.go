@@ -84,6 +84,13 @@ type Entry struct {
 	// it and, for an accepted answer, replaces the text with the exact
 	// committed value.
 	Provisional bool
+	// Runtime marks an assistant block authored by the runtime rather than
+	// the model. It currently carries the terminal conclusion published when
+	// the model produced no final answer, so the turn ends with an
+	// authoritative explanation instead of only a status footer. The block is
+	// visibly labelled as a runtime conclusion and never enters the model's
+	// conversation.
+	Runtime bool
 	// Discarded marks a provisional assistant block the runtime withdrew.
 	// The entry remains as a tombstone so entry indexes (and the output-first
 	// painter's progress) stay stable. A rejected answer keeps its text in
@@ -1237,6 +1244,29 @@ func (s *State) Apply(event Event) {
 		s.OutputTokens = s.currentOutputTokens()
 		s.growScroll(strings.Count(e.Text, "\n"))
 		s.noteTelemetryStatus(e.At)
+
+	case ConclusionPublished:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
+		text := conclusionAnswerText(e.Conclusion)
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		s.ProviderWait = nil
+		// The conclusion closes the turn's reasoning and answer boundary. It
+		// is a new block, never an extension of a provisional answer: a
+		// publication decision has already settled that preview.
+		s.reconcileReasoning(e.At)
+		s.closedAssistant = true
+		s.pushEntry(Entry{
+			Kind: EntryAssistant, AssistantText: text, Runtime: true, AppearedAt: e.At,
+		})
+		s.assistantText = true
+		s.growScroll(countLines(text))
 
 	case AssistantDone:
 		// A turn boundary supersedes any pending proposal. A proposal can
@@ -4015,6 +4045,22 @@ type AssistantReconcile struct {
 }
 
 func (AssistantReconcile) eventKind() string { return "assistant_reconcile" }
+
+// ConclusionPublished publishes a terminal semantic outcome as the turn's
+// final explanation.
+//
+// It exists for the run that stopped because verification could not be
+// established and the model produced no committed answer. The block is
+// authored by the runtime, not the model, and is published before the terminal
+// footer so the user sees an outcome rather than an unexplained review status.
+type ConclusionPublished struct {
+	Conclusion agent.RunConclusion
+	At         time.Time
+	// Seq identifies the turn. Zero accepts any turn.
+	Seq int
+}
+
+func (ConclusionPublished) eventKind() string { return "conclusion_published" }
 
 // AssistantDone marks the end of a turn.
 type AssistantDone struct {

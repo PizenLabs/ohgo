@@ -76,6 +76,10 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			recorded, err := controller.NeedsReview(reason, issues...)
 			return taskProjection(recorded, err)
 		},
+		ReviewUnresolved: func(reason string, issues []contract.GroundingIssue, conclusion agent.RunConclusion) tui.TaskProjection {
+			recorded, err := controller.ReviewUnresolved(reason, conclusion, issues...)
+			return taskProjection(recorded, err)
+		},
 		RecordVerificationConflict: func(claim string) tui.TaskProjection {
 			recorded, err := controller.RecordVerificationConflict(claim)
 			return taskProjection(recorded, err)
@@ -381,6 +385,10 @@ func taskResume(recorded task.Task) tui.TaskResume {
 		ReviewReason: recorded.ReviewReason,
 		Role:         string(recorded.LastRole()),
 	}
+	if recorded.Conclusion != nil {
+		conclusion := *recorded.Conclusion
+		resume.Conclusion = &conclusion
+	}
 	resume.ObjectiveState = string(recorded.ObjectiveState())
 	resume.CompletionSummary = recorded.CompletionSummary()
 	resume.Warning = recorded.ContextWarning
@@ -441,6 +449,10 @@ func taskProjection(recorded task.Task, err error) tui.TaskProjection {
 		ObjectiveState: string(recorded.ObjectiveState()),
 		Recovery:       recoveryLabel(recorded),
 		Warning:        recorded.ContextWarning,
+	}
+	if recorded.Conclusion != nil {
+		conclusion := *recorded.Conclusion
+		projection.Conclusion = &conclusion
 	}
 	for _, item := range task.Items(recorded) {
 		projection.Items = append(projection.Items, tui.TaskItem{

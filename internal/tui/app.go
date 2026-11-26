@@ -6453,10 +6453,19 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	mutations.TaskID = taskID
 	mutations.ObjectiveID = taskID
 	limit := projectionLimit{}
+	// The terminal conclusion travels with the projection that produced it.
+	// It is read here, before the task transition, so the durable review and
+	// the user-visible explanation are the same decision. A stale report from
+	// an earlier run is ignored: only a terminal projection owns a conclusion.
+	var conclusion *agent.RunConclusion
 	if p.task.LastProjection != nil {
 		if report, ok := p.task.LastProjection(); ok {
 			limit.Unresolved = report.Unresolved
 			limit.Verification = report.VerificationLimited
+			if report.Terminal && report.Conclusion != nil {
+				cloned := *report.Conclusion
+				conclusion = &cloned
+			}
 		}
 	}
 	action, reason, reviewIssues := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, mutations, activeAuthority, limit)
@@ -6732,10 +6741,24 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		// completion proof is recorded.
 		p.SyncTask()
 	case taskActionReview:
-		if p.task.NeedsReview != nil {
+		reviewed := false
+		if conclusion != nil && p.task.ReviewUnresolved != nil {
+			p.PublishTask(p.task.ReviewUnresolved(reason, reviewIssues, *conclusion))
+			reviewed = true
+		} else if p.task.NeedsReview != nil {
 			p.PublishTask(p.task.NeedsReview(reason, reviewIssues))
+			reviewed = true
 		} else if p.task.Pause != nil {
 			p.PublishTask(p.task.Pause(reason))
+		}
+		// A run that could not establish its verification and produced no
+		// committed answer owes the user an outcome, not only a review footer.
+		// The conclusion is runtime-authored and labelled; it is not a model
+		// answer and never enters the conversation sent to the provider.
+		if reviewed && conclusion != nil && strings.TrimSpace(committedAnswer) == "" {
+			p.publishCritical(ConclusionPublished{
+				Conclusion: *conclusion, At: time.Now(), Seq: seq,
+			})
 		}
 		reviewNotice = strings.TrimSpace(reason)
 	case taskActionPause:

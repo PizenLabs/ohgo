@@ -558,17 +558,22 @@ Recognition is an incremental, bounded state machine:
   and no call is fabricated. The message is marked as protocol residue, so
   completion reports `NEEDS_REVIEW` instead of success.
 - A registered tag with a provider decoration is the same family. When the body
-  uses a grammar the runtime understands (JSON, the XML invoke form, or the
-  equals-delimited `<function=name><parameter=key>` form), a decorated
-  `<tool_call>` spelling is decoded with that grammar into the same canonical
-  call; the decoration itself is ignored and grants no authority. The call still
-  crosses authorization, schema validation, and execution like any native call.
-  If the body cannot be decoded, the envelope is consumed as one malformed or
-  unsupported-envelope diagnostic and is never fabricated into an executable
-  call. At an answer boundary, where no evidence tool is offered, the one
-  bounded recovery asks for the prose answer from observed evidence rather than
-  a canonical call the surface no longer offers; the diagnostic is never
-  committed as the answer.
+  uses a grammar the runtime understands (JSON, the XML invoke form, the
+  equals-delimited `<function=name><parameter=key>` form, or the id-decorated
+  key/value form), a decorated `<tool_call>` spelling is decoded with that
+  grammar into the same canonical call; the decoration itself is ignored and
+  grants no authority. The call still crosses authorization, schema validation,
+  and execution like any native call. The id-decorated form suffixes every tag
+  with the same fabricated id after a colon
+  (`<tool_calls:ID><tool_call:ID>name<arg_key:ID>key</arg_key:ID>` +
+  `<arg_value:ID>value</arg_value:ID></tool_call:ID></tool_calls:ID>`); the
+  plural wrapper is a distinct marker so its close cannot be confused with an
+  inner `</tool_call:ID>`. If the body cannot be decoded, the envelope is
+  consumed as one malformed or unsupported-envelope diagnostic and is never
+  fabricated into an executable call. At an answer boundary, where no evidence
+  tool is offered, the one bounded recovery asks for the prose answer from
+  observed evidence rather than a canonical call the surface no longer offers;
+  the diagnostic is never committed as the answer.
 - Every failed decision also becomes a structured
   `ToolNormalizationFailure` on the assembled message: `INCOMPLETE`, `INVALID`,
   or `UNSUPPORTED`, with the provider, protocol, a sanitized reason, a bounded
@@ -1124,7 +1129,13 @@ the model said. Two properties keep the loop honest and small:
   transitions, the projection becomes `BlockProgressStalled`, withdraws the
   action surface, and asks for a report. That is a control-plane verdict
   (`NEEDS_REVIEW`), not a resource stop and not the model-turn budget. A task
-  that keeps changing state is never stopped by this counter.
+  that keeps changing state is never stopped by this counter. When the
+  verification window itself closes, the projection also carries the terminal
+  semantic outcome (`UNRESOLVED`, `verification_not_established`); the durable
+  task records it with the review, and the TUI publishes it as one
+  runtime-authored final explanation when the model produced no committed
+  answer. The lifecycle stays `NEEDS_REVIEW` and resumable — the conclusion is
+  the outcome of this run, not a failure of the task or its observed change.
 - **The stop is evidence-driven, not a call budget.** The action surface closes
   when sufficiency reaches `answer` or `complete`, when a required capability is
   blocked, or when consecutive turns no longer advance the task. A completed

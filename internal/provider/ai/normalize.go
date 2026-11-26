@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"strconv"
 	"strings"
 )
@@ -522,7 +523,15 @@ type callFamily struct {
 // callFamilies lists the prefixes this build can contain. The exact registered
 // protocol wins when both match; the family handles decorated spellings.
 var callFamilies = []callFamily{
+	// The dots family checks first so an unknown dots spelling that opens
+	// before a trailing '<' is still recognized as a complete envelope; a
+	// later family's partial tag must not shadow it.
 	{name: "dots_call_family", open: "<dots", close: "</dots", require: "call"},
+	// The id-decorated spellings must precede the bare family: their opening
+	// tags share its prefix, and only the longer marker closes at the real
+	// wrapper instead of the first inner </tool_call:...>.
+	{name: "tool_calls_id_family", open: "<tool_calls:", close: "</tool_calls:", parse: parseCallIDEnvelope},
+	{name: "tool_call_id_family", open: "<tool_call:", close: "</tool_call:", parse: parseCallIDEnvelope},
 	{name: "tool_call_family", open: "<tool_call", close: "</tool_call", parse: parseToolCallEnvelope},
 	{name: "toolcall_family", open: "<toolcall", close: "</toolcall", parse: parseToolCallEnvelope},
 }
@@ -1908,6 +1917,194 @@ func parseLongCatEnvelope(body string, coercer *argumentCoercer) ([]ToolCall, er
 		args[key] = coercer.coerce(name, key, value)
 	}
 	return []ToolCall{{Name: name, Arguments: args}}, nil
+}
+
+// parseCallIDEnvelope parses the call-id-decorated grammar a free gateway
+// emits:
+//
+//	<tool_calls:6124c78e>
+//	  <tool_call:6124c78e>read
+//	    <arg_key:6124c78e>path</arg_key:6124c78e>
+//	    <arg_value:6124c78e>backend/layout/http_admin_products.go</arg_value:6124c78e>
+//	  </tool_call:6124c78e>
+//	</tool_calls:6124c78e>
+//
+// Every tag carries the same fabricated id after a colon. The id is transport
+// decoration: it is ignored and grants no authority. A single call may appear
+// without the plural wrapper, so the body is either one tool_call element or
+// the bare name/argument body of one. The grammar is strict: an unterminated
+// tag, a missing value, or prose between calls rejects the whole envelope
+// rather than fabricating an executable call.
+func parseCallIDEnvelope(body string, coercer *argumentCoercer) ([]ToolCall, error) {
+	rest := strings.TrimSpace(body)
+	if rest == "" {
+		return nil, errors.New("envelope contains no tool call")
+	}
+	if strings.HasPrefix(strings.ToLower(rest), "<tool_call") {
+		calls := make([]ToolCall, 0, 1)
+		for {
+			rest = strings.TrimSpace(rest)
+			if rest == "" {
+				break
+			}
+			tag, after, err := cutCallIDTag(rest)
+			if err != nil {
+				return nil, err
+			}
+			if tag.closing || tag.name != "tool_call" {
+				return nil, fmt.Errorf("expected an opening tool_call tag, got %q", tag.raw)
+			}
+			call, next, err := parseCallIDBody(after, coercer, true)
+			if err != nil {
+				return nil, err
+			}
+			calls = append(calls, call)
+			rest = next
+		}
+		if len(calls) == 0 {
+			return nil, errors.New("envelope contains no tool call")
+		}
+		return calls, nil
+	}
+	// Without the plural wrapper the scanner has already consumed the single
+	// call's closing tag, so its body has no inner terminator.
+	call, _, err := parseCallIDBody(rest, coercer, false)
+	if err != nil {
+		return nil, err
+	}
+	return []ToolCall{call}, nil
+}
+
+// callIDTag is one parsed tag of the id-decorated grammar. The decoration
+// suffix is kept only for diagnostics; matching uses the local name.
+type callIDTag struct {
+	name    string
+	raw     string
+	closing bool
+}
+
+// cutCallIDTag consumes one tag and returns the remaining body.
+func cutCallIDTag(s string) (callIDTag, string, error) {
+	if !strings.HasPrefix(s, "<") {
+		return callIDTag{}, "", errors.New("expected a tag")
+	}
+	closing := strings.HasPrefix(s, "</")
+	offset := 1
+	if closing {
+		offset = 2
+	}
+	end := strings.IndexByte(s[offset:], '>')
+	if end < 0 {
+		return callIDTag{}, "", errors.New("tag is unterminated")
+	}
+	end += offset
+	raw := strings.TrimSpace(s[offset:end])
+	if raw == "" {
+		return callIDTag{}, "", errors.New("tag has no name")
+	}
+	if strings.ContainsAny(raw, " \t\r\n") {
+		return callIDTag{}, "", fmt.Errorf("tag %q carries attributes", raw)
+	}
+	name, _, _ := strings.Cut(raw, ":")
+	if name == "" {
+		return callIDTag{}, "", errors.New("tag has no name")
+	}
+	return callIDTag{name: strings.ToLower(name), raw: raw, closing: closing}, s[end+1:], nil
+}
+
+// cutCallIDText returns the character data before the next tag.
+func cutCallIDText(s string) (string, string, error) {
+	at := strings.IndexByte(s, '<')
+	if at < 0 {
+		return "", "", errors.New("text is unterminated")
+	}
+	return s[:at], s[at:], nil
+}
+
+// parseCallIDBody parses one tool_call body: the bare tool name followed by
+// arg_key/arg_value pairs. A body inside the plural wrapper ends at its own
+// tool_call tag; a body whose closing tag the scanner already consumed ends at
+// end of input.
+func parseCallIDBody(body string, coercer *argumentCoercer, closed bool) (ToolCall, string, error) {
+	at := strings.IndexByte(body, '<')
+	name := strings.TrimSpace(html.UnescapeString(body))
+	if at >= 0 {
+		name = strings.TrimSpace(html.UnescapeString(body[:at]))
+	}
+	if name == "" {
+		return ToolCall{}, "", errors.New("tool call has no name")
+	}
+	// A bare tool name is required so arbitrary prose cannot be fabricated
+	// into a call when the envelope is malformed.
+	if strings.ContainsAny(name, " \t\r\n<>{}=") {
+		return ToolCall{}, "", fmt.Errorf("tool name %q is not a bare identifier", name)
+	}
+
+	rest := ""
+	if at >= 0 {
+		rest = body[at:]
+	}
+	args := make(map[string]any)
+	for {
+		if strings.TrimSpace(rest) == "" {
+			if closed {
+				return ToolCall{}, "", errors.New("tool call is unterminated")
+			}
+			return ToolCall{Name: name, Arguments: args}, "", nil
+		}
+		tag, after, err := cutCallIDTag(rest)
+		if err != nil {
+			return ToolCall{}, "", err
+		}
+		if tag.closing {
+			if tag.name != "tool_call" {
+				return ToolCall{}, "", fmt.Errorf("unexpected closing tag %q", tag.raw)
+			}
+			return ToolCall{Name: name, Arguments: args}, after, nil
+		}
+		if tag.name != "arg_key" {
+			return ToolCall{}, "", fmt.Errorf("expected arg_key, got %q", tag.raw)
+		}
+
+		keyText, afterKey, err := cutCallIDText(after)
+		if err != nil {
+			return ToolCall{}, "", err
+		}
+		key := strings.TrimSpace(html.UnescapeString(keyText))
+		if key == "" {
+			return ToolCall{}, "", errors.New("argument has no name")
+		}
+		closeKey, afterCloseKey, err := cutCallIDTag(afterKey)
+		if err != nil {
+			return ToolCall{}, "", err
+		}
+		if !closeKey.closing || closeKey.name != "arg_key" {
+			return ToolCall{}, "", fmt.Errorf("argument %q has no closing arg_key tag", key)
+		}
+		valueTag, afterValueTag, err := cutCallIDTag(afterCloseKey)
+		if err != nil {
+			return ToolCall{}, "", err
+		}
+		if valueTag.closing || valueTag.name != "arg_value" {
+			return ToolCall{}, "", fmt.Errorf("argument %q has no arg_value tag", key)
+		}
+		valueText, afterValue, err := cutCallIDText(afterValueTag)
+		if err != nil {
+			return ToolCall{}, "", err
+		}
+		closeValue, afterCloseValue, err := cutCallIDTag(afterValue)
+		if err != nil {
+			return ToolCall{}, "", err
+		}
+		if !closeValue.closing || closeValue.name != "arg_value" {
+			return ToolCall{}, "", fmt.Errorf("argument %q has no closing arg_value tag", key)
+		}
+		if _, exists := args[key]; exists {
+			return ToolCall{}, "", fmt.Errorf("argument %q appears more than once", key)
+		}
+		args[key] = coercer.coerce(name, key, strings.TrimSpace(html.UnescapeString(valueText)))
+		rest = afterCloseValue
+	}
 }
 
 // parseJSONToolCallEnvelope decodes the common serialized function-call JSON.

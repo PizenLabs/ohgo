@@ -76,6 +76,14 @@ func RenderMarkdown(t Task) string {
 		sb.WriteString("_None._\n\n")
 	}
 
+	if t.Conclusion != nil && t.Status == StatusNeedsReview {
+		sb.WriteString("## Conclusion\n\n")
+		fmt.Fprintf(&sb, "%s\n\n", sanitizeLine(t.Conclusion.Label()))
+		if summary := strings.TrimSpace(t.Conclusion.Summary); summary != "" {
+			fmt.Fprintf(&sb, "%s\n\n", sanitizeLine(summary))
+		}
+	}
+
 	sb.WriteString("## Meta\n\n")
 	fmt.Fprintf(&sb, "- id: %s\n", sanitizeLine(t.ID))
 	if t.ExecutionContract.Valid() {

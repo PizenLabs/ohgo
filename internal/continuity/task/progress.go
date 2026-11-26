@@ -99,6 +99,10 @@ type Progress struct {
 	// ReviewIssues are the bounded machine-readable claims behind the
 	// reason. Additive and optional: an older checkpoint loads with none.
 	ReviewIssues []contract.GroundingIssue `json:"reviewIssues,omitempty"`
+	// Conclusion is the terminal semantic outcome of a review that cannot
+	// continue this run. Additive and optional: an older checkpoint loads
+	// without one and keeps the plain review boundary.
+	Conclusion *agent.RunConclusion `json:"conclusion,omitempty"`
 	// EvidenceState is the bounded durable knowledge the runtime acquired. It
 	// lets a resumed turn avoid rediscovering facts and lets a projection
 	// explain what it retained or elided. It is evidence, never authority.
@@ -209,6 +213,10 @@ func ProgressFrom(t Task) Progress {
 	}
 	p.ReviewReason = t.ReviewReason
 	p.ReviewIssues = boundReviewIssues(t.ReviewIssues)
+	if t.Conclusion != nil {
+		cloned := *t.Conclusion
+		p.Conclusion = &cloned
+	}
 	return p
 }
 
@@ -351,6 +359,12 @@ func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 	} else {
 		progress.Completion = nil
 	}
+	if t.Conclusion != nil {
+		cloned := *t.Conclusion
+		progress.Conclusion = &cloned
+	} else {
+		progress.Conclusion = nil
+	}
 	progress.ActiveRole = t.LastRole()
 	// The task owns the execution contract, like its completion contract and
 	// handoff: a caller-built checkpoint cannot persist a divergent authority
@@ -463,6 +477,17 @@ func (s *Store) Load() (Snapshot, error) {
 		}
 		t.ReviewReason = progress.ReviewReason
 		t.ReviewIssues = boundReviewIssues(progress.ReviewIssues)
+		// A conclusion is current only at a review boundary and must carry
+		// the vocabulary a durable record requires. An older or corrupt
+		// checkpoint drops it rather than failing the whole task load: the
+		// review reason still names the boundary.
+		if progress.Conclusion != nil &&
+			t.Status == StatusNeedsReview && progress.Conclusion.Validate() == nil {
+			cloned := *progress.Conclusion
+			t.Conclusion = &cloned
+		} else {
+			progress.Conclusion = nil
+		}
 		if t.Status == StatusCompleted {
 			// A review reason is current state only while the review is open.
 			// Older checkpoints may carry one after a completion; do not

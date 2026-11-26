@@ -149,6 +149,9 @@ func (c *Controller) RecordVerificationConflict(claim string) (Task, error) {
 	c.evidence.RecordVerificationConflict(claim, evidenceID, verification.Summary, seq, contradiction.ID)
 	c.task.ReviewReason = fmt.Sprintf(
 		"verification conflict: the user reported behavior contradicting the last verification: %s", claim)
+	// A new review boundary supersedes a prior terminal conclusion. The user's
+	// report reopens the work; it is not the same run that ended unresolved.
+	c.task.Conclusion = nil
 	if c.task.Status != StatusPending && c.task.Status != StatusNeedsReview {
 		if err := c.task.NeedsReview(now); err != nil {
 			c.restoreState(before)

@@ -950,6 +950,23 @@ Specific rules:
 - a task must be `RUNNING`: `PAUSED` and `NEEDS_REVIEW` resume through `Begin`
   first, so the boundary that reconciles the live workspace is not skipped.
 
+#### Terminal conclusion at a review boundary
+
+The lifecycle status and the semantic outcome are separate facts. A task that
+cannot continue records `NEEDS_REVIEW` and, when the run produced a terminal
+verdict, a `Task.Conclusion` with `UNRESOLVED` and a machine-readable reason.
+The first such reason is `verification_not_established`: the verification
+window closed without a check, so another turn in that run cannot establish it.
+The conclusion is evidence, never authority; it does not complete or fail the
+task, and it never replaces the review reason or the model-facing instruction.
+
+A plain `NeedsReview` clears the conclusion, because a resumable review without
+a terminal verdict must not inherit a stale outcome. Resuming, pausing,
+completing, failing, or cancelling also clears it. The TUI publishes the
+conclusion as one runtime-authored final explanation (labelled, and never sent
+to the provider as conversation) when the model produced no committed answer,
+so a stalled run ends with an outcome rather than only a footer.
+
 #### Phase completion under a lower authority
 
 A turn may run under an authority that cannot perform the persisted contract

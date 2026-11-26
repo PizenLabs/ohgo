@@ -266,6 +266,22 @@ immutable.
 
 ### Fixed
 
+- A verification window that closes now records a terminal `UNRESOLVED`
+  conclusion (`verification_not_established`) on the `NEEDS_REVIEW` task, and
+  the TUI publishes one runtime-authored final explanation before the footer
+  when the model produced no answer. `NEEDS_REVIEW` no longer ends a turn with
+  only a status line: the task keeps its resumable lifecycle while carrying the
+  semantic outcome, and the conclusion is cleared on resume, completion,
+  failure, cancellation, or a new review boundary.
+- A serialized tool call whose tags carry a fabricated id after a colon
+  (`<tool_calls:ID><tool_call:ID>name<arg_key:ID>key</arg_key:ID>
+  <arg_value:ID>value</arg_value:ID></tool_call:ID></tool_calls:ID>`) is
+  decoded into canonical calls instead of ending the run as
+  `TOOL_NORMALIZATION_FAILED` with an XML error. The plural wrapper is matched
+  before the bare family, so the inner `</tool_call:ID>` can no longer close
+  the envelope early. The id is transport decoration and grants no authority;
+  the call still crosses authorization, schema validation, and execution, and
+  a malformed body remains one contained diagnostic.
 - A run that is still implementing a change is no longer closed as `no
   meaningful task progress` after four observation turns at the verification
   boundary. `MaxVerifyObservationTurns` is now the sole bound there and restarts

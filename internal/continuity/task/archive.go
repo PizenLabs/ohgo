@@ -300,6 +300,14 @@ func sanitizeArchived(file *archivedFile) archiveRepairs {
 		file.Task.ReviewIssues = nil
 		file.Progress.ReviewIssues = nil
 	}
+	// A conclusion is current state only at an open review boundary. Any
+	// other archived status, or a conclusion that no longer validates, is
+	// historical timeline material and is dropped from the live projection.
+	if file.Task.Status != StatusNeedsReview ||
+		(file.Task.Conclusion != nil && file.Task.Conclusion.Validate() != nil) {
+		file.Task.Conclusion = nil
+		file.Progress.Conclusion = nil
+	}
 	context, changes := file.Task.Context.Sanitize(file.Task.ID)
 	file.Task.Context = context
 	if changes > 0 {

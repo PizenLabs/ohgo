@@ -461,6 +461,10 @@ func TestVerificationWaitIsBoundedByItsOwnWindow(t *testing.T) {
 			t.Fatalf("verification wait %d closed the surface early: %s",
 				read+1, projected.Report.StopReason)
 		}
+		if projected.Report.Conclusion != nil {
+			t.Fatalf("verification wait %d claimed a terminal conclusion: %+v",
+				read+1, projected.Report.Conclusion)
+		}
 		offered := false
 		for _, tool := range projected.Tools {
 			if tool.Name() == "edit" {
@@ -492,6 +496,19 @@ func TestVerificationWaitIsBoundedByItsOwnWindow(t *testing.T) {
 	}
 	if strings.Contains(projected.Report.StopReason, "consecutive turns") {
 		t.Fatalf("the generic counter closed the verification wait: %q", projected.Report.StopReason)
+	}
+	conclusion := projected.Report.Conclusion
+	if conclusion == nil {
+		t.Fatalf("terminal verification wait has no conclusion: %+v", projected.Report)
+	}
+	if conclusion.Status != agent.ConclusionUnresolved {
+		t.Fatalf("conclusion status = %q, want UNRESOLVED", conclusion.Status)
+	}
+	if conclusion.Reason != agent.ConclusionVerificationNotEstablished {
+		t.Fatalf("conclusion reason = %q, want verification_not_established", conclusion.Reason)
+	}
+	if !strings.Contains(strings.ToLower(conclusion.Summary), "verification") {
+		t.Fatalf("conclusion summary does not explain the missing verification: %q", conclusion.Summary)
 	}
 }
 

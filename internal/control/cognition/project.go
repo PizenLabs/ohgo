@@ -377,6 +377,17 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 			suff.Reasons = append(suff.Reasons,
 				fmt.Sprintf("the requested verification was not established in %d verification turns; another turn cannot establish it", p.verifyTurns))
 			suff.Next = []string{"report the change and the missing verification; do not repeat the same observation or check"}
+			// The lifecycle needs a semantic outcome, not only a stop reason:
+			// a run that ends here must report UNRESOLVED even when the model
+			// never produces a closing answer. The conclusion is evidence
+			// that the check is still missing, never a failure of the change.
+			suff.Conclusion = &agent.RunConclusion{
+				Status: agent.ConclusionUnresolved,
+				Reason: agent.ConclusionVerificationNotEstablished,
+				Summary: fmt.Sprintf(
+					"the requested verification was not established in %d verification turns. No further turn in this run can establish it; the task remains resumable.",
+					p.verifyTurns),
+			}
 		}
 	} else if suff.Stage != StageVerify {
 		p.verifyTurns = 0
@@ -570,6 +581,10 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.Missing = append([]string(nil), suff.Missing...)
 	report.Unresolved = append([]string(nil), suff.Unresolved...)
 	report.VerificationLimited = suff.VerificationLimited
+	if suff.Conclusion != nil {
+		conclusion := *suff.Conclusion
+		report.Conclusion = &conclusion
+	}
 	report.Facets = facetReportRows(suff.Facets)
 	if suff.RequiredFacets > 0 {
 		report.FacetCoverage = fmt.Sprintf("%d/%d", suff.SatisfiedFacets, suff.RequiredFacets)

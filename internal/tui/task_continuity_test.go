@@ -378,6 +378,10 @@ func runtimeProjection(recorded task.Task, err error) TaskProjection {
 	if !recorded.Recovery.Empty() && recorded.Recovery.State != task.RecoveryIntact {
 		projection.Recovery = recorded.Recovery.Label()
 	}
+	if recorded.Conclusion != nil {
+		conclusion := *recorded.Conclusion
+		projection.Conclusion = &conclusion
+	}
 	for _, item := range task.Items(recorded) {
 		projection.Items = append(projection.Items, TaskItem{
 			State: string(item.State),
@@ -681,6 +685,10 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			recorded, err := controller.NeedsReview(reason)
 			return runtimeProjection(recorded, err)
 		},
+		ReviewUnresolved: func(reason string, _ []contract.GroundingIssue, conclusion agent.RunConclusion) TaskProjection {
+			recorded, err := controller.ReviewUnresolved(reason, conclusion)
+			return runtimeProjection(recorded, err)
+		},
 		RecordVerificationConflict: func(claim string) TaskProjection {
 			recorded, err := controller.RecordVerificationConflict(claim)
 			return runtimeProjection(recorded, err)
@@ -725,6 +733,7 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 		HasCurrentChange: controller.HasCurrentChange,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
+		LastProjection:   controller.LastProjection,
 		ProjectionReview: func() string {
 			report, ok := controller.LastProjection()
 			if !ok {
@@ -778,6 +787,10 @@ func runtimeResume(current task.Task) TaskResume {
 	resume := TaskResume{
 		ID: current.ID, Status: string(current.Status), Objective: current.Objective,
 		ReviewReason: current.ReviewReason, Role: string(current.LastRole()),
+	}
+	if current.Conclusion != nil {
+		conclusion := *current.Conclusion
+		resume.Conclusion = &conclusion
 	}
 	resume.ObjectiveState = string(current.ObjectiveState())
 	resume.CompletionSummary = current.CompletionSummary()
