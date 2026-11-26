@@ -88,6 +88,15 @@ func workingTools() []agent.Tool {
 	}
 }
 
+// languageTool is a testTool that declares the source languages it can read, so
+// the candidate and requirement layers see a language-gated capability.
+type languageTool struct {
+	testTool
+	languages []string
+}
+
+func (t languageTool) SupportedLanguages() []string { return append([]string(nil), t.languages...) }
+
 // The recorded failure: after the change was made, the runtime kept demanding a
 // code symbol the repository never contained and a check the workspace could
 // not run. Both requirements must be settled by evidence, and the projection
@@ -137,6 +146,46 @@ func TestProjectionCompletesWhenHeuristicTargetIsAbsentAndVerificationUnavailabl
 	unresolved := strings.Join(final.Report.Unresolved, "\n")
 	if !strings.Contains(unresolved, "OpenCode") || !strings.Contains(unresolved, "not applicable") {
 		t.Fatalf("absent target was not reported as not applicable: %q", unresolved)
+	}
+}
+
+// A portable build cannot observe a web-only repository's sources, so the
+// inferred target has no available lookup. The requirement must be reported as
+// not applicable rather than block a change the runtime itself observed; the
+// run still owes the check, and its absence remains a verification limitation.
+func TestUnavailableStructuralAdapterResolvesHeuristicTarget(t *testing.T) {
+	shape, root := project1180(t)
+	projector := NewProjector(shape, NewEvidenceState(), ProbeFacts(root))
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionObserve}},
+		testTool{name: "edit", tier: agent.TierWrite, classes: []agent.ActionClass{agent.ActionMutate}},
+		languageTool{
+			testTool:  testTool{name: "symbols", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionObserve, agent.ActionStructure}},
+			languages: []string{"go"},
+		},
+		testTool{name: "check", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute}},
+	}
+	turns := []agent.Turn{
+		mutationTurn("edit-1", "index.html"),
+		readTurn("read-1", "index.html", "<html><body></body></html>"),
+		checkNotRun("check-1"),
+	}
+	projected := projector.Project(agent.ProjectionRequest{Turns: turns, Tools: tools})
+	if projected.Report.Stage != string(StageComplete) {
+		t.Fatalf("stage = %q, want %q (missing=%v unresolved=%v)",
+			projected.Report.Stage, StageComplete, projected.Report.Missing, projected.Report.Unresolved)
+	}
+	if projected.Report.VerificationLimited == "" {
+		t.Fatal("the unavailable check was not recorded as a verification limitation")
+	}
+	for _, missing := range projected.Report.Missing {
+		if strings.HasPrefix(missing, "target_coordinates:") {
+			t.Fatalf("an unacquirable coordinate stayed blocking: %v", projected.Report.Missing)
+		}
+	}
+	unresolved := strings.Join(projected.Report.Unresolved, "\n")
+	if !strings.Contains(unresolved, "OpenCode") || !strings.Contains(unresolved, "no available structural capability") {
+		t.Fatalf("unacquirable target was not reported as not applicable: %q", unresolved)
 	}
 }
 

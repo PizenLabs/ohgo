@@ -147,4 +147,20 @@ func TestTaskCompletionAcceptsHostReportedLimitation(t *testing.T) {
 	if !strings.Contains(verdict.Limitation, "no supported verification") {
 		t.Fatalf("limitation = %q", verdict.Limitation)
 	}
+
+	// The live producer reports the requirement with its reason, not a bare
+	// name. A capability-limited run has no miss turn from which to derive the
+	// bare name, so the evaluator must accept the shape the projection emits.
+	projected := EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns,
+		Contract: intent,
+		UnresolvedTargets: []string{
+			`target_coordinates:OpenCode: "OpenCode" cannot be looked up: no available structural capability supports this repository's source languages`,
+		},
+		VerificationLimitation: "no supported verification command was discovered for this workspace",
+	})
+	if projected.State != CompletionCompletedLimited {
+		t.Fatalf("requirement-shaped unresolved target: state = %q (%s), want limited completion",
+			projected.State, firstNonEmptyString(projected.Reason, projected.Limitation))
+	}
 }

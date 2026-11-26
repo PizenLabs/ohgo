@@ -1320,6 +1320,59 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 // the extraction mistake into unbounded exploration.
 const MaxRequirementMisses = contract.MaxTargetLookupMisses
 
+// resolveUnacquirableTargets records a heuristic coordinate requirement as not
+// applicable when no constructed structural capability can look up a
+// coordinate for any source language this repository contains.
+//
+// The portable build compiles only the Go adapter. In a web-only repository
+// the structural tools are therefore withheld, and a target the request
+// extractor inferred can never be observed. Keeping it as a blocking
+// obligation demands a lookup no available capability can perform and leaves a
+// completed change unresolved; the extraction was a hypothesis, and this is
+// the runtime establishing that it cannot confirm it.
+func (s *EvidenceState) resolveUnacquirableTargets(tools []agent.Tool, facts RepositoryFacts) {
+	if s == nil || coordinateLookupAvailable(tools, facts) {
+		return
+	}
+	for i := range s.Requirements {
+		requirement := &s.Requirements[i]
+		if !strings.HasPrefix(requirement.Key, "target_coordinates:") || requirement.Unresolved != "" {
+			continue
+		}
+		requirement.Unresolved = fmt.Sprintf(
+			"%q cannot be looked up: no available structural capability supports this repository's source languages",
+			strings.TrimPrefix(requirement.Key, "target_coordinates:"))
+	}
+}
+
+// coordinateLookupAvailable reports whether a language-gated structural
+// capability covers at least one source language the probe found.
+//
+// A tool with no declared language is not counted: the candidate layer offers
+// it unconditionally, but it makes no claim to resolve a language-specific
+// coordinate. When the runtime declares no language-gated structural tool at
+// all (an embedder with a custom surface), absence is not established, so the
+// requirement keeps its ordinary evidence path.
+func coordinateLookupAvailable(tools []agent.Tool, facts RepositoryFacts) bool {
+	languageGated := false
+	for _, tool := range tools {
+		if !agent.HasActionClass(tool, agent.ActionStructure) {
+			continue
+		}
+		languages := agent.ToolRequiredLanguages(tool)
+		if len(languages) == 0 {
+			continue
+		}
+		languageGated = true
+		for _, language := range languages {
+			if facts.HasLanguage(language) {
+				return true
+			}
+		}
+	}
+	return !languageGated
+}
+
 // noteRequirementMisses spends the acquisition budget of a heuristic target.
 func (s *EvidenceState) noteRequirementMisses(outcome agent.ToolOutcome) {
 	if outcome.Refused() || outcome.Result.IsError || len(s.Requirements) == 0 {

@@ -97,10 +97,27 @@ func siteFixture(t *testing.T) string {
 	return root
 }
 
+// structuralCoordinatesAvailable reports whether tool can look up a symbol in a
+// source language this repository contains. The portable build compiles only
+// the Go adapter, so a web-only fixture has no coordinate lookup at all.
+func structuralCoordinatesAvailable(facts cognition.RepositoryFacts, tool agent.Tool) bool {
+	for _, language := range agent.ToolRequiredLanguages(tool) {
+		if facts.HasLanguage(language) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRegression1180TerminatesAtTheCompletionBarrier is the recorded failure:
 // the change is made, the symbol the extractor inferred does not exist, and the
 // workspace has no check command. The run must reach a truthful terminal state
 // in a bounded number of turns, and it must not search a sibling or parent path.
+//
+// A multi-language build observes the inferred name and reports it as not
+// applicable; the portable build cannot observe web sources, so the withheld
+// lookup is itself the limitation. Both must end at the completion barrier
+// instead of demanding evidence no available capability can produce.
 func TestRegression1180TerminatesAtTheCompletionBarrier(t *testing.T) {
 	root := siteFixture(t)
 	outside := t.TempDir()
@@ -119,6 +136,7 @@ func TestRegression1180TerminatesAtTheCompletionBarrier(t *testing.T) {
 	grep := &countingTool{inner: tools.NewGrepTool(root)}
 	bash := &countingTool{inner: tools.NewBashTool(root)}
 	source := tools.NewStructuralSource(root)
+	symbols := tools.NewSymbolsToolWithSource(source)
 	script := []ai.AssistantMessage{
 		callTurn("write-1", "write", map[string]any{
 			"path": "index.html",
@@ -126,10 +144,20 @@ func TestRegression1180TerminatesAtTheCompletionBarrier(t *testing.T) {
 				"<section id=\"projects\"><h3>OpenCode</h3><h3>Claude Code</h3><h3>Duckduck Go</h3></section>" +
 				"</body></html>",
 		}),
-		callTurn("symbols-1", "symbols", map[string]any{"symbol": "OpenCode"}),
-		callTurn("symbols-2", "symbols", map[string]any{"symbol": "OpenCode"}),
-		callTurn("check-1", "check", map[string]any{"mode": "run"}),
 	}
+	if structuralCoordinatesAvailable(facts, symbols) {
+		script = append(script,
+			callTurn("symbols-1", "symbols", map[string]any{"symbol": "OpenCode"}),
+			callTurn("symbols-2", "symbols", map[string]any{"symbol": "OpenCode"}),
+		)
+	} else {
+		// The portable build compiles only the Go adapter, so the runtime
+		// withholds the structural tool in a web-only repository. A model that
+		// respected that surface would read the page instead; the inferred
+		// target must still end as a reported limitation, not a blocking gap.
+		script = append(script, callTurn("read-1", "read", map[string]any{"path": "index.html"}))
+	}
+	script = append(script, callTurn("check-1", "check", map[string]any{"mode": "run"}))
 	// Everything after the completion barrier is the observed escape shape: a
 	// read of a sibling project through the shell. It must never execute.
 	runaway := callTurn("bash-runaway", "bash", map[string]any{"command": "cat " + secret})
@@ -142,7 +170,7 @@ func TestRegression1180TerminatesAtTheCompletionBarrier(t *testing.T) {
 		Stream: stream,
 		Tools: []agent.Tool{
 			tools.NewReadTool(root), tools.NewWriteTool(root),
-			tools.NewSymbolsToolWithSource(source), tools.NewCheckTool(source), grep, bash,
+			symbols, tools.NewCheckTool(source), grep, bash,
 		},
 		Authorize: opts.newSecurityGate(nil),
 		MaxTurns:  60,

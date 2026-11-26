@@ -855,8 +855,21 @@ func verificationLimitation(turns []Turn, mutatedAt int) string {
 func unresolvedTargets(input CompletionInput, intent contract.IntentContract) map[string]bool {
 	out := map[string]bool{}
 	for _, value := range input.UnresolvedTargets {
-		if value = strings.TrimSpace(value); value != "" {
-			out[value] = true
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out[value] = true
+		// The projection reports a limitation as "requirement: reason", and a
+		// coordinate requirement carries the inferred target in its key. A
+		// run whose structural capability cannot look the target up has no
+		// miss turn from which to derive the bare name, so the evaluator must
+		// read the requirement shape it is handed.
+		if rest, ok := strings.CutPrefix(value, "target_coordinates:"); ok {
+			name, _, _ := strings.Cut(rest, ":")
+			if name = strings.TrimSpace(name); name != "" {
+				out[name] = true
+			}
 		}
 	}
 	misses := map[string]int{}

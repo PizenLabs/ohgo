@@ -278,6 +278,13 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// exhaustion withholds tools (Candidates checks it directly), but a
 	// proven change followed by a successful check must not be downgraded just
 	// because the grant ran out at the closing answer.
+	//
+	// The requirement set exists before the first observation, so resolve the
+	// heuristic coordinate targets against the constructed capability surface
+	// before the verdict reads them: an obligation no compiled structural
+	// adapter can serve must be a reported limitation, not a blocking gap.
+	p.Evidence.ensureRequirements(shape)
+	p.Evidence.resolveUnacquirableTargets(req.Tools, p.Facts)
 	suff := EvaluateSufficiency(shape, p.Evidence, execution, false)
 	// An external requirement with no external capability in the constructed
 	// action space cannot be satisfied by another model turn. Treat it as the
