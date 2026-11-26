@@ -99,6 +99,11 @@ var planeFocusOrder = []PlaneFocus{
 // empty string: "off" is a deliberate decision, distinct from "unset".
 const EffortOff = "off"
 
+// EffortAuto is the picker value that clears a role's explicit effort and
+// returns it to the demand or global policy. The persisted profile stores an
+// empty effort; this token only names the choice.
+const EffortAuto = "auto"
+
 // AllProviders is the synthetic provider row that disables provider filtering,
 // so a user can search the whole roster without first choosing a provider. It
 // is honest: it is labelled as a scope, not a provider.

@@ -49,6 +49,10 @@ const (
 	// search corpus: typing is inert, Enter applies immediately, and Esc
 	// leaves the current palette untouched.
 	PickerThemes = "themes"
+	// PickerEfforts chooses the active workspace role's thinking effort. Like
+	// the theme chooser it is a short, fixed list: typing is inert, Enter
+	// applies immediately, and Esc leaves the role untouched.
+	PickerEfforts = "efforts"
 )
 
 // New-session row values. The value is what choosing the row means, not what
@@ -192,9 +196,9 @@ func (p *PickerState) Filtered() []PickerItem {
 		return nil
 	}
 	// The /new creator has no search corpus: its line is the custom title, so
-	// typing must never hide the choices it is choosing between. The theme
-	// picker is likewise a fixed three-row choice with no query.
-	if p.Kind == PickerNewSession || p.Kind == PickerThemes {
+	// typing must never hide the choices it is choosing between. The theme and
+	// effort pickers are likewise short fixed choices with no query.
+	if p.Kind == PickerNewSession || p.Kind == PickerThemes || p.Kind == PickerEfforts {
 		return p.Items
 	}
 	var out []PickerItem

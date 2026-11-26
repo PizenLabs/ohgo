@@ -175,6 +175,9 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		Assign: func(update tui.RoleAssignment) (tui.RoleAssignment, []tui.RoleAssignment, error) {
 			return held.AssignRole(update)
 		},
+		SetEffort: func(role, effort string) (tui.RoleAssignment, []tui.RoleAssignment, error) {
+			return held.SetEffort(role, effort)
+		},
 		EffectiveWindow: func() int { return held.model.ContextWindow },
 		SaveKey: func(provider, key string) error {
 			return held.SavePlaneKey(provider, key)

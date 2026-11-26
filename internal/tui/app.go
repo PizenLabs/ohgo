@@ -763,6 +763,11 @@ type ModelControlHooks struct {
 	// It returns the applied assignment and the refreshed role roster, so the
 	// UI never guesses what was accepted.
 	Assign func(update RoleAssignment) (RoleAssignment, []RoleAssignment, error)
+	// SetEffort validates and persists a thinking level for one role without
+	// rebinding its model. It is the seam /effort writes through; an empty
+	// level clears the role override. Nil means /effort reports configuration
+	// unavailable.
+	SetEffort func(role, effort string) (RoleAssignment, []RoleAssignment, error)
 	// EffectiveWindow reports the runtime context window after an apply, so
 	// the status line does not keep a stale budget. Optional.
 	EffectiveWindow func() int
@@ -2159,6 +2164,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.applyModelSwitch(strings.Join(command.Args, ""))
 		return nil
 
+	case "effort":
+		p.effortCommand(command.Args)
+		return nil
+
 	case "sessions", "resume":
 		p.openSessionManager()
 		return nil
@@ -2281,10 +2290,11 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 // Nothing else reaches the composer while the overlay is open.
 func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	picker := p.state.Picker
-	// The theme chooser is a fixed three-row card, not a searchable catalog:
-	// only navigation, selection, and dismissal are meaningful. Inert keys
-	// never accumulate an invisible filter that Esc would clear first.
-	if picker != nil && picker.Kind == PickerThemes {
+	// The theme and effort choosers are fixed-row cards, not searchable
+	// catalogs: only navigation, selection, and dismissal are meaningful.
+	// Inert keys never accumulate an invisible filter that Esc would clear
+	// first.
+	if picker != nil && (picker.Kind == PickerThemes || picker.Kind == PickerEfforts) {
 		switch msg.String() {
 		case "up", "k", "shift+tab":
 			p.state.Apply(PickerMoved{Delta: -1})
@@ -2454,6 +2464,9 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 		return p, nil
 	case PickerThemes:
 		p.applyTheme(item.Value)
+		return p, nil
+	case PickerEfforts:
+		p.chooseEffort(item.Value)
 		return p, nil
 	case PickerTasks:
 		return p.chooseTask(item)
@@ -2909,6 +2922,131 @@ func (p *Program) applyModelSwitch(id string) {
 	// set: a bare id switch carries no level, so the existing badge (or a
 	// variant suffix in the new id) stands.
 	p.state.Status.Model = p.currentModel()
+}
+
+// effortCommand reports or changes the active workspace role's thinking
+// effort. Bare /effort opens the chooser; an explicit argument applies
+// directly for scripted and muscle-memory use. The role is the session's own
+// authority: /effort inside ASK edits ASK, never a role the session is not
+// calling.
+func (p *Program) effortCommand(args []string) {
+	role := p.activeEffortRole()
+	if role == "" {
+		p.state.Apply(Notice{Text: "effort: the active workspace role is unknown"})
+		return
+	}
+	if p.modelControl.SetEffort == nil {
+		p.state.Apply(Notice{Text: "effort: role configuration is unavailable"})
+		return
+	}
+	// A running turn reads the level for the request it already started.
+	// Moving it mid-turn would make that turn inconsistent with itself, so
+	// the change waits for the next boundary. A picker opened now would only
+	// be refused when it was applied.
+	if p.state.Status.Busy {
+		p.state.Apply(Notice{Text: "wait for the turn to finish before changing effort"})
+		return
+	}
+	if len(args) == 0 {
+		p.openEffortPicker(role)
+		return
+	}
+	if len(args) > 1 {
+		p.state.Apply(Notice{Text: "usage: /effort <level|off|auto>"})
+		return
+	}
+	p.applyEffort(role, args[0])
+}
+
+// openEffortPicker builds the active role's fixed effort card. The current
+// role effort is pre-highlighted, so Enter without moving reaffirms the
+// choice; Auto is first so the role can return to the demand/global policy
+// without knowing the spelling.
+func (p *Program) openEffortPicker(role string) {
+	assignment := p.effortAssignment(role)
+	current := NormalizeEffort(p.state.Status.Effort)
+	if current == "" && p.currentEffort != nil {
+		current = NormalizeEffort(p.currentEffort())
+	}
+	configured := strings.ToLower(strings.TrimSpace(assignment.Effort))
+	items := []PickerItem{
+		{Title: "Auto", Detail: effortAutoDetail(configured, current), Value: EffortAuto, Active: configured == ""},
+		{Title: "Off", Detail: "disable thinking for this role", Value: EffortOff, Active: configured == EffortOff},
+	}
+	seen := map[string]bool{EffortAuto: true, EffortOff: true}
+	for _, candidate := range assignment.Efforts {
+		level := strings.ToLower(strings.TrimSpace(candidate))
+		if level == "" || seen[level] {
+			continue
+		}
+		seen[level] = true
+		items = append(items, PickerItem{Title: effortTitle(level), Value: level, Active: configured == level})
+	}
+	cursor := 0
+	for i := range items {
+		if items[i].Active {
+			cursor = i
+			break
+		}
+	}
+	p.state.Apply(PickerOpened{
+		Kind:   PickerEfforts,
+		Title:  "Thinking effort",
+		Cursor: cursor,
+		Items:  items,
+	})
+}
+
+// chooseEffort applies the picker's choice to the role the card was opened
+// for. The picker is fixed-row and modal, so the active role cannot move while
+// it is open.
+func (p *Program) chooseEffort(level string) {
+	role := p.activeEffortRole()
+	if role == "" {
+		p.state.Apply(Notice{Text: "effort: the active workspace role is unknown"})
+		return
+	}
+	p.applyEffort(role, level)
+}
+
+// applyEffort persists and applies one level through the authority seam, then
+// keeps the header badge and confirmation in step with what it accepted.
+func (p *Program) applyEffort(role, effort string) {
+	result, _, err := p.modelControl.SetEffort(role, effort)
+	if err != nil {
+		p.state.Apply(Notice{Text: "effort: " + sanitizeInline(err.Error())})
+		return
+	}
+	if strings.EqualFold(result.Role, role) {
+		p.state.Status.Effort = NormalizeEffort(result.Effort)
+		if p.state.Status.Effort == "" && p.currentEffort != nil {
+			p.state.Status.Effort = NormalizeEffort(p.currentEffort())
+		}
+	}
+	p.state.Apply(Notice{Text: FormatEffortApplied(result, p.state.Status.Model)})
+}
+
+// effortAssignment resolves one role's row for the picker. A missing roster
+// leaves only the universal Auto/Off choices: the UI never invents a ladder.
+func (p *Program) effortAssignment(role string) RoleAssignment {
+	assignment := RoleAssignment{Role: role}
+	if p.modelControl.Roles != nil {
+		if found, ok := roleAssignmentFor(p.modelControl.Roles(), role); ok {
+			assignment = found
+		}
+	}
+	return assignment
+}
+
+// activeEffortRole names the role /effort edits: the session's own workspace,
+// or the published chrome workspace when the host did not name an active role.
+func (p *Program) activeEffortRole() string {
+	if p.modelControl.ActiveRole != nil {
+		if role := strings.ToLower(strings.TrimSpace(p.modelControl.ActiveRole())); role != "" {
+			return role
+		}
+	}
+	return strings.ToLower(strings.TrimSpace(p.state.Status.Workspace))
 }
 
 // openModelPicker browses the available models instead of requiring an exact

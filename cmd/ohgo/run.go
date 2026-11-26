@@ -432,27 +432,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		// the global default) through the same reasoning mapping the loop
 		// uses, so the badge and the request agree. Disabled thinking
 		// reports "" and the badge hides.
-		program.SetEffortProvider(func() string {
-			role := held.sessionRole()
-			if role == "" {
-				role = strings.ToLower(opts.authority().String())
-			}
-			if held.autoReasoning {
-				if explicit := held.roleEffortFor(role); explicit != "" {
-					enabled, level := held.reasoningFor(explicit)
-					if !enabled {
-						return ""
-					}
-					return level
-				}
-				return held.lastReasoningEffort
-			}
-			enabled, level := held.reasoningFor(held.roleEffortFor(role))
-			if !enabled {
-				return ""
-			}
-			return level
-		})
+		program.SetEffortProvider(held.currentEffort)
 		// Reasoning is selected from the work at each turn boundary, after the
 		// task contract (and any approved objective) is resolved. The host owns
 		// the policy; the program only applies the setting to the loop.
@@ -525,6 +505,9 @@ func runSession(cmd *cobra.Command, args []string) error {
 			},
 			Assign: func(update tui.RoleAssignment) (tui.RoleAssignment, []tui.RoleAssignment, error) {
 				return held.AssignRole(update)
+			},
+			SetEffort: func(role, effort string) (tui.RoleAssignment, []tui.RoleAssignment, error) {
+				return held.SetEffort(role, effort)
 			},
 			EffectiveWindow: func() int { return held.model.ContextWindow },
 			SaveKey: func(provider, key string) error {

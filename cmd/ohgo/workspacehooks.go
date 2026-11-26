@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"sync"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -48,27 +47,7 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 			HasWorkspace:    true,
 		})
 		program.PublishModel(held.model.Ref())
-		program.PublishEffort(func() string {
-			role := held.sessionRole()
-			if role == "" {
-				role = strings.ToLower(ws.String())
-			}
-			if held.autoReasoning {
-				if explicit := held.roleEffortFor(role); explicit != "" {
-					enabled, level := held.reasoningFor(explicit)
-					if !enabled {
-						return ""
-					}
-					return level
-				}
-				return held.lastReasoningEffort
-			}
-			enabled, level := held.reasoningFor(held.roleEffortFor(role))
-			if !enabled {
-				return ""
-			}
-			return level
-		}())
+		program.PublishEffort(held.currentEffort())
 	}
 	switchTo := func(name, reason, workspaceState string, automatic bool) error {
 		from := held.activeWorkspace()

@@ -92,6 +92,31 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				}
 				_, _ = fmt.Fprintf(out, "Switched to %s/%s.\n", model.Provider, model.ID)
 				continue
+			case "effort":
+				role := h.activeRole()
+				if len(command.Args) == 0 {
+					assignment := tui.RoleAssignment{Role: string(role)}
+					for _, candidate := range h.RoleAssignments() {
+						if strings.EqualFold(candidate.Role, string(role)) {
+							assignment = candidate
+							break
+						}
+					}
+					_, _ = fmt.Fprintln(out, tui.FormatEffortReport(
+						string(role), h.model.Ref(), assignment, h.currentEffort()))
+					continue
+				}
+				if len(command.Args) > 1 {
+					_, _ = fmt.Fprintln(out, "usage: /effort <level|off|auto>")
+					continue
+				}
+				applied, _, err := h.SetEffort(string(role), command.Args[0])
+				if err != nil {
+					_, _ = fmt.Fprintf(out, "effort: %v\n", err)
+					continue
+				}
+				_, _ = fmt.Fprintln(out, tui.FormatEffortApplied(applied, h.model.Ref()))
+				continue
 			case "models":
 				for _, id := range h.ModelList() {
 					_, _ = fmt.Fprintln(out, "  "+id)

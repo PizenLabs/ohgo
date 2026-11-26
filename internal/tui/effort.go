@@ -1,6 +1,9 @@
 package tui
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // knownEfforts is the thinking-effort vocabulary the catalog exposes (see
 // catalog.Thinking.Efforts: max, xhigh, high, medium, low, minimal). It is
@@ -135,6 +138,139 @@ func FitHeaderModelWithEffort(model, effort string, budget int) (modelShown, eff
 		return short, level
 	}
 	return fitHeaderModel(base, budget), ""
+}
+
+// effortTitle renders a provider effort token as a picker row label. The
+// value stays the canonical token; only the label is title-cased.
+func effortTitle(level string) string {
+	level = strings.ToLower(strings.TrimSpace(level))
+	switch level {
+	case EffortAuto:
+		return "Auto"
+	case EffortOff:
+		return "Off"
+	case "xhigh":
+		return "XHigh"
+	}
+	runes := []rune(level)
+	if len(runes) == 0 {
+		return ""
+	}
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
+}
+
+// effortAutoDetail explains what Auto does for this role. An explicit
+// configured level is cleared; with no override, the row names the level the
+// role currently resolves to so selecting Auto is informed.
+func effortAutoDetail(configured, current string) string {
+	if strings.TrimSpace(configured) != "" {
+		return "clear the role override"
+	}
+	if current = NormalizeEffort(current); current != "" {
+		return "role default · currently " + current
+	}
+	return "role default"
+}
+
+// effortPickerSummary names the role and live model the effort card edits.
+// The active row carries the level; the summary carries the target.
+func effortPickerSummary(state State) string {
+	role := strings.ToUpper(strings.TrimSpace(state.Status.Workspace))
+	if role == "" {
+		role = "ACTIVE ROLE"
+	}
+	model := strings.TrimSpace(state.Status.Model)
+	if model == "" {
+		return role
+	}
+	return role + " · " + model
+}
+
+// FormatEffortReport renders /effort's answer for one workspace role.
+//
+// model is the reference the runtime is calling; assignment carries the role's
+// configured effort and the bound model's authoritative ladder; effective is
+// the level the next turn would use, which differs from the configured level
+// under AUTO. The report names the role and model first because adjusting the
+// wrong role's thinking is the failure the command exists to prevent.
+func FormatEffortReport(role, model string, assignment RoleAssignment, effective string) string {
+	role = strings.ToUpper(strings.TrimSpace(role))
+	if role == "" {
+		role = "ROLE"
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = strings.TrimSpace(assignment.Model)
+	}
+	if model == "" {
+		model = "no model"
+	}
+	state := effortState(assignment.Effort, effective)
+	return role + " · " + model + " · effort: " + state +
+		"\nlevels: " + strings.Join(effortLevels(assignment.Efforts), ", ") +
+		" · /effort <level|off|auto>"
+}
+
+// effortState names the configured effort, or the role default with the level
+// AUTO is currently applying when one is visible.
+func effortState(configured, effective string) string {
+	level := strings.ToLower(strings.TrimSpace(configured))
+	switch level {
+	case EffortOff:
+		return EffortOff
+	case "":
+		if current := strings.ToLower(strings.TrimSpace(effective)); current != "" {
+			return "auto (currently " + current + ")"
+		}
+		return "auto"
+	default:
+		return level
+	}
+}
+
+// effortLevels lists the choices /effort can accept for a model: "off" plus
+// the model's own ladder, deduplicated without inventing a level.
+func effortLevels(efforts []string) []string {
+	out := make([]string, 0, len(efforts)+1)
+	seen := map[string]bool{}
+	for _, candidate := range append([]string{EffortOff}, efforts...) {
+		level := strings.ToLower(strings.TrimSpace(candidate))
+		if level == "" || seen[level] {
+			continue
+		}
+		seen[level] = true
+		out = append(out, level)
+	}
+	return out
+}
+
+// FormatEffortApplied names the role, the applied level, and the model the
+// next turn will call. An empty level reads as "auto": the role override was
+// cleared, not set to an invisible value.
+func FormatEffortApplied(result RoleAssignment, model string) string {
+	if strings.TrimSpace(model) == "" {
+		model = result.Model
+	}
+	level := strings.ToLower(strings.TrimSpace(result.Effort))
+	if level == "" {
+		level = "auto"
+	}
+	role := strings.ToUpper(strings.TrimSpace(result.Role))
+	if strings.TrimSpace(model) == "" {
+		return role + " effort: " + level
+	}
+	return role + " effort: " + level + " · " + model
+}
+
+// roleAssignmentFor finds one role's row in a roster, case-insensitively.
+func roleAssignmentFor(roles []RoleAssignment, role string) (RoleAssignment, bool) {
+	for _, assignment := range roles {
+		if strings.EqualFold(assignment.Role, role) {
+			return assignment, true
+		}
+	}
+	return RoleAssignment{}, false
 }
 
 // ModelEffortUpdated records the active thinking effort for the header badge.

@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -236,6 +238,244 @@ func TestHeaderEffortBadgeUsesChromeRoles(t *testing.T) {
 	}
 	if got := ansi.Strip(header); !strings.Contains(got, "groq/m ◈ max") {
 		t.Errorf("stripped header = %q, want the plain badge contract", got)
+	}
+}
+
+// /effort must name the role and the model the runtime is actually calling,
+// and list only the levels that model exposes. The report is where a user
+// confirms which workspace role the change will land on.
+func TestFormatEffortReportNamesRoleModelAndLadder(t *testing.T) {
+	report := FormatEffortReport(
+		"build",
+		"anthropic/claude-sonnet-4-5",
+		RoleAssignment{Role: "build", Efforts: []string{"minimal", "low", "high", "high"}},
+		"high",
+	)
+	for _, want := range []string{
+		"BUILD", "anthropic/claude-sonnet-4-5",
+		"effort: auto (currently high)",
+		"levels: off, minimal, low, high",
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report = %q, want %q", report, want)
+		}
+	}
+	if strings.Count(report, "high") != 2 {
+		// Once in "currently high", once in the deduplicated ladder.
+		t.Errorf("report = %q, want the ladder deduplicated", report)
+	}
+	off := FormatEffortReport("ask", "m", RoleAssignment{Role: "ask", Effort: EffortOff}, "")
+	if !strings.Contains(off, "effort: off") || strings.Contains(off, "effort: auto") {
+		t.Errorf("off report = %q, want the explicit disabled state", off)
+	}
+}
+
+// effortNotice concatenates the transcript notices a command emitted.
+func effortNotice(p *Program) string {
+	var text string
+	for _, entry := range p.state.Entries {
+		if entry.Kind == EntryNotice {
+			text += entry.Notice + "\n"
+		}
+	}
+	return text
+}
+
+// Bare /effort opens the active workspace role's picker. The card names the
+// role and live model, lists only that model's ladder, and marks Auto current.
+func TestEffortCommandOpensPickerForTheActiveWorkspace(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 88, Height: 28})
+	p.state.Status.Model = "anthropic/claude-haiku-4-5"
+	p.state.Status.Workspace = "ASK"
+	p.SetModelControl(ModelControlHooks{
+		Roles: func() []RoleAssignment {
+			return []RoleAssignment{
+				{Role: "ask", Model: "anthropic/claude-haiku-4-5", Efforts: []string{"low", "high"}},
+				{Role: "build", Model: "anthropic/claude-sonnet-4-5", Efforts: []string{"medium", "xhigh"}},
+			}
+		},
+		ActiveRole: func() string { return "ask" },
+		SetEffort: func(role, effort string) (RoleAssignment, []RoleAssignment, error) {
+			return RoleAssignment{Role: role, Effort: effort}, nil, nil
+		},
+	})
+
+	Command{Name: "effort"}.runOn(p)
+
+	if p.state.Picker == nil || p.state.Picker.Kind != PickerEfforts {
+		t.Fatalf("picker = %+v, want the effort chooser", p.state.Picker)
+	}
+	if p.state.Picker.Cursor != 0 || !p.state.Picker.Items[0].Active {
+		t.Errorf("picker cursor/active = %d/%v, want the current Auto row",
+			p.state.Picker.Cursor, p.state.Picker.Items[0].Active)
+	}
+	if got := p.state.Picker.Items[0].Detail; got != "role default" {
+		t.Errorf("Auto detail = %q, want the role default", got)
+	}
+	out := ansi.Strip(Render(p.state))
+	for _, want := range []string{
+		"EFFORT", "ASK · anthropic/claude-haiku-4-5",
+		"Auto", "Off", "Low", "High", "Enter", "Esc",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("effort card = %q, want %q", out, want)
+		}
+	}
+	if strings.Contains(out, "sonnet") || strings.Contains(out, "xhigh") {
+		t.Errorf("effort card = %q, want only the active ASK model's ladder", out)
+	}
+	if notes := effortNotice(p); notes != "" {
+		t.Errorf("opening the picker wrote notices: %q", notes)
+	}
+}
+
+// Selecting a row applies it to the role that opened the card and updates the
+// badge; the fixed-row picker has no search state to clear first.
+func TestEffortPickerSelectionAppliesToTheActiveRole(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 88, Height: 28})
+	p.state.Status.Model = "anthropic/claude-haiku-4-5"
+	p.state.Status.Workspace = "ASK"
+	var gotRole, gotEffort string
+	p.SetModelControl(ModelControlHooks{
+		Roles: func() []RoleAssignment {
+			return []RoleAssignment{{
+				Role: "ask", Model: "anthropic/claude-haiku-4-5",
+				Effort: "high", Efforts: []string{"low", "high"},
+			}}
+		},
+		ActiveRole: func() string { return "ask" },
+		SetEffort: func(role, effort string) (RoleAssignment, []RoleAssignment, error) {
+			gotRole, gotEffort = role, effort
+			return RoleAssignment{Role: role, Model: "anthropic/claude-haiku-4-5", Effort: effort}, nil, nil
+		},
+	})
+
+	Command{Name: "effort"}.runOn(p)
+	if p.state.Picker == nil {
+		t.Fatal("effort picker did not open")
+	}
+	// Auto, Off, Low, High: the explicit high level starts highlighted.
+	if p.state.Picker.Cursor != 3 || !p.state.Picker.Items[3].Active {
+		t.Fatalf("cursor/active = %d/%v, want the current High row",
+			p.state.Picker.Cursor, p.state.Picker.Items[3].Active)
+	}
+	if got := p.state.Picker.Items[0].Detail; got != "clear the role override" {
+		t.Errorf("Auto detail = %q, want the override-clearing description", got)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp}) // Low
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp}) // Off
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if gotRole != "ask" || gotEffort != EffortOff {
+		t.Fatalf("SetEffort(%q, %q), want (ask, off)", gotRole, gotEffort)
+	}
+	if p.state.Picker != nil {
+		t.Error("effort picker stayed open after selection")
+	}
+	if p.state.Status.Effort != "" {
+		t.Errorf("status effort = %q, want disabled", p.state.Status.Effort)
+	}
+	if text := effortNotice(p); !strings.Contains(text, "ASK effort: off") {
+		t.Errorf("notice = %q, want the applied off state", text)
+	}
+}
+
+// Esc dismisses the chooser without persisting a level.
+func TestEffortPickerEscapeDoesNotApply(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 88, Height: 28})
+	p.state.Status.Workspace = "BUILD"
+	called := false
+	p.SetModelControl(ModelControlHooks{
+		Roles: func() []RoleAssignment {
+			return []RoleAssignment{{Role: "build", Model: "anthropic/claude-sonnet-4-5", Efforts: []string{"low", "high"}}}
+		},
+		ActiveRole: func() string { return "build" },
+		SetEffort: func(role, effort string) (RoleAssignment, []RoleAssignment, error) {
+			called = true
+			return RoleAssignment{Role: role, Effort: effort}, nil, nil
+		},
+	})
+
+	Command{Name: "effort"}.runOn(p)
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEscape})
+
+	if called {
+		t.Error("Esc persisted an effort level")
+	}
+	if p.state.Picker != nil {
+		t.Error("Esc left the effort picker open")
+	}
+}
+
+// /effort <level> changes the active role's effort, not another role's, and
+// the header badge follows what the authority accepted.
+func TestEffortCommandTargetsTheActiveRoleAndUpdatesTheBadge(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Status.Model = "anthropic/claude-haiku-4-5"
+	p.state.Status.Workspace = "ASK"
+	var gotRole, gotEffort string
+	p.SetModelControl(ModelControlHooks{
+		Roles: func() []RoleAssignment {
+			return []RoleAssignment{{Role: "ask", Model: "anthropic/claude-haiku-4-5", Efforts: []string{"low", "high"}}}
+		},
+		ActiveRole: func() string { return "ask" },
+		SetEffort: func(role, effort string) (RoleAssignment, []RoleAssignment, error) {
+			gotRole, gotEffort = role, effort
+			return RoleAssignment{Role: role, Model: "anthropic/claude-haiku-4-5", Effort: effort}, nil, nil
+		},
+	})
+
+	Command{Name: "effort", Args: []string{"high"}}.runOn(p)
+
+	if gotRole != "ask" || gotEffort != "high" {
+		t.Fatalf("SetEffort(%q, %q), want (ask, high)", gotRole, gotEffort)
+	}
+	if p.state.Status.Effort != "high" {
+		t.Errorf("status effort = %q, want the applied level", p.state.Status.Effort)
+	}
+	text := effortNotice(p)
+	for _, want := range []string{"ASK effort: high", "anthropic/claude-haiku-4-5"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("notice = %q, want %q", text, want)
+		}
+	}
+}
+
+// A refused level reaches the transcript with the authority's reason; the
+// badge must not claim a level the role does not carry.
+func TestEffortCommandSurfacesAnUnsupportedLevel(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Status.Model = "groq/llama-3.1-8b-instant"
+	p.state.Status.Workspace = "BUILD"
+	refused := errors.New(`groq/llama-3.1-8b-instant does not expose thinking effort "high"`)
+	p.SetModelControl(ModelControlHooks{
+		ActiveRole: func() string { return "build" },
+		SetEffort: func(string, string) (RoleAssignment, []RoleAssignment, error) {
+			return RoleAssignment{}, nil, refused
+		},
+	})
+
+	Command{Name: "effort", Args: []string{"high"}}.runOn(p)
+
+	if p.state.Status.Effort != "" {
+		t.Errorf("status effort = %q, want unchanged after a refusal", p.state.Status.Effort)
+	}
+	if text := effortNotice(p); !strings.Contains(text, refused.Error()) {
+		t.Errorf("notice = %q, want the authority's reason", text)
+	}
+}
+
+// A program without the persistence seam reports why /effort cannot write
+// instead of silently accepting a level.
+func TestEffortCommandWithoutASeamSaysUnavailable(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Status.Workspace = "BUILD"
+	Command{Name: "effort", Args: []string{"high"}}.runOn(p)
+	if text := effortNotice(p); !strings.Contains(text, "configuration is unavailable") {
+		t.Errorf("notice = %q, want the unavailable reason", text)
 	}
 }
 

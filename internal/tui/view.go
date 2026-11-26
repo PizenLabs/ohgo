@@ -1228,36 +1228,56 @@ func newSessionPickerFooter(pal *Palette, layout Layout, interior int) string {
 	return TruncateToWidth(line, interior)
 }
 
-// themePickerWidth keeps the appearance chooser compact: three choices and one
-// sentence read best in a narrow decision card, not a full-width catalog.
-func themePickerWidth(terminal int) int {
+// choicePickerWidth keeps fixed choice cards compact: a handful of rows and
+// one sentence read best in a narrow decision card, not a full-width catalog.
+func choicePickerWidth(terminal int) int {
 	return mcpPickerWidth(terminal)
 }
 
-// renderThemePickerCard draws the /theme chooser as a centered modal card.
+// choiceCard is a fixed, short selection rendered as a centered modal card.
+// /theme and /effort share it: both choose one value from a handful of rows,
+// need no search box, and must show the current choice without relying on
+// colour.
+type choiceCard struct {
+	// Title is the border-embedded card title.
+	Title string
+	// TitleWidth aligns every detail on one column. Non-positive uses 10.
+	TitleWidth int
+	// Items are the fixed rows.
+	Items []PickerItem
+	// Cursor selects the highlighted row.
+	Cursor int
+	// Summary names the target above the note.
+	Summary string
+	// Note explains scope and persistence in one line.
+	Note string
+	// Action labels Enter in the footer, e.g. "apply".
+	Action string
+}
+
+// renderChoicePickerCard draws a fixed choice card.
 //
-// It deliberately shares the small-decision frame used by /new and the MCP
-// manager: border-embedded title, a short list, a footer rule, and a key bar.
-// The active palette carries both the selection marker and a text "current"
-// badge, so the state never depends on color alone.
-func renderThemePickerCard(picker *PickerState, pal *Palette, layout Layout, width, height int, summary string) string {
+// The active row carries both the selection marker and a text "current" badge,
+// so the state never depends on colour alone.
+func renderChoicePickerCard(card choiceCard, pal *Palette, layout Layout, width, height int) string {
 	interior := width - 2
 	if interior < statusMinContent {
 		interior = statusMinContent
 	}
+	titleWidth := card.TitleWidth
+	if titleWidth <= 0 {
+		titleWidth = 10
+	}
 
 	rows := []string{""}
-	const themeTitleWidth = 13
-	for i, item := range picker.Filtered() {
+	for i, item := range card.Items {
 		marker := "  "
-		if i == picker.Cursor {
+		if i == card.Cursor {
 			marker = pal.Selected.Render("> ")
 		}
 		title := sanitizeInline(item.Title)
 		line := marker + title
-		// A fixed title column keeps the three details on one axis, so the
-		// card scans as a comparison rather than three ragged sentences.
-		if pad := themeTitleWidth - CellWidth(title); pad > 0 {
+		if pad := titleWidth - CellWidth(title); pad > 0 {
 			line += strings.Repeat(" ", pad)
 		}
 		current := ""
@@ -1274,13 +1294,14 @@ func renderThemePickerCard(picker *PickerState, pal *Palette, layout Layout, wid
 		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+TruncateToWidth(line, interior-statusFieldIndent))
 	}
 	rows = append(rows, "")
-	if strings.TrimSpace(summary) != "" {
+	if summary := strings.TrimSpace(card.Summary); summary != "" {
 		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+
 			pal.Choice.Render(TruncateToWidth(summary, interior-statusFieldIndent)))
 	}
-	note := "Theme applies immediately and is saved for the next launch."
-	rows = append(rows, strings.Repeat(" ", statusFieldIndent)+
-		pal.Muted.Render(TruncateToWidth(note, interior-statusFieldIndent)))
+	if note := strings.TrimSpace(card.Note); note != "" {
+		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+
+			pal.Muted.Render(TruncateToWidth(note, interior-statusFieldIndent)))
+	}
 	rows = append(rows, "")
 
 	// The title border, footer rule, footer bar, and bottom border claim four
@@ -1288,14 +1309,17 @@ func renderThemePickerCard(picker *PickerState, pal *Palette, layout Layout, wid
 	if height > 0 {
 		rows = fitStatusRows(rows, maxInt(height-4, 0))
 	}
-	footer := themePickerFooter(pal, layout, interior)
-	return renderModalFrameWithFooter("THEME", rows, footer, pal, interior)
+	footer := choicePickerFooter(pal, layout, interior, card.Action)
+	return renderModalFrameWithFooter(card.Title, rows, footer, pal, interior)
 }
 
-// themePickerFooter names the keys the chooser actually handles.
-func themePickerFooter(pal *Palette, layout Layout, interior int) string {
+// choicePickerFooter names the keys a fixed choice card actually handles.
+func choicePickerFooter(pal *Palette, layout Layout, interior int, action string) string {
+	if strings.TrimSpace(action) == "" {
+		action = "apply"
+	}
 	type binding struct{ key, label string }
-	bindings := []binding{{"Enter", "apply"}, {"Esc", "close"}}
+	bindings := []binding{{"Enter", action}, {"Esc", "close"}}
 	if layout.Mode != LayoutNarrow {
 		bindings = append([]binding{{"↑↓", "navigate"}}, bindings...)
 	}
@@ -1307,6 +1331,34 @@ func themePickerFooter(pal *Palette, layout Layout, interior int) string {
 		line += pal.Bold.Render(binding.key) + pal.Muted.Render(" "+binding.label)
 	}
 	return TruncateToWidth(line, interior)
+}
+
+// renderThemePickerCard draws the /theme chooser as a centered modal card.
+func renderThemePickerCard(picker *PickerState, pal *Palette, layout Layout, width, height int, summary string) string {
+	return renderChoicePickerCard(choiceCard{
+		Title:      "THEME",
+		TitleWidth: 13,
+		Items:      picker.Filtered(),
+		Cursor:     picker.Cursor,
+		Summary:    summary,
+		Note:       "Theme applies immediately and is saved for the next launch.",
+		Action:     "apply",
+	}, pal, layout, width, height)
+}
+
+// renderEffortPickerCard draws the /effort chooser as the same fixed choice
+// card. The summary names the role and model; the active row carries the
+// configured level.
+func renderEffortPickerCard(picker *PickerState, pal *Palette, layout Layout, width, height int, summary string) string {
+	return renderChoicePickerCard(choiceCard{
+		Title:      "EFFORT",
+		TitleWidth: 10,
+		Items:      picker.Filtered(),
+		Cursor:     picker.Cursor,
+		Summary:    summary,
+		Note:       "Applies to the active workspace role; the model binding is unchanged.",
+		Action:     "apply",
+	}, pal, layout, width, height)
 }
 
 // renderPickerArea shows the selection overlay in place of the transcript.
@@ -1323,8 +1375,14 @@ func themePickerFooter(pal *Palette, layout Layout, interior int) string {
 func renderPickerArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
 	picker := state.Picker
 	if picker.Kind == PickerThemes {
-		renderCardAreaWidth(sb, state, layout, themePickerWidth, func(width, height int) string {
+		renderCardAreaWidth(sb, state, layout, choicePickerWidth, func(width, height int) string {
 			return renderThemePickerCard(picker, pal, layout, width, height, themeSummaryFor(state))
+		})
+		return
+	}
+	if picker.Kind == PickerEfforts {
+		renderCardAreaWidth(sb, state, layout, choicePickerWidth, func(width, height int) string {
+			return renderEffortPickerCard(picker, pal, layout, width, height, effortPickerSummary(state))
 		})
 		return
 	}

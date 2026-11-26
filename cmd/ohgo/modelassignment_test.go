@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"testing"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 	"github.com/PizenLabs/ohgo/internal/tui"
 )
@@ -168,5 +172,177 @@ func TestSupInheritedDefaultEffortIsValidatedWhenThinkingEnabled(t *testing.T) {
 	settings.AssignRole("sup", assignNoLadder, "")
 	if _, _, err := resolveSupModel(settings, catalog.Resolve); err == nil {
 		t.Fatal("an enabled, unsupported inherited effort was accepted")
+	}
+}
+
+// SetEffort is the /effort seam: it persists the level against the active
+// role while leaving the role's model binding untouched, so changing how hard
+// the model thinks never silently changes which model answers.
+func TestSetEffortKeepsTheRoleModelAndPersistsTheLevel(t *testing.T) {
+	h, _ := modelControlHarness(t)
+
+	applied, roles, err := h.SetEffort("build", "high")
+	if err != nil {
+		t.Fatalf("SetEffort: %v", err)
+	}
+	if applied.Role != "build" || applied.Effort != "high" {
+		t.Errorf("applied = %+v, want build/high", applied)
+	}
+	if applied.Model != catalog.DefaultRef {
+		t.Errorf("applied model = %q, want the effectively bound model", applied.Model)
+	}
+	if len(roles) == 0 {
+		t.Fatal("SetEffort returned no refreshed roster")
+	}
+	if got := h.currentEffort(); got != "high" {
+		t.Errorf("current effort = %q, want high", got)
+	}
+
+	reloaded, err := config.Load("")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	profile := reloaded.Roles["build"]
+	if profile.Effort != "high" {
+		t.Errorf("persisted effort = %q, want high", profile.Effort)
+	}
+	if profile.Model != "" {
+		t.Errorf("persisted model = %q, want the effort-only profile", profile.Model)
+	}
+	if model, effort, _ := reloaded.RoleModel("build"); model != catalog.DefaultRef || effort != "high" {
+		t.Errorf("resolved build = %q/%q, want the unchanged default model with the new effort", model, effort)
+	}
+}
+
+// A level the live model does not expose is refused before it is written, and
+// "off" remains a deliberate, always-available disable.
+func TestSetEffortRefusesAnUnsupportedLevel(t *testing.T) {
+	h, settings := modelControlHarness(t)
+	h.model = catalog.MustResolve(assignNoLadder)
+	if err := config.Save(*settings); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if _, _, err := h.SetEffort("build", "high"); err == nil {
+		t.Fatal("SetEffort accepted a level the active model does not expose")
+	}
+	reloaded, err := config.Load("")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if profile, ok := reloaded.Roles["build"]; ok && profile.Effort != "" {
+		t.Errorf("refused effort persisted as %q", profile.Effort)
+	}
+
+	if _, _, err := h.SetEffort("build", tui.EffortOff); err != nil {
+		t.Fatalf("off was refused: %v", err)
+	}
+	reloaded, err = config.Load("")
+	if err != nil {
+		t.Fatalf("reload after off: %v", err)
+	}
+	if got := reloaded.Roles["build"].Effort; got != tui.EffortOff {
+		t.Errorf("persisted effort = %q, want off", got)
+	}
+	if got := h.currentEffort(); got != "" {
+		t.Errorf("current effort = %q, want disabled", got)
+	}
+}
+
+// "auto" clears only the role override: the model binding survives, and the
+// next turn returns to the global/AUTO decision.
+func TestSetEffortAutoClearsTheOverrideAndKeepsTheModel(t *testing.T) {
+	h, settings := modelControlHarness(t)
+	settings.AssignRole("build", assignLaddered, "high")
+	if err := config.Save(*settings); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	applied, _, err := h.SetEffort("build", "auto")
+	if err != nil {
+		t.Fatalf("SetEffort(auto): %v", err)
+	}
+	if applied.Effort != "" {
+		t.Errorf("applied effort = %q, want cleared", applied.Effort)
+	}
+	reloaded, err := config.Load("")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	profile := reloaded.Roles["build"]
+	if profile.Model != assignLaddered {
+		t.Errorf("model = %q, want the earlier binding kept", profile.Model)
+	}
+	if profile.Effort != "" {
+		t.Errorf("effort = %q, want the override cleared", profile.Effort)
+	}
+}
+
+// The seam is not presentation: the next provider request must carry the level
+// /effort set, and "off" must reach the loop as disabled thinking.
+func TestSetEffortDrivesTheNextProviderRequest(t *testing.T) {
+	h, _ := modelControlHarness(t)
+	var requested ai.Request
+	loop, err := agent.New(agent.Config{
+		Model: h.model,
+		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+			requested = req
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{Text: "ok"}},
+			}), nil
+		},
+		Tools: []agent.Tool{testIdleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	h.loop = loop
+
+	if _, _, err := h.SetEffort("build", "high"); err != nil {
+		t.Fatalf("SetEffort(high): %v", err)
+	}
+	if _, err := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: "hi"}}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !requested.Reasoning || requested.ReasoningEffort != "high" {
+		t.Errorf("request reasoning = %v/%q, want high", requested.Reasoning, requested.ReasoningEffort)
+	}
+
+	if _, _, err := h.SetEffort("build", tui.EffortOff); err != nil {
+		t.Fatalf("SetEffort(off): %v", err)
+	}
+	if _, err := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: "again"}}); err != nil {
+		t.Fatalf("run after off: %v", err)
+	}
+	if requested.Reasoning || requested.ReasoningEffort != "" {
+		t.Errorf("request reasoning after off = %v/%q, want disabled", requested.Reasoning, requested.ReasoningEffort)
+	}
+}
+
+// The plain REPL reports the same role/model pair and writes through the same
+// effort seam, so /effort means one thing in both interfaces.
+func TestEffortREPLReportsAndPersistsTheWorkspaceRole(t *testing.T) {
+	h, _ := modelControlHarness(t)
+	var out strings.Builder
+	if err := repl(h, &out, strings.NewReader("/effort\n/effort high\n/quit\n"), nil); err != nil {
+		t.Fatalf("repl: %v", err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"BUILD · " + catalog.DefaultRef,
+		"effort: auto",
+		"levels: off, minimal, low, medium, high, xhigh",
+		"BUILD effort: high · " + catalog.DefaultRef,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("repl output = %q, want %q", text, want)
+		}
+	}
+	reloaded, err := config.Load("")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.Roles["build"]; got.Effort != "high" || got.Model != "" {
+		t.Errorf("persisted build = %+v, want an effort-only high profile", got)
 	}
 }

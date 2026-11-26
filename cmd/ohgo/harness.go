@@ -550,6 +550,16 @@ func (h *harness) sessionRole() string {
 	return strings.ToLower(strings.TrimSpace(h.workspace))
 }
 
+// activeRole names the role whose model the session is actually calling. An
+// unset workspace label falls back to the parsed authority, so a bare harness
+// still targets the workspace it runs under instead of an empty role.
+func (h *harness) activeRole() config.Role {
+	if role := config.NormalizeRole(h.sessionRole()); config.ValidRole(role) {
+		return role
+	}
+	return config.NormalizeRole(h.activeWorkspace().String())
+}
+
 // AssignRole validates, persists, and (for the session's own role) applies a
 // role assignment. It is the single seam /model writes through: the plane
 // never touches configuration or the loop itself.
@@ -602,6 +612,67 @@ func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []t
 		}
 	}
 	return tui.RoleAssignment{Role: string(role), Model: canonical, Effort: effort}, h.RoleAssignments(), nil
+}
+
+// SetEffort validates, persists, and applies a thinking level to one role
+// without rebinding its model. It is the single seam /effort writes through.
+//
+// The level is validated against the model the role will actually call: the
+// live model for the session's own role, otherwise the role's resolved
+// profile. "off" disables thinking, and an empty level (also spelled "auto")
+// clears the role override so the work or the global policy decides again.
+func (h *harness) SetEffort(role, effort string) (tui.RoleAssignment, []tui.RoleAssignment, error) {
+	name := config.NormalizeRole(role)
+	if !config.ValidRole(name) {
+		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("unknown role %q", role)
+	}
+	if h.settings == nil {
+		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("configuration is unavailable")
+	}
+	level := normalizeEffortSetting(effort)
+	model, err := h.effortModel(name)
+	if err != nil {
+		return tui.RoleAssignment{}, h.RoleAssignments(), err
+	}
+	canonical := model.Ref()
+	if level != "" && level != tui.EffortOff && !h.effortSupported(canonical, model, level) {
+		return tui.RoleAssignment{}, h.RoleAssignments(),
+			fmt.Errorf("%s does not expose thinking effort %q", canonical, level)
+	}
+	h.settings.AssignRole(string(name), "", level)
+	if err := config.Save(*h.settings); err != nil {
+		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("save configuration: %w", err)
+	}
+	if h.activeRole() == name {
+		// An explicit level, including "off", is a human override and takes
+		// effect now. Clearing it under AUTO leaves the demand selector in
+		// charge; outside AUTO the global policy applies immediately.
+		if level != "" || !h.autoReasoning {
+			enabled, setting := h.reasoningFor(level)
+			if h.loop != nil {
+				h.loop.SetReasoning(enabled, setting)
+			}
+		}
+	}
+	roles := h.RoleAssignments()
+	for _, assignment := range roles {
+		if assignment.Role == string(name) {
+			return assignment, roles, nil
+		}
+	}
+	return tui.RoleAssignment{Role: string(name), Effort: level}, roles, nil
+}
+
+// normalizeEffortSetting canonicalizes a /effort argument. "auto" is the
+// explicit spelling of "clear the role override"; every other word is a level
+// the bound model must validate.
+func normalizeEffortSetting(effort string) string {
+	level := strings.ToLower(strings.TrimSpace(effort))
+	switch level {
+	case tui.EffortAuto, "default", "unset":
+		return ""
+	}
+	return level
 }
 
 // recordSessionAuthority is the single writer for the session's authority
@@ -661,10 +732,32 @@ func supportsEffort(model ai.Model, effort string) bool {
 // effortSupported preserves the catalog's merged-roster ladder for bundled
 // providers while reading the configured facts for an endpoint provider.
 func (h *harness) effortSupported(ref string, model ai.Model, effort string) bool {
-	if _, handled, err := h.registry.CustomModel(ref); handled && err == nil {
-		return supportsEffort(model, effort)
+	if h.registry != nil {
+		if _, handled, err := h.registry.CustomModel(ref); handled && err == nil {
+			return supportsEffort(model, effort)
+		}
 	}
 	return catalog.ThinkingFor(ref).Supports(effort)
+}
+
+// effortModel resolves the model a role's thinking level must be valid for.
+// The session's own role uses the live model, because that is what the next
+// request calls even when a flag overrode configuration. Other roles resolve
+// through the canonical role chain so an edit validates against the model that
+// role would start with.
+func (h *harness) effortModel(role config.Role) (ai.Model, error) {
+	if h.activeRole() == role && h.model.Ref() != "" {
+		return h.model, nil
+	}
+	ref, _, _ := h.settingsOrDefault().RoleModel(string(role))
+	if strings.TrimSpace(ref) == "" {
+		return catalog.Default(), nil
+	}
+	resolve := catalog.Resolve
+	if h.registry != nil {
+		resolve = dynamicResolver(context.Background(), h.registry)
+	}
+	return resolve(ref)
 }
 
 // applyModel moves the loop, the ledger pricing, and the harness model
@@ -849,6 +942,28 @@ func (h *harness) roleEffortFor(role string) string {
 	}
 	_, effort, _ := h.settings.RoleModel(role)
 	return strings.TrimSpace(effort)
+}
+
+// currentEffort reports the level the next turn on the active role would use.
+// It is the single projection of role effort and AUTO demand, so the header
+// badge, /effort, and the plain REPL cannot disagree.
+func (h *harness) currentEffort() string {
+	role := string(h.activeRole())
+	if h.autoReasoning {
+		if explicit := h.roleEffortFor(role); explicit != "" {
+			enabled, level := h.reasoningFor(explicit)
+			if !enabled {
+				return ""
+			}
+			return level
+		}
+		return h.lastReasoningEffort
+	}
+	enabled, level := h.reasoningFor(h.roleEffortFor(role))
+	if !enabled {
+		return ""
+	}
+	return level
 }
 
 // CompactHistory runs one manual /compact through the same agent.CompactWith
