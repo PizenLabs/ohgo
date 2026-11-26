@@ -115,17 +115,21 @@ func verificationFor(root, command string) *agent.VerificationEvidence {
 			// Without a root the command is still a recognised check, but its
 			// directory cannot be located. Omit the scopes rather than claim a
 			// coverage the caller cannot prove.
+			check := verificationCheck(base, args)
 			evidence = &agent.VerificationEvidence{
 				Command: command,
-				Check:   verificationCheck(base, args),
+				Check:   check,
+				Class:   verificationClass(check),
 			}
 			lastIsCheck = true
 			continue
 		}
 
+		check := verificationCheck(base, args)
 		candidate := &agent.VerificationEvidence{
 			Command: command,
-			Check:   verificationCheck(base, args),
+			Check:   check,
+			Class:   verificationClass(check),
 		}
 		if base == "go" {
 			scopes, ok := goVerificationScopes(args)
@@ -310,6 +314,17 @@ func verificationCheck(program string, args []string) contract.VerificationCheck
 		return contract.CheckVet
 	}
 	return contract.CheckAny
+}
+
+// verificationClass maps a recognized check kind to the observation it
+// provides. A test executes code; a build or vet run observes a static
+// property. The distinction is what keeps a static check from supporting a
+// behavioral answer claim.
+func verificationClass(check contract.VerificationCheck) agent.VerificationClass {
+	if check == contract.CheckTest {
+		return agent.VerificationTest
+	}
+	return agent.VerificationStatic
 }
 
 // goVerificationScopes reads the package directories from a go command.

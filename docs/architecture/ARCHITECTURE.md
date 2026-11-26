@@ -151,7 +151,8 @@ unsupported runtime claim, an unobserved test count, an unbound structural
 relationship, an absence claim without complete coverage, a concept absence
 without a scoped proof, a documentation/configuration claim presented as
 implementation, or a dependency declaration presented as use is
-`NEEDS_REVIEW`. A behavior claim that names a port must find that port in a
+`NEEDS_REVIEW`. A behavioral claim also needs the matching verification class;
+a static build or source assertion cannot certify it. A behavior claim that names a port must find that port in a
 source observation for the named component, or in the command/address of a live
 runtime observation; reading one service's listener does not prove another
 service's port.
@@ -557,17 +558,22 @@ Recognition is an incremental, bounded state machine:
   and no call is fabricated. The message is marked as protocol residue, so
   completion reports `NEEDS_REVIEW` instead of success.
 - A registered tag with a provider decoration is the same family. When the body
-  uses a grammar the runtime understands (JSON, the XML invoke form, or the
-  equals-delimited `<function=name><parameter=key>` form), a decorated
-  `<tool_call>` spelling is decoded with that grammar into the same canonical
-  call; the decoration itself is ignored and grants no authority. The call still
-  crosses authorization, schema validation, and execution like any native call.
-  If the body cannot be decoded, the envelope is consumed as one malformed or
-  unsupported-envelope diagnostic and is never fabricated into an executable
-  call. At an answer boundary, where no evidence tool is offered, the one
-  bounded recovery asks for the prose answer from observed evidence rather than
-  a canonical call the surface no longer offers; the diagnostic is never
-  committed as the answer.
+  uses a grammar the runtime understands (JSON, the XML invoke form, the
+  equals-delimited `<function=name><parameter=key>` form, or the id-decorated
+  key/value form), a decorated `<tool_call>` spelling is decoded with that
+  grammar into the same canonical call; the decoration itself is ignored and
+  grants no authority. The call still crosses authorization, schema validation,
+  and execution like any native call. The id-decorated form suffixes every tag
+  with the same fabricated id after a colon
+  (`<tool_calls:ID><tool_call:ID>name<arg_key:ID>key</arg_key:ID>` +
+  `<arg_value:ID>value</arg_value:ID></tool_call:ID></tool_calls:ID>`); the
+  plural wrapper is a distinct marker so its close cannot be confused with an
+  inner `</tool_call:ID>`. If the body cannot be decoded, the envelope is
+  consumed as one malformed or unsupported-envelope diagnostic and is never
+  fabricated into an executable call. At an answer boundary, where no evidence
+  tool is offered, the one bounded recovery asks for the prose answer from
+  observed evidence rather than a canonical call the surface no longer offers;
+  the diagnostic is never committed as the answer.
 - Every failed decision also becomes a structured
   `ToolNormalizationFailure` on the assembled message: `INCOMPLETE`, `INVALID`,
   or `UNSUPPORTED`, with the provider, protocol, a sanitized reason, a bounded
@@ -760,6 +766,16 @@ user's request before execution and the evidence the runtime observed.
   surface when the live authority is BUILD. A read or investigation request, an
   explicit no-mutation limit, or an explicit mutation prompt remains a new
   objective; see [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
+- **Limited verification is a completed state, not a review.** When the run
+  observed the requested change and the check capability reports `NOT_RUN`
+  because the workspace has no supported command, the evaluator returns
+  `CompletionCompletedLimited` / `RunCompletedLimited`, and the durable proof
+  records `Limitation` with no `Verified` entries. `Task.ObjectiveState`
+  reports `COMPLETED_LIMITED_VERIFICATION`. The headless verdict stays
+  `COMPLETED` and its reason names the limitation; the exit status is still
+  `0`. A failing check is not this state: it remains an observed failure and a
+  review boundary. See
+  [the sufficiency section](#evidence-sufficiency-and-the-exploration-stop).
 - **Phase completion.** A turn can run under ASK or FUZZ while the persisted
   contract needs BUILD, or under BUILD before a conditional mutation branch is
   entered. `workspace.PhaseContract` and `contract.IntentContract.
@@ -919,6 +935,46 @@ the model said. Two properties keep the loop honest and small:
   withheld or an exact repetition of an observation already current in the run.
   The loop drops those continuation calls before dispatch, so a finished answer
   is not followed by refusal or reuse cards.
+- **A satisfied objective survives a non-answering model.** `StageComplete` is
+  reported as `ProjectionReport.ObjectiveComplete`, which is narrower than
+  `AnswerEligible`: the latter also covers a surface closed by repeated
+  refusals. When the objective is complete and the model still proposes a call
+  the runtime refuses, there is no action left and the turns that satisfied the
+  objective are authoritative. The run ends with those turns so completion can
+  evaluate them; it does not report `ErrTaskBlocked`, which would erase a proven
+  objective because the model failed to narrate it.
+- **Exploration and verification each have a semantic turn budget.** Novelty is
+  not progress toward a change: a search that keeps finding new files still has
+  not changed the repository. Pre-action observation — `StageExplore` and
+  `StageAct` for a mutation or execution — shares one window,
+  `PreActionObservationAllowance`, derived from the remaining turn grant: at
+  most half of it, never below `PreActionObservationFloor`. `StageVerify` has its
+  own constant window (`MaxVerifyObservationTurns`), which restarts whenever a
+  new change is observed: it bounds waiting for the check, not iterating on it,
+  and it is the sole bound at that boundary. The generic no-progress counter
+  does not also count those turns, or four reads could close a run that is still
+  implementing its change before the dedicated window ends. Reaching either
+  window closes the surface with a report boundary rather than walking the turn
+  grant. A filesystem walk is therefore bounded by task semantics, not only by a
+  wall-clock limit, and a legitimate first pass over a multi-file project is not
+  cut short before its change.
+- **A heuristic target has an acquisition budget.** A symbol or package the
+  wording implies is a hypothesis. A definitive `not_found` from a structural
+  lookup is a positive observation of absence, so the requirement is recorded
+  as `not applicable` and stops blocking the projection and completion alike.
+  The same outcome applies when the runtime has no structural adapter for any
+  source language the repository contains (the portable build in a web-only
+  repository): the lookup is unavailable, not pending, so the requirement is
+  reported as a limitation instead of blocking a change the runtime observed.
+  Searching a sibling project, the parent directory, or the filesystem for a
+  name the repository never contained is not evidence; it is the extraction
+  mistake being re-litigated one directory at a time.
+- **An unavailable check is a limitation, not an incomplete objective.** When
+  the run observed the change and the check capability reports `NOT_RUN` (no
+  supported command was discovered), the objective is
+  `COMPLETED_LIMITED_VERIFICATION`. A failing check is different: it remains an
+  observed failure and a review boundary. The distinction is read from the
+  check's own result payload, never from model prose.
 - **An unenumerable workspace is one environment blocker, not a series of tool
   failures.** The probe records a root enumeration failure
   (`RepositoryFacts.RootError`) — a macOS TCC denial reports `operation not
@@ -1041,16 +1097,49 @@ the model said. Two properties keep the loop honest and small:
   no following check, the state block names the missing verification and its
   next evidence. A successful check advances the stage; a corrective change is
   also progress. New observations alone cannot close that obligation.
+- **A verification PASS is classed by what it observed.** Every
+  `agent.VerificationEvidence` carries `STATIC`, `TEST`, or `BEHAVIORAL`.
+  Builds, static analysis, and shell assertions are static; a test run is a
+  test observation; a live service, HTTP probe, or browser check is
+  behavioral. The classes are evidence, not confidence: a static check closes a
+  build or source requirement, never a claim that the page moves, scrolls, or
+  otherwise behaves. The answer gate rejects a behavioral sentence when no
+  behavioral check followed the last change, and completion uses the same
+  claim audit, so a published answer cannot be stronger than the durable
+  verification. A test-only PASS does not upgrade to a behavioral claim. A
+  rendered-text browser check proves what the page rendered, not that an
+  animation moved or had no lag; motion and performance claims remain
+  unverified until the runtime has an observation that measures them.
+- **A user contradiction is an explicit verification conflict, not a fresh
+  discovery.** When the user reports observed behavior that disputes a
+  current successful check, the task layer records a contradiction against the
+  verification fact and `cognition.EvidenceState` carries an open
+  `VerificationConflict`. Sufficiency moves to `verify` with the missing
+  requirement `behavioral_verification`; direct and shell mutation tools are
+  withheld while the conflict is open, so BUILD does not repeat the change
+  whose result is disputed. A behavioral check resolves the conflict (PASS or
+  FAIL) and retires only the contradiction record; the original verification
+  remains in history. A failed behavioral check reopens the ordinary repair
+  surface. A provider failure after a mutation remains a resumable review with
+  the completed turns and evidence intact.
 - **Consecutive turns without a task transition are a semantic stop.** Outside
   verification, a turn that adds new evidence, changes the stage or unmet
   requirements, applies a change, observes a successful check, or establishes
-  an explicit blocker is progress. During verification, only a change or a
-  check is progress; another read is not. After
+  an explicit blocker is progress. At the verification boundary, only a change
+  or a successful check advances the task, and that wait is owned by
+  `MaxVerifyObservationTurns`: the generic counter is reset there instead of
+  closing the surface after four reads. In the other stages, after
   `cognition.MaxConsecutiveNoProgress` consecutive turns without one of those
   transitions, the projection becomes `BlockProgressStalled`, withdraws the
   action surface, and asks for a report. That is a control-plane verdict
   (`NEEDS_REVIEW`), not a resource stop and not the model-turn budget. A task
-  that keeps changing state is never stopped by this counter.
+  that keeps changing state is never stopped by this counter. When the
+  verification window itself closes, the projection also carries the terminal
+  semantic outcome (`UNRESOLVED`, `verification_not_established`); the durable
+  task records it with the review, and the TUI publishes it as one
+  runtime-authored final explanation when the model produced no committed
+  answer. The lifecycle stays `NEEDS_REVIEW` and resumable — the conclusion is
+  the outcome of this run, not a failure of the task or its observed change.
 - **The stop is evidence-driven, not a call budget.** The action surface closes
   when sufficiency reaches `answer` or `complete`, when a required capability is
   blocked, or when consecutive turns no longer advance the task. A completed
@@ -1066,6 +1155,19 @@ the model said. Two properties keep the loop honest and small:
   authority permits is not at the answer boundary either; its next step may be
   a probe or a command. A change objective's next action is the change, but
   once the change is applied its next action is the check.
+- **Observation before an action is proportional to the grant.** A change or an
+  execution whose deliverable is an action may spend at most
+  `cognition.PreActionObservationAllowance(shape)` projections observing: half
+  the model turns still available, never below
+  `cognition.PreActionObservationFloor`. The explore and act stages share that
+  one window because they name different evidence states, not different
+  budgets; a per-stage window let one phase silently double the other. The
+  window is not a fixed small constant because how much reading a change needs
+  is a property of the project — a page, its script and a 38 KB stylesheet are
+  several reads before the first edit — and a constant small enough to be
+  aggressive closes a legitimate first pass before the change is applied. The
+  window is still finite: a model that only ever observes reaches
+  `BlockProgressStalled` with the observation budget named as the reason.
 
 Budgets remain safety bounds, never the reason a run concludes. A weaker model
 may therefore spend more turns reaching the same evidence; the stop follows the

@@ -1548,6 +1548,159 @@ func TestNormalizeFunctionGrammarInsideRegisteredTag(t *testing.T) {
 	}
 }
 
+// callIDElement renders one call of the id-decorated grammar the free gateway
+// emitted. Every tag carries the fabricated id after a colon; args are
+// alternating key and value strings.
+func callIDElement(id, name string, args ...string) string {
+	if len(args)%2 != 0 {
+		panic("callIDElement: args must be key/value pairs")
+	}
+	var b strings.Builder
+	b.WriteString("<tool_call:" + id + ">")
+	b.WriteString(name)
+	for i := 0; i < len(args); i += 2 {
+		b.WriteString("<arg_key:" + id + ">")
+		b.WriteString(args[i])
+		b.WriteString("</arg_key:" + id + ">")
+		b.WriteString("<arg_value:" + id + ">")
+		b.WriteString(args[i+1])
+		b.WriteString("</arg_value:" + id + ">")
+	}
+	b.WriteString("</tool_call:" + id + ">")
+	return b.String()
+}
+
+// callIDEnvelope wraps one or more calls in the plural tool_calls tag.
+func callIDEnvelope(id string, calls ...string) string {
+	return "<tool_calls:" + id + ">" + strings.Join(calls, "\n") + "</tool_calls:" + id + ">"
+}
+
+// The recorded failure: the outer <tool_calls:ID> wrapper shares its prefix
+// with the inner <tool_call:ID>, so matching the inner close as the envelope
+// end truncated the body and every argument was lost to an XML error. The
+// decoded call must keep every argument, including when chunks split the tags.
+func TestNormalizeCallIDEnvelopeIsDecoded(t *testing.T) {
+	const id = "6124c78e"
+	input := callIDEnvelope(id, callIDElement(id, "read",
+		"path", "backend/layout/http_admin_products.go",
+		"line_from", "100",
+		"line_to", "160",
+	))
+	run := runNormalize(t, []string{input[:9], input[9:31], input[31:78], input[78:170], input[170:]},
+		NormalizeOptions{Provider: "opencode-go"})
+
+	if len(run.calls) != 1 {
+		t.Fatalf("live tool calls = %d, want 1", len(run.calls))
+	}
+	call := run.calls[0]
+	if call.Name != "read" {
+		t.Fatalf("call.Name = %q, want read", call.Name)
+	}
+	for key, want := range map[string]string{
+		"path":      "backend/layout/http_admin_products.go",
+		"line_from": "100",
+		"line_to":   "160",
+	} {
+		if got := call.Arguments[key]; got != want {
+			t.Fatalf("call.Arguments[%q] = %v, want %q", key, got, want)
+		}
+	}
+	if run.msg.ProtocolResidue {
+		t.Fatal("a decoded envelope was marked as protocol residue")
+	}
+	if len(run.msg.NormalizationFailures) != 0 {
+		t.Fatalf("failures = %+v, want none", run.msg.NormalizationFailures)
+	}
+	if run.msg.StopReason != StopToolUse {
+		t.Fatalf("stop reason = %q, want %q", run.msg.StopReason, StopToolUse)
+	}
+	for _, text := range []string{run.text, run.msg.Text()} {
+		if text != "" {
+			t.Fatalf("protocol bytes survived into assistant text: %q", text)
+		}
+	}
+}
+
+// One plural wrapper can hold several calls, including a no-argument call, and
+// the id suffix is decoration: a different suffix on each tag still names the
+// same grammar.
+func TestNormalizeCallIDEnvelopeDecodesEveryCall(t *testing.T) {
+	input := callIDEnvelope("outer",
+		callIDElement("first", "ls"),
+		callIDElement("second", "read", "path", "crates/gry-mcp/src/tools.rs"),
+	)
+	run := runNormalize(t, []string{input}, NormalizeOptions{})
+
+	if len(run.calls) != 2 {
+		t.Fatalf("calls = %+v, want two decoded calls", run.calls)
+	}
+	if run.calls[0].Name != "ls" || len(run.calls[0].Arguments) != 0 {
+		t.Fatalf("first call = %+v, want a no-argument ls", run.calls[0])
+	}
+	if run.calls[1].Name != "read" ||
+		run.calls[1].Arguments["path"] != "crates/gry-mcp/src/tools.rs" {
+		t.Fatalf("second call = %+v, want read of the tools file", run.calls[1])
+	}
+	if run.msg.ProtocolResidue || len(run.msg.NormalizationFailures) != 0 {
+		t.Fatalf("decoded envelope left residue: %+v", run.msg.NormalizationFailures)
+	}
+}
+
+// A single id-decorated call may arrive without the plural wrapper.
+func TestNormalizeSingularCallIDEnvelopeIsDecoded(t *testing.T) {
+	run := runNormalize(t, []string{callIDElement("24b82c79", "glob", "pattern", "**/*.go")},
+		NormalizeOptions{})
+
+	if len(run.calls) != 1 {
+		t.Fatalf("calls = %+v, want one decoded glob", run.calls)
+	}
+	if run.calls[0].Name != "glob" || run.calls[0].Arguments["pattern"] != "**/*.go" {
+		t.Fatalf("call = %+v, want glob **/*.go", run.calls[0])
+	}
+}
+
+// A malformed decorated call is contained as one diagnostic. A missing
+// arg_value close must not truncate into an executable call.
+func TestNormalizeMalformedCallIDEnvelopeIsContained(t *testing.T) {
+	const id = "6124c78e"
+	input := "<tool_calls:" + id + "><tool_call:" + id + ">read" +
+		"<arg_key:" + id + ">path</arg_key:" + id + ">" +
+		"<arg_value:" + id + ">a.go</tool_call:" + id + "></tool_calls:" + id + ">"
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: input}},
+	}, NormalizeOptions{Provider: "test"})
+
+	if calls := got.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("a malformed envelope executed as a call: %+v", calls)
+	}
+	if len(got.NormalizationFailures) != 1 {
+		t.Fatalf("failures = %+v, want one", got.NormalizationFailures)
+	}
+	if got.NormalizationFailures[0].Status != NormalizationInvalid {
+		t.Fatalf("status = %q, want %q", got.NormalizationFailures[0].Status, NormalizationInvalid)
+	}
+	if !got.ProtocolResidue {
+		t.Fatal("a malformed envelope did not mark protocol residue")
+	}
+}
+
+// The same decorated spelling inside a code span is documentation, not a call.
+func TestNormalizeQuotedCallIDEnvelopeIsContent(t *testing.T) {
+	input := "The gateway emitted `<tool_calls:6124c78e><tool_call:6124c78e>ls</tool_call:6124c78e></tool_calls:6124c78e>`."
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: input}},
+	}, NormalizeOptions{})
+	if got.Text() != input {
+		t.Fatalf("quoted content changed: %q", got.Text())
+	}
+	if calls := got.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("a quoted example executed as a call: %+v", calls)
+	}
+	if got.ProtocolResidue {
+		t.Fatal("quoted content was classified as protocol residue")
+	}
+}
+
 // The same decorated envelope in a quoted example is documentation, not
 // protocol. The family detector must not turn a documented wire shape into a
 // completion veto or a call.

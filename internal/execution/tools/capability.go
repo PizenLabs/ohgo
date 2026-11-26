@@ -129,6 +129,375 @@ func OutsideWorkspaceMutation(command, root string) (string, bool) {
 	return "", false
 }
 
+// OutsideWorkspaceRead reports the first filesystem target a command names that
+// is outside the workspace, and therefore outside the task's read authority.
+//
+// Every dedicated read capability is already confined to the workspace root.
+// A shell is the one execution path where the same target can be requested
+// again after a read was refused, so the boundary is enforced here from the
+// command's own syntax, below the model and independently of its spelling.
+//
+// It is a target analysis, not a string filter. It resolves literal paths
+// against the command's effective working directory, recognises the utilities
+// whose positional arguments are paths, treats a `cd`/`pushd` out of the
+// workspace as the scope escape it is, and recurses into `sh -c` payloads.
+// Arbitrary shell expansions are not evaluated; an existing `$HOME`-relative,
+// `~`-relative, or absolute literal is still refused, because the observed
+// escape shape named the target directly. That makes the boundary deliberately
+// conservative in the safe direction: a command whose target cannot be analysed
+// is refused rather than allowed to discover the scope itself.
+//
+// Unlike the write boundary, the temporary-area exemption is conditional: the
+// operating system's temporary tree is a staging sandbox for a workspace that
+// lives elsewhere, but when the workspace itself is rooted there, that tree is
+// its neighborhood and a sibling directory is a sibling project. A read is
+// repository evidence, and evidence must come from the authorized workspace or
+// its staging area.
+//
+// It never decides whether a command may run; it only names an unauthorized
+// target so the authority layer can refuse it.
+func OutsideWorkspaceRead(command, root string) (string, bool) {
+	root = strings.TrimSpace(root)
+	if root == "" || strings.TrimSpace(command) == "" {
+		return "", false
+	}
+	root = resolveCommandPath(root)
+	if target, outside := outsideReadTarget(command, root, root); outside {
+		return target, true
+	}
+	return outsideReadLiteral(command, root)
+}
+
+// outsideReadTarget analyses compound commands, tracking `cd` so a relative
+// read after a directory change is resolved where the shell would run it.
+func outsideReadTarget(command, cwd, root string) (string, bool) {
+	for _, segment := range shellSegments(command) {
+		words := shellWords(segment)
+		program, args := programAndArgs(words)
+		base := path.Base(program)
+		switch base {
+		case "cd", "pushd":
+			raw := firstNonFlag(args)
+			if raw == "" {
+				if home, err := os.UserHomeDir(); err == nil {
+					next := resolveCommandPath(home)
+					if !pathWithinRoot(root, next) {
+						return next, true
+					}
+					cwd = next
+				}
+				continue
+			}
+			next, ok := resolveShellPath(raw, cwd)
+			if !ok {
+				continue
+			}
+			if !pathWithinRoot(root, next) && !readOutsideAllowed(root, next) {
+				return next, true
+			}
+			cwd = next
+			continue
+		}
+		if program == "" {
+			continue
+		}
+		for _, raw := range readProgramArgs(base, args) {
+			target, ok := resolveShellPath(raw, cwd)
+			if !ok || pathWithinRoot(root, target) || isCharDevice(raw) ||
+				readOutsideAllowed(root, target) {
+				continue
+			}
+			return target, true
+		}
+		// A nested shell repeats the same authority question one level down.
+		if base == "sh" || base == "bash" || base == "zsh" || base == "dash" || base == "ksh" {
+			if payload := dashCPayload(args); payload != "" {
+				if target, outside := outsideReadTarget(payload, cwd, root); outside {
+					return target, true
+				}
+				continue
+			}
+		}
+		if base == "xargs" {
+			inner, innerArgs := programAndArgs(args)
+			if inner != "" {
+				for _, raw := range readProgramArgs(path.Base(inner), innerArgs) {
+					target, ok := resolveShellPath(raw, cwd)
+					if !ok || pathWithinRoot(root, target) || isCharDevice(raw) ||
+						readOutsideAllowed(root, target) {
+						continue
+					}
+					return target, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// outsideReadLiteral refuses an existing absolute or $HOME-relative path that
+// the command names anywhere, including inside a shell loop the segment
+// analyzer cannot model. It is the conservative fallback the authority layer
+// prefers over silently allowing an unanalysable target.
+func outsideReadLiteral(command, root string) (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	if home != "" {
+		home = resolveCommandPath(home)
+	}
+	for _, segment := range shellSegments(command) {
+		for _, word := range shellWords(segment) {
+			raw := strings.TrimSpace(strings.Trim(word, `"'`))
+			if raw == "" {
+				continue
+			}
+			raw = strings.ReplaceAll(raw, "${HOME}", home)
+			raw = strings.ReplaceAll(raw, "$HOME", home)
+			// A glob is expanded by the shell before the program runs. Its
+			// literal prefix is still the directory the command will read, so
+			// a `for … in $HOME/*` loop cannot hide the scope escape.
+			if index := strings.IndexAny(raw, "*?["); index > 0 {
+				prefix := raw[:index]
+				if strings.HasSuffix(prefix, "/") {
+					prefix = strings.TrimSuffix(prefix, "/")
+				} else {
+					prefix = filepath.Dir(prefix)
+				}
+				raw = prefix
+			}
+			if raw == "" {
+				continue
+			}
+			if !filepath.IsAbs(raw) && !strings.HasPrefix(raw, "~/") && raw != "~" {
+				continue
+			}
+			target, ok := resolveShellPath(raw, root)
+			if !ok {
+				continue
+			}
+			info, statErr := os.Stat(target)
+			if statErr != nil || info == nil {
+				continue
+			}
+			if pathWithinRoot(root, target) || readOutsideAllowed(root, target) {
+				continue
+			}
+			// Only the user's own tree is the repository sibling shape this
+			// boundary exists to stop. System paths (/usr/bin, /dev/null,
+			// /etc/hosts) are ordinary program inputs, not workspace evidence.
+			if home == "" || !pathWithinRoot(home, target) {
+				continue
+			}
+			return target, true
+		}
+	}
+	return "", false
+}
+
+// readOutsideAllowed reports a target outside root that a command may still
+// read: the operating system's temporary area is a staging sandbox for build
+// artifacts, execution probes, and scratch files.
+//
+// The exemption disappears when the workspace itself lives in that area. A
+// project rooted there is a workspace whose neighborhood is the temporary tree,
+// not a sandbox around an unrelated one, so a sibling directory is a sibling
+// project and stays out of scope.
+func readOutsideAllowed(root, target string) bool {
+	return isTemporaryPath(target) && !isTemporaryPath(root)
+}
+
+// readProgramArgs returns the raw path arguments of a program whose
+// positional arguments name files to read.
+func readProgramArgs(program string, args []string) []string {
+	nonFlags := func() []string {
+		var out []string
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "-") || arg == "--" {
+				continue
+			}
+			out = append(out, arg)
+		}
+		return out
+	}
+	switch program {
+	case "cat", "bat", "head", "tail", "less", "more", "wc", "file", "stat",
+		"ls", "du", "tree", "nl", "od", "xxd", "hexdump", "strings", "sort",
+		"uniq", "diff", "cmp", "comm", "join", "paste", "cut", "jq", "yq",
+		"zcat", "gzcat", "md5", "md5sum", "shasum", "sha1sum", "sha256sum",
+		"realpath", "readlink":
+		return nonFlags()
+	case "grep", "egrep", "fgrep", "rg", "ag", "ack", "ack-grep":
+		return searchPathArgs(args)
+	case "sed":
+		return sedPathArgs(args)
+	case "find":
+		return findStartPaths(args)
+	case "python", "python3", "node", "perl", "ruby", "php", "awk", "gawk":
+		if payload := evalPayload(args); payload != "" {
+			// Inline programs are opaque. An absolute literal inside them is
+			// the only statically visible target, so it becomes the refusal
+			// point rather than an unreviewable read.
+			return absoluteLiterals(payload)
+		}
+		if program == "awk" || program == "gawk" {
+			// The first positional argument is the program text, not a file.
+			if hasAnyFlag(args, "-f", "--file") {
+				return nonFlags()
+			}
+			return positionalAfterFirst(args)
+		}
+		if first := firstNonFlag(args); first != "" {
+			return []string{first}
+		}
+		return nil
+	}
+	return nil
+}
+
+// positionalAfterFirst returns the non-flag arguments after the first one.
+func positionalAfterFirst(args []string) []string {
+	var out []string
+	seen := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") || arg == "--" {
+			continue
+		}
+		if !seen {
+			seen = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// hasAnyFlag reports whether any of the spellings appear in args.
+func hasAnyFlag(args []string, names ...string) bool {
+	for _, arg := range args {
+		for _, name := range names {
+			if arg == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// searchPathArgs returns the path operands of a search program: every
+// positional argument after the pattern.
+func searchPathArgs(args []string) []string {
+	patternSeen := false
+	for _, arg := range args {
+		if arg == "--files" {
+			patternSeen = true
+			break
+		}
+	}
+	var out []string
+	skipValue := false
+	for _, arg := range args {
+		if skipValue {
+			skipValue = false
+			continue
+		}
+		switch arg {
+		case "-e", "--regexp", "-f", "--file", "-g", "--glob", "-t", "--type":
+			skipValue = true
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if !patternSeen {
+			patternSeen = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// sedPathArgs returns the file operands of sed, skipping an inline script.
+func sedPathArgs(args []string) []string {
+	var out []string
+	scriptFromFlag := false
+	for _, arg := range args {
+		if arg == "-e" || arg == "--expression" || arg == "-f" || arg == "--file" {
+			scriptFromFlag = true
+			break
+		}
+	}
+	skipValue := false
+	scriptSeen := false
+	for _, arg := range args {
+		if skipValue {
+			skipValue = false
+			continue
+		}
+		if arg == "-e" || arg == "--expression" || arg == "-f" || arg == "--file" {
+			skipValue = true
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if !scriptFromFlag && !scriptSeen {
+			scriptSeen = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// findStartPaths returns the roots a find traversal starts from: the
+// positional arguments before the first predicate.
+func findStartPaths(args []string) []string {
+	var out []string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") || arg == "(" || arg == "!" {
+			break
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// dashCPayload returns the script argument of `sh -c '…'`.
+func dashCPayload(args []string) string {
+	for i, arg := range args {
+		if arg == "-c" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// evalPayload returns the inline program argument of an interpreter's
+// -c / -e flag.
+func evalPayload(args []string) string {
+	for i, arg := range args {
+		if (arg == "-c" || arg == "-e" || arg == "-E" || arg == "--eval") && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// absoluteLiterals returns the absolute-looking tokens in an opaque payload.
+func absoluteLiterals(payload string) []string {
+	var out []string
+	for _, field := range strings.Fields(payload) {
+		field = strings.Trim(field, "\"'`;,()[]{}")
+		if strings.HasPrefix(field, "/") {
+			out = append(out, field)
+		}
+	}
+	return out
+}
+
 // CommandAffectedPaths returns the repository-relative paths a command's own
 // syntax deterministically writes.
 //

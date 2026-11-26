@@ -5886,6 +5886,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			decision, continuing := taskTurnDecision(current, text, activeAuthority, intent)
 			if continuing {
 				p.recordTaskDecision(decision)
+				if decision == "VERIFICATION_CONFLICT" && p.task.RecordVerificationConflict != nil {
+					projection := p.task.RecordVerificationConflict(text)
+					p.PublishTask(projection)
+					if projection.Err != "" {
+						abortTurn("task verification conflict: " + projection.Err)
+						return
+					}
+				}
 				if !current.HasContract {
 					abortTurn("an open task has no persisted completion contract; run /task cancel to abandon it, or start a new task with /task list to preserve it")
 					return
@@ -6160,13 +6168,15 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	})
 	// The provider hook is the only truthful source for a slow or failed
 	// transport. It reports each attempt and backoff before the loop sleeps, so
-	// a 429 never masquerades as workspace preparation.
+	// a 429 never masquerades as workspace preparation. It is published as a
+	// state correction: a dropped wait event leaves the bar with no truthful
+	// label for as long as the provider stays silent.
 	p.loop.SetProviderActivityHook(func(activity agent.ProviderActivity) {
 		message := ""
 		if activity.Err != nil {
 			message = sanitizeInline(activity.Err.Error())
 		}
-		p.publish(ProviderStatusEvent{
+		p.publishCritical(ProviderStatusEvent{
 			Phase: string(activity.Phase), Attempt: activity.Attempt,
 			Attempts: activity.Attempts, Delay: activity.Delay,
 			Status: activity.Status, Message: message, At: time.Now(), Seq: seq,
@@ -6442,7 +6452,23 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	mutations := p.loop.LastMutation()
 	mutations.TaskID = taskID
 	mutations.ObjectiveID = taskID
-	action, reason, reviewIssues := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, mutations, activeAuthority)
+	limit := projectionLimit{}
+	// The terminal conclusion travels with the projection that produced it.
+	// It is read here, before the task transition, so the durable review and
+	// the user-visible explanation are the same decision. A stale report from
+	// an earlier run is ignored: only a terminal projection owns a conclusion.
+	var conclusion *agent.RunConclusion
+	if p.task.LastProjection != nil {
+		if report, ok := p.task.LastProjection(); ok {
+			limit.Unresolved = report.Unresolved
+			limit.Verification = report.VerificationLimited
+			if report.Terminal && report.Conclusion != nil {
+				cloned := *report.Conclusion
+				conclusion = &cloned
+			}
+		}
+	}
+	action, reason, reviewIssues := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, mutations, activeAuthority, limit)
 	// The turn boundary is also the evidence boundary. The loop projects
 	// before each request, but a run that stopped on a deadline, a turn limit,
 	// or its final answer may have an unobserved last turn. Folding it here
@@ -6485,7 +6511,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		// an interrupted task. Pause rather than leave it looking active.
 		action, reason = taskActionPause, "interrupted"
 	}
-	if action == taskActionComplete {
+	if action == taskActionComplete || action == taskActionCompleteLimited {
 		if !p.turnTerminal.CompareAndSwap(turnTerminalOpen, turnTerminalCompleted) {
 			action, reason = taskActionPause, "interrupted"
 		}
@@ -6663,12 +6689,15 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// moment. The terminal footer below remains the last content either way.
 	observedOutcome := experienceOutcome(action)
 	switch action {
-	case taskActionComplete:
+	case taskActionComplete, taskActionCompleteLimited:
 		answered := false
 		if len(turns) > 0 {
 			answered = strings.TrimSpace(turns[len(turns)-1].Assistant.Text()) != ""
 		}
 		evidence := CompletionEvidence{Complete: true, Answered: answered}
+		if action == taskActionCompleteLimited {
+			evidence.VerificationLimitation = reason
+		}
 		var projection TaskProjection
 		switch {
 		case p.task.CompleteWithEvidence != nil:
@@ -6712,10 +6741,24 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		// completion proof is recorded.
 		p.SyncTask()
 	case taskActionReview:
-		if p.task.NeedsReview != nil {
+		reviewed := false
+		if conclusion != nil && p.task.ReviewUnresolved != nil {
+			p.PublishTask(p.task.ReviewUnresolved(reason, reviewIssues, *conclusion))
+			reviewed = true
+		} else if p.task.NeedsReview != nil {
 			p.PublishTask(p.task.NeedsReview(reason, reviewIssues))
+			reviewed = true
 		} else if p.task.Pause != nil {
 			p.PublishTask(p.task.Pause(reason))
+		}
+		// A run that could not establish its verification and produced no
+		// committed answer owes the user an outcome, not only a review footer.
+		// The conclusion is runtime-authored and labelled; it is not a model
+		// answer and never enters the conversation sent to the provider.
+		if reviewed && conclusion != nil && strings.TrimSpace(committedAnswer) == "" {
+			p.publishCritical(ConclusionPublished{
+				Conclusion: *conclusion, At: time.Now(), Seq: seq,
+			})
 		}
 		reviewNotice = strings.TrimSpace(reason)
 	case taskActionPause:

@@ -260,6 +260,12 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 		// is a report for review rather than another tool call.
 		return "no meaningful progress; report the remaining gap instead of repeating the observation", true
 	}
+	if suff.VerificationConflict && agent.HasActionClass(tool, agent.ActionMutate) {
+		// The user says the verified behavior is wrong. Another change before
+		// a behavioral observation would repeat the work whose result is in
+		// dispute. Read and verification capabilities stay available.
+		return "the last verification is contradicted; investigate the reported behavior before another change", true
+	}
 	if suff.Stage == StageBlocked && agent.HasActionClass(tool, agent.ActionMutate) &&
 		(!agent.HasActionClass(tool, agent.ActionExecute) || agent.HasActionClass(tool, agent.ActionConfigured)) {
 		// Do not allow more mutation after a scope violation, but keep the

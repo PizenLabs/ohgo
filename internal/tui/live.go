@@ -598,7 +598,15 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		lines := liveMarkdownLines(text, pal, layout)
+		var lines []string
+		if e.Runtime {
+			// A runtime conclusion carries a machine-readable reason code.
+			// Markdown emphasis would consume the underscores, so render the
+			// record as plain wrapped text in live mode too.
+			lines = wrapPlain(text, layout)
+		} else {
+			lines = liveMarkdownLines(text, pal, layout)
+		}
 		if label != "" {
 			lines = append([]string{pal.Warning.Render(label)}, lines...)
 		}

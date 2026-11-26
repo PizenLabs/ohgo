@@ -127,7 +127,7 @@ func turnFooterForOutcome(action taskAction, reason, reviewNotice string, loopEr
 		return nil
 	}
 	switch action {
-	case taskActionComplete, taskActionPhaseComplete:
+	case taskActionComplete, taskActionCompleteLimited, taskActionPhaseComplete:
 		return verifiedFooter(turns, authority)
 	case taskActionPause, taskActionFail:
 		if detail := strings.TrimSpace(reason); detail != "" {

@@ -79,6 +79,11 @@ const (
 	// call the objective complete. It is not a failure and not a completion:
 	// a later turn may resolve it.
 	CompletionNeedsReview CompletionState = "NEEDS_REVIEW"
+	// CompletionCompletedLimited means the runtime observed the requested
+	// change or execution and the workspace has no supported verification
+	// command. The objective is satisfied; its verification is unavailable,
+	// which is a limitation to report rather than a reason to keep searching.
+	CompletionCompletedLimited CompletionState = "COMPLETED_LIMITED_VERIFICATION"
 )
 
 // Completion is a completion verdict with its evidence reason.
@@ -87,6 +92,10 @@ type Completion struct {
 	State CompletionState
 	// Reason explains a NEEDS_REVIEW verdict, in terms of observed evidence.
 	Reason string
+	// Limitation explains a COMPLETED_LIMITED_VERIFICATION verdict: what the
+	// runtime could not verify and why. It is never a success claim for the
+	// missing check; it states which observation is unavailable.
+	Limitation string
 	// Issues are the machine-readable grounding claims behind the reason.
 	// They are empty unless the verdict came from the deterministic answer
 	// audits, so a host can show exactly which claim to repair, what
@@ -95,8 +104,18 @@ type Completion struct {
 	Issues []contract.GroundingIssue
 }
 
-// Complete reports whether the verdict is COMPLETED.
-func (c Completion) Complete() bool { return c.State == CompletionComplete }
+// Complete reports whether the verdict is a terminal completion.
+//
+// A limited verification is complete: the objective's observed result exists
+// and the missing observation is a property of the workspace, not of the work.
+// Verified distinguishes the two for a host that wants to report the
+// distinction.
+func (c Completion) Complete() bool {
+	return c.State == CompletionComplete || c.State == CompletionCompletedLimited
+}
+
+// Verified reports whether the completion is backed by a successful check.
+func (c Completion) Verified() bool { return c.State == CompletionComplete }
 
 // EvaluateCompletion derives a completion verdict from the turns a run
 // produced.
@@ -178,6 +197,9 @@ type completionEvidence struct {
 	// least one passing check, and stayed alive. It is the only evidence that
 	// proves a runtime objective; an unrelated finished command is not.
 	runtimeObserved bool
+	// lastRuntime is the position of the last live-runtime observation. It is
+	// behavioral evidence even when the tool did not carry a check record.
+	lastRuntime int
 	// mutated is a definite change: a write/edit/delete, or a shell command
 	// classified as mutating.
 	mutated bool
@@ -224,6 +246,7 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool, journalCaptured b
 		lastPotentialMutation:  -1,
 		lastAmbiguousExecution: -1,
 		lastVerification:       -1,
+		lastRuntime:            -1,
 		pendingFailures:        map[string]int{},
 		pendingFailureClasses:  map[string]string{},
 	}
@@ -275,6 +298,7 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool, journalCaptured b
 				// The live runtime observation is stronger than a finished
 				// command and is the only evidence a runtime objective accepts.
 				evidence.runtimeObserved = true
+				evidence.lastRuntime = position
 				evidence.executed = true
 			}
 			if outcome.Result.Verifies {
@@ -445,6 +469,18 @@ type CompletionInput struct {
 	// that was never observed, or a documentation-only claim presented as an
 	// implementation fact, is a review boundary.
 	Provenance EvidenceProvenance
+	// UnresolvedTargets names symbol or package targets the runtime looked for
+	// and established this repository does not contain. The projection
+	// downgraded those requirements after its bounded acquisition budget; the
+	// evaluator must agree, or the same heuristic target becomes a review
+	// boundary after it stopped being an obligation.
+	UnresolvedTargets []string
+	// VerificationLimitation is non-empty when the run established that the
+	// workspace has no supported verification command. It is the control
+	// plane's observation, never model text: completion reports the change
+	// with a limited verification instead of demanding a check that cannot
+	// run.
+	VerificationLimitation string
 }
 
 // Alignment is the bounded semantic verdict.
@@ -486,6 +522,13 @@ type BehavioralEvidence struct {
 	MissingScopes []string
 	// Verifications counts successful checks after the last change.
 	Verifications int
+	// StaticVerifications, TestVerifications, and BehavioralVerifications
+	// partition those checks by what they actually observed. A static check
+	// can close a build/scope requirement; only a behavioral check can support
+	// a claim about runtime behavior.
+	StaticVerifications     int
+	TestVerifications       int
+	BehavioralVerifications int
 	// Satisfied reports whether every behavioural requirement was met.
 	Satisfied bool
 	// Detail explains a failure.
@@ -587,8 +630,28 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		// message whose every clause is an unperformed observation.
 		return needsReview("the request asked for an answer but the final assistant message only announces a further action")
 	}
-	if evidence.lastVerification < evidence.lastPotentialMutation {
-		return needsReview("the repository change or execution was not followed by a successful verification")
+	limited := strings.TrimSpace(input.VerificationLimitation)
+	// Verification is outstanding when the last successful check does not
+	// follow the last change, or when an execution objective requires a check
+	// and none ran. The position rule matters: a workspace can gain a check
+	// command as part of the change itself, so a NOT_RUN observed before the
+	// change is not proof that the final state cannot be checked.
+	verificationOutstanding := evidence.lastVerification < evidence.lastPotentialMutation ||
+		(effective.Kind == contract.ObjectiveExecution && len(effective.Verification) > 0 &&
+			evidence.lastVerification < 0)
+	if verificationOutstanding {
+		if limited == "" {
+			after := evidence.lastPotentialMutation
+			if after < 0 {
+				after = 0
+			}
+			limited = verificationLimitation(input.Turns, after)
+		}
+		if limited == "" {
+			return needsReview("the repository change or execution was not followed by a successful verification")
+		}
+	} else {
+		limited = ""
 	}
 	if input.Mutations.Captured && evidence.lastVerification >= 0 &&
 		evidence.lastAmbiguousExecution > evidence.lastVerification {
@@ -624,6 +687,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		} else {
 			structural = TargetEvidenceWithoutSnapshot(effective)
 		}
+		structural = dropUnresolvedSemanticTargets(structural, unresolvedTargets(input, effective))
 	}
 	classified := ClassifyMutations(root, input.Turns, scoped, input.Snapshot, input.Mutations)
 	for _, mutation := range classified {
@@ -639,6 +703,22 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	behavioral := AssessBehavior(scoped, input.Snapshot, evidence,
 		goSourceDirectories(observedPaths))
 	assessment := AssessAlignment(scoped, structural, behavioral)
+	if limited != "" {
+		// Verification is unavailable, so the behavioural oracle cannot be
+		// evaluated. The observed change is the alignment evidence that
+		// remains; a genuine contradiction (an unexpected or outside-scope
+		// change, or an unsatisfied named path target) is still reported
+		// through structural and the reason list below.
+		limitedIntent := scoped
+		limitedIntent.Ambiguous = false
+		limitedBehavioral := behavioral
+		limitedBehavioral.Satisfied = true
+		assessment = AssessAlignment(limitedIntent, structural, limitedBehavioral)
+		if assessment.Alignment == AlignmentUncertain {
+			assessment.Alignment = AlignmentAligned
+			assessment.Rationale = "an observed change is the objective's evidence; verification is limited"
+		}
+	}
 
 	var reasons []string
 	if effective.Kind == contract.ObjectiveMutation && len(effective.Targets) > 0 {
@@ -664,10 +744,10 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		reasons = append(reasons, "observed change could not be attributed to a path: "+
 			strings.Join(structural.Unattributed, ", "))
 	}
-	if !behavioral.Satisfied {
+	if !behavioral.Satisfied && limited == "" {
 		reasons = append(reasons, behavioral.Detail)
 	}
-	if effective.Ambiguous {
+	if effective.Ambiguous && limited == "" {
 		detail := "the request does not name a verifiable target or behavioural check"
 		if len(effective.Issues) > 0 {
 			detail = effective.Issues[0]
@@ -700,6 +780,9 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if !grounding.Pass() {
 		return needsReviewIssues(grounding.Issues, "intent grounding: %s", grounding.Reason())
 	}
+	if claims := AssessVerificationClaims(effective, input.Turns, last.Assistant.Text()); !claims.Pass() {
+		return needsReviewIssues(claims.Issues, "verification claim: %s", claims.Reason())
+	}
 	provenance := AssessAnswerProvenance(effective, last.Assistant.Text(), input.Provenance)
 	if !provenance.Pass() {
 		return needsReviewIssues(provenance.Issues, "answer provenance: %s", provenance.Reason())
@@ -725,7 +808,166 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		// is a guess, not a proven completion.
 		return needsReview("%s", review)
 	}
+	if limited != "" {
+		return Completion{State: CompletionCompletedLimited, Limitation: limited}
+	}
 	return Completion{State: CompletionComplete}
+}
+
+// verificationLimitation reports the control plane's "no supported check"
+// observation when it happened after the last potential mutation.
+//
+// It reads the check capability's own result payload, never model prose. The
+// position rule matters: a workspace can gain a check command as part of the
+// change itself, so a NOT_RUN observed before the change is not proof that the
+// final state cannot be checked.
+func verificationLimitation(turns []Turn, mutatedAt int) string {
+	if mutatedAt < 0 {
+		return ""
+	}
+	position := 0
+	lastGap := -1
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if !outcome.Result.IsError && !outcome.Result.Verifies &&
+				(outcome.ToolName == "check" || outcome.ToolName == "verify") {
+				details, _ := outcome.Result.Details.(map[string]any)
+				status, _ := details["status"].(string)
+				if strings.EqualFold(strings.TrimSpace(status), "NOT_RUN") {
+					lastGap = position
+				}
+			}
+			position++
+		}
+	}
+	if lastGap >= mutatedAt {
+		return "no supported verification command was discovered for this workspace"
+	}
+	return ""
+}
+
+// unresolvedTargets returns the named symbol and package targets the runtime
+// established are absent.
+//
+// The projection's own downgrade is authoritative when the host supplies it;
+// otherwise the same bounded rule is derived from the run's structural misses
+// so a host that does not project (a subagent) still reaches the same verdict.
+func unresolvedTargets(input CompletionInput, intent contract.IntentContract) map[string]bool {
+	out := map[string]bool{}
+	for _, value := range input.UnresolvedTargets {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out[value] = true
+		// The projection reports a limitation as "requirement: reason", and a
+		// coordinate requirement carries the inferred target in its key. A
+		// run whose structural capability cannot look the target up has no
+		// miss turn from which to derive the bare name, so the evaluator must
+		// read the requirement shape it is handed.
+		if rest, ok := strings.CutPrefix(value, "target_coordinates:"); ok {
+			name, _, _ := strings.Cut(rest, ":")
+			if name = strings.TrimSpace(name); name != "" {
+				out[name] = true
+			}
+		}
+	}
+	misses := map[string]int{}
+	for _, turn := range input.Turns {
+		for _, outcome := range turn.Results {
+			if !outcome.Refused() && !outcome.Result.IsError && structuralLookupMiss(outcome) {
+				for _, target := range intent.Targets {
+					if target.Kind != contract.TargetSymbol && target.Kind != contract.TargetPackage {
+						continue
+					}
+					if outcomeNamesArgument(outcome, target.Value) {
+						misses[target.Value]++
+					}
+				}
+			}
+		}
+	}
+	for value, count := range misses {
+		if count >= contract.MaxTargetLookupMisses {
+			out[value] = true
+		}
+	}
+	return out
+}
+
+// structuralLookupMiss reports a completed lookup that found nothing. The
+// structural capabilities render their status in the result text and, for the
+// native tools, in the details payload; accepting both keeps an MCP-provided
+// symbols capability on the same rule without keying on a vendor tool name.
+func structuralLookupMiss(outcome ToolOutcome) bool {
+	if outcome.Result.IsError || outcome.Refused() {
+		return false
+	}
+	details, _ := outcome.Result.Details.(map[string]any)
+	status, _ := details["status"].(string)
+	if strings.EqualFold(strings.TrimSpace(status), "not_found") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(outcome.Result.Text), "status: not_found")
+}
+
+// outcomeNamesArgument reports whether the call named one target value.
+func outcomeNamesArgument(outcome ToolOutcome, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, raw := range outcome.Args {
+		if text, ok := raw.(string); ok && strings.EqualFold(strings.TrimSpace(text), value) {
+			return true
+		}
+	}
+	details, _ := outcome.Result.Details.(map[string]any)
+	for _, key := range []string{"name", "query", "selector", "value", "symbol"} {
+		if text, ok := details[key].(string); ok && strings.EqualFold(strings.TrimSpace(text), value) {
+			return true
+		}
+	}
+	return strings.Contains(outcome.Result.Text, value)
+}
+
+// dropUnresolvedSemanticTargets rewrites the checks and issues for a named
+// coordinate the runtime established is not in this repository. The target
+// described the objective, not a coordinate the change had to touch, so it
+// stops being a review boundary.
+func dropUnresolvedSemanticTargets(evidence StructuralEvidence, unresolved map[string]bool) StructuralEvidence {
+	if len(unresolved) == 0 {
+		return evidence
+	}
+	for i := range evidence.Checks {
+		check := &evidence.Checks[i]
+		if !unresolved[check.Target.Value] {
+			continue
+		}
+		if check.Target.Kind != contract.TargetSymbol && check.Target.Kind != contract.TargetPackage {
+			continue
+		}
+		check.Status = TargetSemantic
+		check.Detail = fmt.Sprintf(
+			"%q is not a coordinate this repository contains; treated as not applicable", check.Target.Value)
+	}
+	if len(evidence.Issues) > 0 {
+		kept := evidence.Issues[:0]
+		for _, issue := range evidence.Issues {
+			drop := false
+			for value := range unresolved {
+				if strings.Contains(issue, value) {
+					drop = true
+					break
+				}
+			}
+			if !drop {
+				kept = append(kept, issue)
+			}
+		}
+		evidence.Issues = kept
+	}
+	return evidence
 }
 
 // verificationNeed is one check the contract requires: a scope (empty for a
@@ -752,6 +994,20 @@ func AssessBehavior(intent contract.IntentContract, snapshot *TargetSnapshot, ev
 	}
 	after := evidence.verificationsAfter(evidence.lastPotentialMutation)
 	result.Verifications = len(after)
+	for _, record := range after {
+		class := VerificationStatic
+		if record.evidence != nil {
+			class = record.evidence.EffectiveClass()
+		}
+		switch class {
+		case VerificationBehavioral:
+			result.BehavioralVerifications++
+		case VerificationTest:
+			result.TestVerifications++
+		default:
+			result.StaticVerifications++
+		}
+	}
 
 	var needs []verificationNeed
 	for _, requirement := range intent.Verification {

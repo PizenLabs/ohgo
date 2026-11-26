@@ -7,6 +7,17 @@ immutable.
 
 ### Added
 
+- Verification evidence classes and conflicts. A successful check now records
+  `STATIC`, `TEST`, or `BEHAVIORAL`; a static build or source assertion can no
+  longer certify a behavioral answer claim. A user report that contradicts a
+  recorded verification becomes an explicit `VerificationConflict` that routes
+  the next turn to behavioral investigation and withholds duplicate BUILD
+  mutation until a behavioral observation answers it. A rendered-text browser
+  check proves the content the page rendered, not motion or performance; those
+  claims stay unverified unless an observation measures them. The answer gate
+  and completion use the same claim audit, and provider failure after a
+  mutation preserves the completed turns and evidence for resume.
+
 - Claim-preserving answer lifecycle. A candidate is now an internal
   `agent.AnswerDraft` with sentence-sized claims, provenance, a version, and a
   `SUPERSEDES` link. Review marks only the refused claims `REPAIR_REQUIRED`;
@@ -255,6 +266,45 @@ immutable.
 
 ### Fixed
 
+- A heuristic symbol target no longer blocks completion when the running build
+  has no structural adapter for the repository's source languages. The portable
+  (`CGO_ENABLED=0`) build compiles only the Go adapter, so in a web-only
+  repository the withheld structural tool left `target_coordinates:*` as a
+  permanent gap and a completed change ended as `NEEDS_REVIEW`. The projection
+  now records the requirement as not applicable with the capability limitation,
+  and completion accepts the projection's requirement-shaped entry; a
+  multi-language build still resolves the target from an actual `not_found`
+  lookup.
+- Assistant text on Chat Completions is serialized as a string, not a
+  content-parts array. The gateway fronting `opencode-go` rejected the array on
+  a text-bearing assistant turn with `HTTP 422 messages[i].content`, so the
+  first answer draft after a tool-only history failed its correction request and
+  the task fell to `NEEDS_REVIEW`. Tool-call turns still omit content, and user
+  turns keep their parts array.
+- A verification window that closes now records a terminal `UNRESOLVED`
+  conclusion (`verification_not_established`) on the `NEEDS_REVIEW` task, and
+  the TUI publishes one runtime-authored final explanation before the footer
+  when the model produced no answer. `NEEDS_REVIEW` no longer ends a turn with
+  only a status line: the task keeps its resumable lifecycle while carrying the
+  semantic outcome, and the conclusion is cleared on resume, completion,
+  failure, cancellation, or a new review boundary.
+- A serialized tool call whose tags carry a fabricated id after a colon
+  (`<tool_calls:ID><tool_call:ID>name<arg_key:ID>key</arg_key:ID>
+  <arg_value:ID>value</arg_value:ID></tool_call:ID></tool_calls:ID>`) is
+  decoded into canonical calls instead of ending the run as
+  `TOOL_NORMALIZATION_FAILED` with an XML error. The plural wrapper is matched
+  before the bare family, so the inner `</tool_call:ID>` can no longer close
+  the envelope early. The id is transport decoration and grants no authority;
+  the call still crosses authorization, schema validation, and execution, and
+  a malformed body remains one contained diagnostic.
+- A run that is still implementing a change is no longer closed as `no
+  meaningful task progress` after four observation turns at the verification
+  boundary. `MaxVerifyObservationTurns` is now the sole bound there and restarts
+  on each new change, so the recorded front-end run can read the files it is
+  about to patch and apply the final edit instead of receiving `No tool is
+  available in the current task stage`. The stop reason also reports that
+  verification was not established, which is true for both repeated reads and
+  repeated failing checks.
 - A serialized tool call whose tag carries a provider decoration, such as
   `<tool_call_24b82c79>`, is recognized as the `<tool_call>` family. The
   envelope is consumed as one unsupported-envelope diagnostic instead of being

@@ -765,11 +765,37 @@ func (c *Controller) Complete() (Task, error) {
 // without claims replaces a stale claim list rather than stacking behind it.
 // General answer-level reasons carry no Category and stay in the flat reason.
 func (c *Controller) NeedsReview(reason string, issues ...contract.GroundingIssue) (Task, error) {
+	return c.review(reason, nil, issues...)
+}
+
+// ReviewUnresolved records a NEEDS_REVIEW transition whose run cannot continue
+// and whose semantic outcome is UNRESOLVED.
+//
+// It is not a failure and never completes the task: the lifecycle stays
+// NEEDS_REVIEW so a later turn can supply the missing evidence. The conclusion
+// is the terminal explanation this run owes the user, separate from the
+// lifecycle position. A plain NeedsReview replaces it with no conclusion,
+// because a resumable review without a terminal verdict must not inherit a
+// stale unresolved outcome.
+func (c *Controller) ReviewUnresolved(reason string, conclusion agent.RunConclusion, issues ...contract.GroundingIssue) (Task, error) {
+	return c.review(reason, &conclusion, issues...)
+}
+
+// review is the one review-boundary writer. It records the reason, the bounded
+// claim list, and the optional terminal conclusion atomically with the
+// checkpoint, so the lifecycle and its semantic outcome cannot disagree after
+// a crash.
+func (c *Controller) review(reason string, conclusion *agent.RunConclusion, issues ...contract.GroundingIssue) (Task, error) {
 	if err := c.ensureLoaded(); err != nil {
 		return Task{}, err
 	}
 	if c.task.ID == "" || c.task.Status.IsTerminal() {
 		return c.task.Clone(), nil
+	}
+	if conclusion != nil {
+		if err := conclusion.Validate(); err != nil {
+			return c.task.Clone(), err
+		}
 	}
 	before, beforeAction := c.task.Clone(), c.lastAction
 	c.syncTodos()
@@ -781,6 +807,13 @@ func (c *Controller) NeedsReview(reason string, issues ...contract.GroundingIssu
 		if err := c.task.NeedsReview(c.now().UTC()); err != nil {
 			return c.task.Clone(), err
 		}
+	}
+	if conclusion != nil {
+		stamped := *conclusion
+		stamped.At = c.now().UTC()
+		c.task.Conclusion = &stamped
+	} else {
+		c.task.Conclusion = nil
 	}
 	c.lastAction = firstNonEmpty(reason, "needs review")
 	c.noteRoleProgress(c.lastAction)

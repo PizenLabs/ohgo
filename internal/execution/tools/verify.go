@@ -451,6 +451,22 @@ func (t *VerifyTool) startService(ctx agent.Context, plan verifyServicePlan) (*v
 	if err != nil {
 		return nil, &verifyStartError{text: "invalid service directory: " + err.Error(), details: map[string]any{"state": string(verifyFailed)}}
 	}
+	// A service command is arbitrary shell text supplied by the model. It
+	// crosses the same workspace boundary as a bash call: a relative path is
+	// resolved in the service directory, and a target outside the workspace is
+	// refused before the process exists.
+	if target, outside := OutsideWorkspaceMutation(plan.Command, t.Root); outside {
+		return nil, &verifyStartError{
+			text:    fmt.Sprintf("service refused: %q is outside the workspace and outside the temporary execution area", target),
+			details: map[string]any{"state": string(verifyFailed), "command": plan.Command},
+		}
+	}
+	if target, outside := OutsideWorkspaceRead(plan.Command, t.Root); outside {
+		return nil, &verifyStartError{
+			text:    fmt.Sprintf("service refused: %q is outside the workspace and cannot be read from this session", target),
+			details: map[string]any{"state": string(verifyFailed), "command": plan.Command},
+		}
+	}
 	cmd, err := sandbox.Command(ctx.Ctx, sandbox.Spec{
 		Argv:     []string{"sh", "-c", plan.Command},
 		Dir:      dir,
@@ -970,6 +986,11 @@ func (t *VerifyTool) runCheck(ctx agent.Context, check verifyCheckPlan) verifyCh
 			result.Detail = "HTTP check requires a URL or a service with a discovered URL"
 			return result
 		}
+		result.Verification = &agent.VerificationEvidence{
+			Command: check.URL,
+			Check:   contract.CheckAny,
+			Class:   agent.VerificationBehavioral,
+		}
 		observation, err := probeHTTP(ctx.Ctx, check.URL, DefaultVerifyBodyBytes, timeout)
 		result.Duration = time.Since(started)
 		if err != nil {
@@ -1022,6 +1043,11 @@ func (t *VerifyTool) runCheck(ctx agent.Context, check verifyCheckPlan) verifyCh
 			result.Detail = err.Error()
 			return result
 		}
+		result.Verification = &agent.VerificationEvidence{
+			Command: check.URL,
+			Check:   contract.CheckAny,
+			Class:   agent.VerificationBehavioral,
+		}
 		result.Bytes = len(dom)
 		pageText := browserCheckText(dom)
 		for _, want := range check.Contains {
@@ -1058,6 +1084,14 @@ func (t *VerifyTool) runCheck(ctx agent.Context, check verifyCheckPlan) verifyCh
 		result.ExitCode = verificationExitCode(outcome)
 		result.Output = outcome.Text
 		result.Mutated = outcome.Mutates
+		result.Verification = VerificationForIn(t.Root, check.Command)
+		if result.Verification == nil {
+			result.Verification = &agent.VerificationEvidence{
+				Command: check.Command,
+				Check:   contract.CheckAny,
+				Class:   agent.VerificationStatic,
+			}
+		}
 		if outcome.IsError {
 			result.Status = "FAIL"
 			result.FailureClass = outcome.FailureClass
@@ -1071,7 +1105,6 @@ func (t *VerifyTool) runCheck(ctx agent.Context, check verifyCheckPlan) verifyCh
 		}
 		result.Status = "PASS"
 		result.Detail = "command exited 0"
-		result.Verification = VerificationForIn(t.Root, check.Command)
 		return result
 	default:
 		result.Status = "UNSUPPORTED"
@@ -1270,24 +1303,33 @@ func observedRuntimeURL(service *verifyService, results []verifyCheckResult) str
 }
 
 func verificationEvidence(plan verifyPlan, results []verifyCheckResult) *agent.VerificationEvidence {
-	evidence := &agent.VerificationEvidence{Check: contract.CheckAny}
+	evidence := &agent.VerificationEvidence{
+		Check: contract.CheckAny,
+		Class: agent.VerificationStatic,
+	}
 	if plan.Service != nil {
 		evidence.Command = plan.Service.Command
 	}
+	bestClass := -1
 	bestRank := -1
 	for _, result := range results {
-		if result.Verification != nil {
-			rank := verificationCheckRank(result.Verification.EffectiveCheck())
-			if rank > bestRank {
-				bestRank = rank
-				evidence = result.Verification
-			}
+		candidate := result.Verification
+		if candidate == nil {
 			continue
 		}
-		if result.Kind == "command" && result.Command != "" && bestRank < 0 {
-			evidence.Command = result.Command
+		class := candidate.Class.Rank()
+		rank := verificationCheckRank(candidate.EffectiveCheck())
+		if class > bestClass || (class == bestClass && rank > bestRank) {
+			bestClass = class
+			bestRank = rank
+			evidence = candidate
 		}
 	}
+	// A service that reached readiness is live-runtime evidence, but it does
+	// not upgrade a shell assertion into a behavioral observation. HTTP and
+	// browser checks carry Behavioral class themselves; a service plus grep is
+	// still static evidence about the source. RuntimeEvidence remains the
+	// separate proof for a runtime execution objective.
 	return evidence
 }
 
@@ -1401,6 +1443,10 @@ func verificationDetails(plan verifyPlan, service *verifyService, results []veri
 			"kind":   result.Kind,
 			"status": result.Status,
 			"detail": result.Detail,
+		}
+		if result.Verification != nil {
+			item["class"] = string(result.Verification.Class.EffectiveClass())
+			item["check"] = string(result.Verification.EffectiveCheck())
 		}
 		if result.Name != "" {
 			item["name"] = result.Name

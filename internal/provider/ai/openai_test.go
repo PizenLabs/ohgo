@@ -551,6 +551,69 @@ func TestOpenAIConvertsToolResultsToToolRole(t *testing.T) {
 	}
 }
 
+// The gateway fronting opencode-go rejects a content-parts array on an
+// assistant turn (HTTP 422 messages[i].content) while accepting a string.
+// Chat Completions allows either, and assistant content is text-only, so the
+// transport must send the flattened string; a turn that also carries tool
+// calls keeps both fields.
+func TestOpenAIAssistantTextSerializesAsString(t *testing.T) {
+	cases := []struct {
+		name      string
+		blocks    []ContentBlock
+		wantText  string
+		wantCalls int
+	}{
+		{"text", []ContentBlock{TextContent{Text: "the answer"}}, "the answer", 0},
+		{"text and tool call", []ContentBlock{
+			TextContent{Text: "checking"},
+			ToolCall{ID: "c0", Name: "read", Arguments: map[string]any{"path": "a"}},
+		}, "checking", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+			server, captured := sseServer(t, body, 0)
+			provider := &OpenAIProvider{APIKey: "sk-test", BaseURL: server.URL}
+			stream, err := provider.Stream(context.Background(), Request{
+				Model: testOpenAIModel(),
+				Messages: []Message{
+					UserMessage{Content: []ContentBlock{TextContent{Text: "read a"}}},
+					AssistantMessage{Content: tc.blocks},
+				},
+				MaxTokens: 1024,
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			if _, err := stream.Result(); err != nil {
+				t.Fatalf("Result: %v", err)
+			}
+
+			var wire struct {
+				Messages []struct {
+					Role      string            `json:"role"`
+					Content   json.RawMessage   `json:"content"`
+					ToolCalls []json.RawMessage `json:"tool_calls"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal([]byte(*captured), &wire); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			assistant := wire.Messages[1]
+			want, err := json.Marshal(tc.wantText)
+			if err != nil {
+				t.Fatalf("marshal expected content: %v", err)
+			}
+			if string(assistant.Content) != string(want) {
+				t.Fatalf("assistant content = %s, want the string %s", assistant.Content, want)
+			}
+			if len(assistant.ToolCalls) != tc.wantCalls {
+				t.Fatalf("assistant tool calls = %d, want %d", len(assistant.ToolCalls), tc.wantCalls)
+			}
+		})
+	}
+}
+
 // An unknown effort is omitted, not replaced with a provider default the
 // caller never selected. The old fallback to "medium" was an invented level on
 // a model whose ladder the catalog had not published.

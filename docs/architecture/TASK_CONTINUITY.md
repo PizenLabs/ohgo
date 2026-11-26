@@ -81,6 +81,7 @@ them.
 | explicit continuation (`continue`, `carry on`) on a non-terminal live task | the same task and objective continue; its persisted authority is restored (2.1) and its evidence, budget, and timeline are reused |
 | verification wording on an execution or mutation task (`check whether the fix worked`) | the same task continues at its verification boundary; an informational task does not acquire a result it never had |
 | a short follow-up to the task's own object (`fix it`, `implement the fix`) | the same task continues; the follow-up does not replace the task's completion contract with a targetless one |
+| a user report that contradicts a recorded verification (`it does not move`, `still broken`) | the same task records an explicit `VerificationConflict`; the next action is behavioral investigation, and duplicate BUILD mutation is withheld until a behavioral check answers it |
 | a bare depth request on an open informational task (`more info`, `tell me more`, `go deeper`) | the same task continues with its evidence and subject; the request adds depth instead of archiving the task and starting an empty one that repeats the investigation. A request that names a subject (`more info about the auth flow`) is a new objective |
 | the same objective submitted again while the task is open | the same task continues only when the prompt states the objective or the role changed; otherwise it is routed as a new request |
 | the same objective submitted again after the task finished | a new invocation: the terminal task is archived with its proof and a new task identity starts |
@@ -231,7 +232,25 @@ Validity is separate: a current result can later be `superseded` or `invalid`
 without rewriting what was observed.
 
 A passing test proves that the recorded test passed under its recorded
-conditions. It does not prove the user's objective was achieved.
+conditions. It does not prove the user's objective was achieved. Verification
+evidence also carries a class: `STATIC` for a build, static analysis, or source
+assertion, `TEST` for a test run, and `BEHAVIORAL` for a live HTTP/browser
+observation. Only the behavioral class can support an answer claim about
+runtime behavior; the answer gate and completion use the same class-aware
+audit. A live runtime record separately proves a runtime execution objective,
+but it does not turn a static assertion into a behavioral check. A
+rendered-text browser check proves the content the page rendered, not motion or
+performance; those claims remain unverified until an observation measures them.
+
+A user report that observed behavior contradicts a recorded verification is
+recorded as a contradiction against the verification-backed fact. The
+controller also records an open `VerificationConflict` in the cognition
+evidence, so the projection asks for behavioral verification and withholds
+mutation. A behavioral check resolves the conflict as `PASS` or `FAIL` and
+invalidates only the contradiction record; the original verification remains
+in history. If the user report is confirmed by a failure, the ordinary repair
+surface reopens. A provider failure during that work remains a resumable
+review with the completed turns and evidence intact.
 
 `cognition.EvidenceState` remains the observation owner; task evidence is the
 durable, task-linked reference index. Phase 1 does not copy the payload from one
@@ -523,7 +542,7 @@ Implemented in Phase 3 (progression and outcome):
   decision, and an unrecoverable load;
 - an evidence-backed completion proof and an objective-state projection
   (`ACTIVE`, `INTERRUPTED`, `NEEDS_REVIEW`, `BLOCKED`, `PROVEN`,
-  `COMPLETED_UNPROVEN`, `CANCELLED`);
+  `COMPLETED_LIMITED_VERIFICATION`, `COMPLETED_UNPROVEN`, `CANCELLED`);
 - read-only `/task status`, `/task timeline`, and `/task lineage` views and a
   bounded progression section in the task briefing.
 
@@ -860,8 +879,9 @@ objective is never rewritten, and authority still gates every call.
 ### 9.5 Objective state and proven completion
 
 `Task.ObjectiveState` projects the lifecycle and proof into `ACTIVE`,
-`INTERRUPTED`, `NEEDS_REVIEW`, `BLOCKED`, `PROVEN`, `COMPLETED_UNPROVEN`, or
-`CANCELLED`. It is a projection, not a second lifecycle.
+`INTERRUPTED`, `NEEDS_REVIEW`, `BLOCKED`, `PROVEN`,
+`COMPLETED_LIMITED_VERIFICATION`, `COMPLETED_UNPROVEN`, or `CANCELLED`. It is a
+projection, not a second lifecycle.
 
 `Controller.CompleteWithEvidence` accepts the host evaluator's verdict
 (`agent.ClassifyRun` / `agent.EvaluateTaskCompletion` remains the semantic
@@ -874,7 +894,7 @@ requirement:
 | `informational` | a non-empty finalized answer that passed the claim/evidence audit | an answer was produced and unsupported claims were removed or bounded; independent semantic correctness is not claimed |
 | `execution` (`ExecutionCommand`) | a current, attributable execution observation, or the contract's required verification | a process or check reached a successful terminal state |
 | `execution` (`ExecutionRuntime`) | a current live-runtime observation: the service reached readiness, a check passed while it was alive, and it did not exit | the project runtime was observed running, not merely a command that finished |
-| `mutation` | an observed definite change **and** a current verification that followed it and covers the contract's declared check kind and scope | the named change was made and checked afterwards |
+| `mutation` | an observed definite change **and** a current verification that followed it and covers the contract's declared check kind and scope — or, when the workspace has no supported check, a recorded `Limitation` | the named change was made; it was checked afterwards, or `COMPLETED_LIMITED_VERIFICATION` states that the workspace could not check it |
 | unsupported | refused | no claim |
 
 The four evidence notions stay distinct: `Answered` is answer production,
@@ -885,6 +905,9 @@ semantic correctness.
 
 Specific rules:
 
+- a limited-verification proof still requires the observed change and the
+  evidence that names it; `Limitation` records what the workspace could not
+  observe, and it never stands in for the objective;
 - an answer alone never proves an execution objective;
 - an informational answer with an uncertified claim stays the one published
   answer; completion returns `NEEDS_REVIEW` with the exact claim and required
@@ -926,6 +949,23 @@ Specific rules:
 - a non-complete evaluation is refused;
 - a task must be `RUNNING`: `PAUSED` and `NEEDS_REVIEW` resume through `Begin`
   first, so the boundary that reconciles the live workspace is not skipped.
+
+#### Terminal conclusion at a review boundary
+
+The lifecycle status and the semantic outcome are separate facts. A task that
+cannot continue records `NEEDS_REVIEW` and, when the run produced a terminal
+verdict, a `Task.Conclusion` with `UNRESOLVED` and a machine-readable reason.
+The first such reason is `verification_not_established`: the verification
+window closed without a check, so another turn in that run cannot establish it.
+The conclusion is evidence, never authority; it does not complete or fail the
+task, and it never replaces the review reason or the model-facing instruction.
+
+A plain `NeedsReview` clears the conclusion, because a resumable review without
+a terminal verdict must not inherit a stale outcome. Resuming, pausing,
+completing, failing, or cancelling also clears it. The TUI publishes the
+conclusion as one runtime-authored final explanation (labelled, and never sent
+to the provider as conversation) when the model produced no committed answer,
+so a stalled run ends with an outcome rather than only a footer.
 
 #### Phase completion under a lower authority
 

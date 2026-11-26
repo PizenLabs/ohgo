@@ -34,7 +34,7 @@ type OllamaProvider struct {
 // NewOllamaProvider returns a provider for the given credential. Pass an
 // empty key for a local server.
 func NewOllamaProvider(apiKey string) *OllamaProvider {
-	return &OllamaProvider{Client: &http.Client{}, APIKey: apiKey}
+	return &OllamaProvider{Client: newHTTPClient(DefaultResponseHeaderTimeout), APIKey: apiKey}
 }
 
 // ollamaMessage is one chat turn.
@@ -190,7 +190,7 @@ func ollamaNativeBase(base string) string {
 // Stream implements Provider.
 func (p *OllamaProvider) Stream(ctx context.Context, req Request) (*Stream, error) {
 	if p.Client == nil {
-		p.Client = &http.Client{}
+		p.Client = newHTTPClient(DefaultResponseHeaderTimeout)
 	}
 	base := ollamaNativeBase(p.BaseURL)
 	if base == "" {

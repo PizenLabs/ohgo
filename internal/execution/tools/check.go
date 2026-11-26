@@ -964,15 +964,17 @@ func checkVerificationEvidence(root string, command checkCommand) *agent.Verific
 		return evidence
 	}
 	check := contract.CheckAny
+	class := agent.VerificationStatic
 	switch command.kind {
 	case checkTest:
 		check = contract.CheckTest
+		class = agent.VerificationTest
 	case checkBuild:
 		check = contract.CheckBuild
 	case checkStatic:
 		check = contract.CheckVet
 	}
-	return &agent.VerificationEvidence{Command: line, Check: check}
+	return &agent.VerificationEvidence{Command: line, Check: check, Class: class}
 }
 
 func checkRunResult(plan checkPlan, results []checkResult) agent.Result {
@@ -1072,14 +1074,17 @@ func checkRunResult(plan checkPlan, results []checkResult) agent.Result {
 
 func strongestCheckVerification(results []checkResult) *agent.VerificationEvidence {
 	var best *agent.VerificationEvidence
+	bestClass := -1
 	bestRank := -1
 	for _, result := range results {
 		if result.Status != "PASS" || result.Verification == nil {
 			continue
 		}
+		class := result.Verification.Class.Rank()
 		rank := checkRank(result.Verification.EffectiveCheck())
-		if rank > bestRank {
+		if class > bestClass || (class == bestClass && rank > bestRank) {
 			best = result.Verification
+			bestClass = class
 			bestRank = rank
 		}
 	}
@@ -1229,6 +1234,7 @@ func verificationDetail(evidence *agent.VerificationEvidence) map[string]any {
 	return map[string]any{
 		"command": evidence.Command,
 		"check":   string(evidence.EffectiveCheck()),
+		"class":   string(evidence.Class.EffectiveClass()),
 		"scopes":  scopes,
 	}
 }

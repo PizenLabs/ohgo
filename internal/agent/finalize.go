@@ -103,5 +103,6 @@ func auditAnswerClaims(intent contract.IntentContract, turns []Turn, answer stri
 	if intent.Kind == contract.ObjectiveInformational {
 		issues = append(issues, AssessAnswerProvenance(intent, answer, provenance).Issues...)
 	}
+	issues = append(issues, AssessVerificationClaims(intent, turns, answer).Issues...)
 	return issues
 }

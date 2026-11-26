@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
@@ -571,6 +572,41 @@ func isTaskFollowUpCore(normalized string) bool {
 		return true
 	}
 	return false
+}
+
+// IsVerificationContradiction reports whether the user reports observed
+// behavior that contradicts previously verified work.
+//
+// It is a continuation classifier, not a truth judgement: it recognizes the
+// shape of a correction ("it does not move", "still broken", "not fixed") so
+// the task layer can record an explicit verification conflict and investigate
+// the reported behavior instead of silently restarting discovery. The caller
+// must still establish that an open task owns a current verification; outside
+// that context this vocabulary is an ordinary new request.
+func IsVerificationContradiction(text string) bool {
+	normalized := normalizeRequest(text)
+	if normalized == "" {
+		return false
+	}
+	for _, pattern := range verificationContradictionPatterns {
+		if pattern.MatchString(normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+var verificationContradictionPatterns = []*regexp.Regexp{
+	// A negated behavior verb: "doesn't move", "is not scrolling", "still
+	// doesn't loop". The bounded gap allows a subject or adverb between the
+	// auxiliary and verb but not an unrelated clause.
+	regexp.MustCompile(`(?i)\b(?:does not|doesn't|is not|isn't|not|never|no longer|still does not|still doesn't|still is not|still isn't)\s+(?:[a-z0-9_'-]+\s+){0,4}(?:work|works|working|move|moves|moving|scroll|scrolls|scrolling|loop|loops|looping|animat(?:e|es|ed|ing|ion|ions)|slide(?:s|d|ing)?|show|shows|showing|shown|display|displays|displaying|displayed|render|renders|rendering|rendered|play|plays|playing|appear|appears|appearing|load|loads|loading|loaded|respond|responds|responding|update|updates|updating|changed|changes|change|fix|fixed|fixes)\b`),
+	// A short verdict rather than a negated verb phrase.
+	regexp.MustCompile(`(?i)\b(?:still broken|not fixed|isn't fixed|is not fixed|no movement|no motion|no change|nothing (?:happens|happened|changed|changes|moves|moved)|wrong direction|wrong way|backwards|opposite direction)\b`),
+	// "but ... doesn't ..." is the recorded correction shape; the negated verb
+	// pattern above already covers it, while this catches a bare report after
+	// a claim.
+	regexp.MustCompile(`(?i)\b(?:you said|it says|claimed)\b[^.]{0,120}\b(?:but|yet|however)\b`),
 }
 
 // IsVerificationContinuation reports whether a request asks whether work

@@ -52,6 +52,9 @@ type TaskProjection struct {
 	// rendered with the same repair-line format the model's correction
 	// directive uses. Empty for lifecycle reviews.
 	ReviewIssues []contract.GroundingIssue
+	// Conclusion is the terminal semantic outcome of a review that cannot
+	// continue this run. Empty for a resumable review with no terminal verdict.
+	Conclusion *agent.RunConclusion
 	// Items are the todos, in order.
 	Items []TaskItem
 	// Err reports a projection or checkpoint failure, empty on success.
@@ -78,6 +81,9 @@ type TaskResume struct {
 	Status       string
 	Objective    string
 	ReviewReason string
+	// Conclusion is the terminal semantic outcome of the last review, when the
+	// runtime could not continue that run. It is read-only.
+	Conclusion *agent.RunConclusion
 	// Role is the execution role the task last ran under. It is continuity
 	// metadata bounded by the task's contract: the turn boundary restores it
 	// through the workspace owner, and the turn gate uses it to tell a role
@@ -111,6 +117,11 @@ type TaskResume struct {
 	RecoveryDetail string
 	// Warning is a continuity warning that did not block recovery.
 	Warning string
+	// VerificationConflict is the user's current report that contradicts a
+	// recorded verification. It is continuity evidence, not authority: the
+	// turn boundary routes it to behavioral investigation before another
+	// change.
+	VerificationConflict string
 }
 
 // TimelineView is the UI projection of one durable task event.
@@ -147,6 +158,10 @@ type CompletionEvidence struct {
 	Reason string
 	// Answered reports a non-empty answer for an informational objective.
 	Answered bool
+	// VerificationLimitation is the control plane's observation that the
+	// workspace has no supported check command. Non-empty completes a mutation
+	// with a recorded limitation instead of an unavailable verification.
+	VerificationLimitation string
 }
 
 // HandoffView is the UI projection of one durable role transition.
@@ -204,6 +219,15 @@ type TaskHooks struct {
 	// from the deterministic answer audits; they are empty for lifecycle
 	// reviews, which have no claim list.
 	NeedsReview func(reason string, issues []contract.GroundingIssue) TaskProjection
+	// ReviewUnresolved records a NEEDS_REVIEW transition whose run cannot
+	// continue and whose semantic outcome is UNRESOLVED. The task stays
+	// resumable; the conclusion is the terminal explanation this run owes the
+	// user. Nil falls back to NeedsReview without a durable conclusion.
+	ReviewUnresolved func(reason string, issues []contract.GroundingIssue, conclusion agent.RunConclusion) TaskProjection
+	// RecordVerificationConflict records a user's report that observed
+	// behavior contradicts the last verification. It creates explicit
+	// conflict evidence; it never authorizes a repair.
+	RecordVerificationConflict func(claim string) TaskProjection
 	// Complete records a successful end and returns the projection.
 	Complete func() TaskProjection
 	// CompleteWithEvidence records a successful end only when the durable
@@ -630,6 +654,14 @@ func taskStatusText(task TaskResume, includeID bool) string {
 		sb.WriteString("\nneeds review: ")
 		sb.WriteString(task.ReviewReason)
 	}
+	if task.Conclusion != nil && strings.EqualFold(task.Status, "NEEDS_REVIEW") {
+		sb.WriteString("\nconclusion: ")
+		sb.WriteString(task.Conclusion.Label())
+		if summary := strings.TrimSpace(task.Conclusion.Summary); summary != "" {
+			sb.WriteString(" — ")
+			sb.WriteString(summary)
+		}
+	}
 	if task.CompletionSummary != "" {
 		switch task.ObjectiveState {
 		case "PROVEN", "COMPLETED_UNPROVEN", "BLOCKED":
@@ -654,6 +686,17 @@ func taskStatusText(task TaskResume, includeID bool) string {
 		sb.WriteString(task.ID)
 	}
 	return sb.String()
+}
+
+// conclusionAnswerText renders a terminal conclusion as the turn's final
+// explanation. The status and reason stay on one line so the outcome survives
+// a narrow terminal; the summary carries the observed detail.
+func conclusionAnswerText(conclusion agent.RunConclusion) string {
+	text := strings.TrimSpace(conclusion.Label())
+	if summary := strings.TrimSpace(conclusion.Summary); summary != "" {
+		text += "\n\n" + summary
+	}
+	return text
 }
 
 // formatTimelineEvent renders one durable event without its payload.
@@ -1136,6 +1179,55 @@ func hasNoMutationConstraint(next contract.IntentContract) bool {
 	return false
 }
 
+// verificationConflictContinuation reports whether the prompt belongs to an
+// explicit verification conflict.
+//
+// A user report that the observed behavior contradicts the last verification
+// is not a new objective and not an ordinary follow-up: it opens a conflict
+// that must be investigated before another change. Once a conflict is current,
+// the task's own follow-up vocabulary keeps it attached until a behavioral
+// observation answers it.
+func verificationConflictContinuation(current TaskResume, text, active string, next contract.IntentContract) bool {
+	if !current.HasContract {
+		return false
+	}
+	switch current.Contract.Kind {
+	case contract.ObjectiveMutation, contract.ObjectiveExecution:
+	default:
+		return false
+	}
+	if workspace.IsVerificationContradiction(text) {
+		return true
+	}
+	if strings.TrimSpace(current.VerificationConflict) == "" {
+		return false
+	}
+	return continuationPrompt(text) ||
+		verificationContinuation(current, text) ||
+		taskFollowUp(current, text) ||
+		conflictRepairFollowUp(text) ||
+		implementationRefinement(current, text, active, next)
+}
+
+// conflictRepairFollowUp recognizes a repair request that explicitly refers to
+// the disputed result but adds a courtesy clause ("fix it help me and test it")
+// the narrow task-follow-up vocabulary does not parse. It applies only while a
+// verification conflict is open.
+func conflictRepairFollowUp(text string) bool {
+	normalized := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(text))), " ")
+	for _, prefix := range []string{
+		"fix it", "fix this", "fix that", "fix the issue", "fix the bug",
+		"make it", "make this", "make that", "do it", "apply it",
+		"verify it", "verify this", "test it", "test this", "check it",
+	} {
+		if normalized == prefix || strings.HasPrefix(normalized, prefix+" ") ||
+			strings.HasPrefix(normalized, prefix+",") {
+			return true
+		}
+	}
+	return false
+}
+
 // taskTurnDecision reports which continuation rule owns the prompt, if any.
 // The task layer makes one decision; routing, prediction, and attachment all
 // consume it instead of each classifying the text separately.
@@ -1143,6 +1235,8 @@ func taskTurnDecision(current TaskResume, text, active string, next contract.Int
 	switch {
 	case continuationPrompt(text):
 		return "EXPLICIT_RESUME", true
+	case verificationConflictContinuation(current, text, active, next):
+		return "VERIFICATION_CONFLICT", true
 	case handoffContinuation(current, active, text, next):
 		return "HANDOFF_CONTINUATION", true
 	case executionFollowUp(current, text):
@@ -1467,25 +1561,27 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 	// A review is waiting on a human decision, so the reason is the most
 	// useful row. Render it wrapped instead of leaving the user with an
 	// unexplained status; the "no todos" placeholder would only crowd it out.
-	review := strings.TrimSpace(projection.ReviewReason)
-	if review != "" && strings.EqualFold(projection.Status, "needs_review") {
-		const prefix = "  ⎿ "
-		avail := width
-		if avail > 0 {
-			avail -= len(prefix)
-			if avail < 20 {
-				avail = width
-			}
+	const reviewPrefix = "  ⎿ "
+	reviewWidth := width
+	if reviewWidth > 0 {
+		reviewWidth -= len(reviewPrefix)
+		if reviewWidth < 20 {
+			reviewWidth = width
 		}
-		wrapped := WrapToWidth(sanitizeInline(review), avail)
-		for i, line := range wrapped {
+	}
+	appendReviewRow := func(text string) {
+		for i, line := range WrapToWidth(sanitizeInline(text), reviewWidth) {
 			if i == 0 {
-				line = prefix + line
+				line = reviewPrefix + line
 			} else {
 				line = "    " + line
 			}
 			lines = append(lines, headerStyle.Render(fit(line)))
 		}
+	}
+	review := strings.TrimSpace(projection.ReviewReason)
+	if review != "" && needsReview {
+		appendReviewRow(review)
 		// The durable claim list is what the resumed turn will repair. One
 		// row per claim names the category, the required evidence class, and
 		// the permitted action — the same repair-line format the model's own
@@ -1496,16 +1592,20 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 			if strings.TrimSpace(row) == "" {
 				continue
 			}
-			for i, line := range WrapToWidth(sanitizeInline(row), avail) {
-				if i == 0 {
-					line = prefix + line
-				} else {
-					line = "    " + line
-				}
-				lines = append(lines, headerStyle.Render(fit(line)))
-			}
+			appendReviewRow(row)
 		}
-	} else if len(projection.Items) == 0 {
+	}
+	// The conclusion is the run's terminal semantic outcome, separate from
+	// the review reason. It stays visible even when the model produced no
+	// closing answer, so the turn cannot end with only a status line.
+	if conclusion := projection.Conclusion; conclusion != nil && needsReview {
+		text := "conclusion: " + conclusion.Label()
+		if summary := strings.TrimSpace(conclusion.Summary); summary != "" {
+			text += " — " + summary
+		}
+		appendReviewRow(text)
+	}
+	if (review == "" || !needsReview) && len(projection.Items) == 0 {
 		lines = append(lines, pal.Status.Render(fit("  ◻ no todos")))
 	}
 	for i, item := range projection.Items {

@@ -1525,6 +1525,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		activeTools := tools
 		surface := actionSurface{}
 		answerEligible := false
+		objectiveComplete := false
 		terminal := false
 		closed := false
 		refusals := map[string]string(nil)
@@ -1573,6 +1574,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				redundant[entry.Tool] = true
 			}
 			answerEligible = report.AnswerEligible
+			objectiveComplete = report.ObjectiveComplete
 			terminal = report.Terminal
 			stopReason = report.StopReason
 			refusals = projected.Refusals
@@ -2210,6 +2212,15 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			nudges = append(nudges, l.cfg.AnswerRequest)
 			reportTurn()
 			continue
+		}
+		// The objective's evidence is complete and the model still proposed a
+		// call the runtime refused. No action is left, so the turns that
+		// satisfied the objective are the authoritative result: end the run
+		// and let completion evaluate them instead of reporting a block that
+		// would erase a satisfied objective.
+		if answerRequired(outcomes) && objectiveComplete {
+			reportTurn()
+			return turns, nil
 		}
 		unproductiveTurns++
 		if unproductiveTurns < maxUnproductiveTurns {

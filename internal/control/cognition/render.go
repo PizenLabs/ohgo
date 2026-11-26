@@ -122,6 +122,12 @@ func renderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	}
 	if len(shape.Verification) > 0 {
 		fmt.Fprintf(&contractLine, "Verification: %s\n", verificationSummary(shape.Verification))
+		switch shape.Kind {
+		case contract.ObjectiveMutation, contract.ObjectiveExecution:
+			if observation := verificationObservation(execution); observation != "" {
+				fmt.Fprintf(&contractLine, "Verification observation: %s\n", observation)
+			}
+		}
 	}
 	if len(shape.Completion) > 0 {
 		var conditions []string
@@ -143,6 +149,13 @@ func renderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	}
 	if len(suff.Missing) > 0 {
 		fmt.Fprintf(&verdictLine, "Missing: %s\n", bound(strings.Join(uniqueStrings(suff.Missing), ", "), 220))
+	}
+	if len(suff.Unresolved) > 0 {
+		fmt.Fprintf(&verdictLine, "Not applicable (checked, not an obligation): %s\n",
+			bound(strings.Join(uniqueStrings(suff.Unresolved), "; "), 300))
+	}
+	if suff.VerificationLimited != "" {
+		fmt.Fprintf(&verdictLine, "Verification limited: %s\n", bound(suff.VerificationLimited, 240))
 	}
 	if len(suff.Reasons) > 0 {
 		fmt.Fprintf(&verdictLine, "Why: %s\n", bound(strings.Join(uniqueStrings(suff.Reasons), "; "), 420))
@@ -558,6 +571,35 @@ func workspaceProbeSummary(facts RepositoryFacts) string {
 	return bound(strings.Join(parts, "; "), 320)
 }
 
+// verificationObservation names the strongest successful check after the last
+// change. The model needs this before it writes: a static build or source
+// assertion is real evidence, but it cannot support a sentence about observed
+// runtime behavior.
+func verificationObservation(execution ExecutionState) string {
+	best := agent.VerificationStatic
+	found := false
+	for _, record := range execution.Verifications {
+		class := record.Class.EffectiveClass()
+		if !found || class.Rank() > best.Rank() {
+			best = class
+			found = true
+		}
+	}
+	if !found {
+		return ""
+	}
+	switch best {
+	case agent.VerificationBehavioral:
+		return "BEHAVIORAL (runtime behavior observed)"
+	case agent.VerificationTest:
+		return "TEST (does not prove live runtime behavior)"
+	case agent.VerificationStatic:
+		return "STATIC (does not prove runtime behavior)"
+	default:
+		return ""
+	}
+}
+
 // verificationSummary renders the contract's verification requirements.
 func verificationSummary(requirements []contract.VerificationRequirement) string {
 	var parts []string
@@ -592,10 +634,17 @@ func RenderAudit(report agent.ProjectionReport) string {
 		fmt.Fprintf(&sb, "sufficiency: %s stage=%s\n", report.Sufficiency, report.Stage)
 	}
 	if report.Progress != "" {
-		fmt.Fprintf(&sb, "progress: %s stalled=%d\n", report.Progress, report.NoProgressTurns)
+		fmt.Fprintf(&sb, "progress: %s stalled=%d exploration_turns=%d verification_turns=%d\n",
+			report.Progress, report.NoProgressTurns, report.ExplorationTurns, report.VerificationTurns)
 	}
 	if report.Terminal {
 		fmt.Fprintf(&sb, "terminal: %s\n", report.StopReason)
+	}
+	if len(report.Unresolved) > 0 {
+		fmt.Fprintf(&sb, "unresolved (not applicable): %s\n", strings.Join(report.Unresolved, "; "))
+	}
+	if report.VerificationLimited != "" {
+		fmt.Fprintf(&sb, "verification limited: %s\n", report.VerificationLimited)
 	}
 	if report.Provenance.HasImplementation || report.Provenance.HasConfiguration ||
 		report.Provenance.HasDocumentation || report.Provenance.HasRuntimeObservation ||

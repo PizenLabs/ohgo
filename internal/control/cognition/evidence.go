@@ -109,9 +109,11 @@ const (
 	// for claim support; version 6 adds inventory completeness, scope gaps,
 	// and the producing structural view; version 7 adds a conclusion's
 	// explicit unresolved code coordinates; version 8 adds structural evidence
-	// facets. Older records stay readable because every new field is optional
-	// and additive.
-	EvidenceVersion = 8
+	// facets; version 9 adds the bounded target-acquisition budget and the
+	// verification-gap observation. Version 10 adds the verification class and
+	// the explicit open verification conflict. Older records stay readable
+	// because every new field is optional and additive.
+	EvidenceVersion = 10
 )
 
 // Source records where one observation came from.
@@ -131,6 +133,11 @@ type Source struct {
 	Trust    string `json:"trust,omitempty"`
 	// Check names a verification kind, when the observation is a check.
 	Check string `json:"check,omitempty"`
+	// Class is what the check observed: STATIC, TEST, or BEHAVIORAL. It is
+	// separate from Check: a test command can execute code, while only a live
+	// service or browser observation establishes runtime behavior. Empty
+	// means STATIC, the conservative legacy reading.
+	Class string `json:"class,omitempty"`
 	// Scope is the repository-relative coverage a check reported, "*" for
 	// every package. It lets the durable completion boundary verify that a
 	// check covers what the contract asked for without re-deriving it.
@@ -267,6 +274,101 @@ const (
 	EvidenceExternal      EvidenceClass = "EXTERNAL"
 	EvidenceGenerated     EvidenceClass = "GENERATED"
 )
+
+// VerificationConflictStatus is whether a user-reported behavior dispute is
+// still awaiting investigation or has been answered by evidence.
+type VerificationConflictStatus string
+
+// Verification conflict states.
+const (
+	// VerificationConflictOpen means the reported behavior contradicts the
+	// recorded verification and no behavioral investigation has answered it
+	// yet.
+	VerificationConflictOpen VerificationConflictStatus = "OPEN"
+	// VerificationConflictResolved means a behavioral check ran after the
+	// conflict. Resolution records pass or fail; it does not rewrite the
+	// original verification.
+	VerificationConflictResolved VerificationConflictStatus = "RESOLVED"
+)
+
+// VerificationConflict is an explicit dispute against one successful check.
+//
+// It is created only from a user report and a current verification record,
+// never from model narration. A resolved conflict keeps its observation trail;
+// it is not deleted. The next action is derived from the status: an open
+// conflict requires behavioral investigation, while a resolved one lets the
+// ordinary mutation/verification lifecycle continue.
+type VerificationConflict struct {
+	// Claim is the user's reported behavior, bounded.
+	Claim string `json:"claim,omitempty"`
+	// EvidenceID is the cognition verification item the report disputes.
+	EvidenceID string `json:"evidenceId,omitempty"`
+	// EvidenceSummary describes the disputed verification.
+	EvidenceSummary string `json:"evidenceSummary,omitempty"`
+	// ContradictionID is the task-layer contradiction record, when projected.
+	// It lets the controller retire the contradiction after resolution without
+	// deleting the history.
+	ContradictionID string `json:"contradictionId,omitempty"`
+	// AtSeq is the observation sequence of the disputed verification.
+	AtSeq int `json:"atSeq,omitempty"`
+	// Status is OPEN or RESOLVED.
+	Status VerificationConflictStatus `json:"status,omitempty"`
+	// Resolution is PASS or FAIL when a behavioral check answered the report.
+	Resolution string `json:"resolution,omitempty"`
+	// ResolvedBySeq is the observation sequence of the answering check.
+	ResolvedBySeq int `json:"resolvedBySeq,omitempty"`
+}
+
+// Open reports whether the conflict still blocks ordinary progress.
+func (c *VerificationConflict) Open() bool {
+	return c != nil && c.Status == VerificationConflictOpen
+}
+
+// RecordVerificationConflict opens a conflict against one verification item.
+func (s *EvidenceState) RecordVerificationConflict(claim, evidenceID, evidenceSummary string, atSeq int, contradictionID string) {
+	if s == nil {
+		return
+	}
+	s.VerificationConflict = &VerificationConflict{
+		Claim:           strings.TrimSpace(claim),
+		EvidenceID:      strings.TrimSpace(evidenceID),
+		EvidenceSummary: strings.TrimSpace(evidenceSummary),
+		ContradictionID: strings.TrimSpace(contradictionID),
+		AtSeq:           atSeq,
+		Status:          VerificationConflictOpen,
+	}
+}
+
+// OpenVerificationConflict returns the conflict that still requires
+// investigation, or nil. It is a read-only projection.
+func (s *EvidenceState) OpenVerificationConflict() *VerificationConflict {
+	if s == nil || s.VerificationConflict == nil || !s.VerificationConflict.Open() {
+		return nil
+	}
+	conflict := *s.VerificationConflict
+	return &conflict
+}
+
+// resolveVerificationConflict retires an open conflict when a behavioral
+// observation answers it. A failed behavioral check is just as authoritative
+// as a passing one: it confirms that the user's report needs a change, and the
+// ordinary failure/verification rules then decide the next action.
+func (s *EvidenceState) resolveVerificationConflict(outcome agent.ToolOutcome, seq int) {
+	if s == nil || s.VerificationConflict == nil || !s.VerificationConflict.Open() {
+		return
+	}
+	verification := outcome.Result.Verification
+	if verification == nil || !verification.Class.Behavioral() || seq <= s.VerificationConflict.AtSeq {
+		return
+	}
+	resolution := "FAIL"
+	if !outcome.Result.IsError && outcome.Result.Verifies {
+		resolution = "PASS"
+	}
+	s.VerificationConflict.Status = VerificationConflictResolved
+	s.VerificationConflict.Resolution = resolution
+	s.VerificationConflict.ResolvedBySeq = seq
+}
 
 // EvidenceClass derives the claim-facing class of an observation.
 func (i EvidenceItem) EvidenceClass() EvidenceClass {
@@ -423,6 +525,15 @@ type Requirement struct {
 	Key string `json:"key"`
 	// Reason explains why it matters.
 	Reason string `json:"reason,omitempty"`
+	// Misses counts definitive structural lookups that reported the named
+	// coordinate absent. It is the acquisition budget for a heuristic target:
+	// a name the user wrote but the repository does not contain must stop
+	// being a blocking obligation once the runtime has looked for it.
+	Misses int `json:"misses,omitempty"`
+	// Unresolved is non-empty when the runtime established that this
+	// requirement cannot be satisfied by this repository. It is a reported
+	// limitation, not a reason to keep searching.
+	Unresolved string `json:"unresolved,omitempty"`
 }
 
 // EvidenceState is the durable knowledge the runtime has acquired.
@@ -455,6 +566,16 @@ type EvidenceState struct {
 	// It lets sufficiency distinguish a documentation-only project from a code
 	// project whose broad account still lacks an implementation observation.
 	Facts RepositoryFacts `json:"facts,omitempty"`
+	// VerificationGap is non-empty when a completed check attempt established
+	// that this workspace has no supported verification command. It is an
+	// observation, not a pending requirement: another turn cannot discover a
+	// command the check capability already reported missing.
+	VerificationGap string `json:"verificationGap,omitempty"`
+	// VerificationConflict records a user-reported behavior that disputes the
+	// last successful verification. It is explicit state, not a model note:
+	// the next projection must investigate the reported behavior before
+	// another mutation can be offered as progress.
+	VerificationConflict *VerificationConflict `json:"verificationConflict,omitempty"`
 	// conclusionMode is the terminal-outcome vocabulary of the current shape.
 	// It is derived state, not a durable fact, so it is rebuilt by
 	// ensureRequirements on every resume and is never serialized.
@@ -515,11 +636,19 @@ func (s *EvidenceState) Clone() *EvidenceState {
 		out.LastMutationSeq[key] = value
 	}
 	out.Failures = append([]FailureRecord(nil), s.Failures...)
+	if s.VerificationConflict != nil {
+		conflict := *s.VerificationConflict
+		out.VerificationConflict = &conflict
+	}
 	return &out
 }
 
-// Empty reports whether the state has no observed facts.
-func (s *EvidenceState) Empty() bool { return s == nil || len(s.Items) == 0 }
+// Empty reports whether the state has no observed facts and no explicit
+// verification conflict. A conflict is durable state even when its supporting
+// items were trimmed from the evidence ledger.
+func (s *EvidenceState) Empty() bool {
+	return s == nil || (len(s.Items) == 0 && s.VerificationConflict == nil)
+}
 
 // Find returns the item with the given id.
 func (s *EvidenceState) Find(id string) (EvidenceItem, bool) {
@@ -1050,7 +1179,7 @@ func (s *EvidenceState) ensureRequirements(shape TaskShape) {
 			}
 		}
 		if !found {
-			s.Requirements = append(s.Requirements, Requirement(need))
+			s.Requirements = append(s.Requirements, Requirement{Key: need.Key, Reason: need.Reason})
 		}
 	}
 }
@@ -1092,6 +1221,7 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 	defer s.trim()
 	s.Seq++
 	seq := s.Seq
+	s.resolveVerificationConflict(outcome, seq)
 	details := detailsMap(outcome.Result.Details)
 	path := detailString(details, "path")
 	if path == "" {
@@ -1175,7 +1305,142 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 	if tool != "conclude" {
 		s.settlePendingTargets(outcome, path, seq)
 	}
+	s.noteVerificationGap(outcome)
+	s.noteRequirementMisses(outcome)
 	return fact, changed
+}
+
+// MaxRequirementMisses bounds how many definitive structural lookups may report
+// a named coordinate absent before the requirement is reported as not
+// applicable instead of staying a blocking obligation.
+//
+// A target extracted from the user's wording is a hypothesis about where the
+// work lives. Two complete lookups are enough to establish that the repository
+// does not contain it; a third search cannot change that fact and only turns
+// the extraction mistake into unbounded exploration.
+const MaxRequirementMisses = contract.MaxTargetLookupMisses
+
+// resolveUnacquirableTargets records a heuristic coordinate requirement as not
+// applicable when no constructed structural capability can look up a
+// coordinate for any source language this repository contains.
+//
+// The portable build compiles only the Go adapter. In a web-only repository
+// the structural tools are therefore withheld, and a target the request
+// extractor inferred can never be observed. Keeping it as a blocking
+// obligation demands a lookup no available capability can perform and leaves a
+// completed change unresolved; the extraction was a hypothesis, and this is
+// the runtime establishing that it cannot confirm it.
+func (s *EvidenceState) resolveUnacquirableTargets(tools []agent.Tool, facts RepositoryFacts) {
+	if s == nil || coordinateLookupAvailable(tools, facts) {
+		return
+	}
+	for i := range s.Requirements {
+		requirement := &s.Requirements[i]
+		if !strings.HasPrefix(requirement.Key, "target_coordinates:") || requirement.Unresolved != "" {
+			continue
+		}
+		requirement.Unresolved = fmt.Sprintf(
+			"%q cannot be looked up: no available structural capability supports this repository's source languages",
+			strings.TrimPrefix(requirement.Key, "target_coordinates:"))
+	}
+}
+
+// coordinateLookupAvailable reports whether a language-gated structural
+// capability covers at least one source language the probe found.
+//
+// A tool with no declared language is not counted: the candidate layer offers
+// it unconditionally, but it makes no claim to resolve a language-specific
+// coordinate. When the runtime declares no language-gated structural tool at
+// all (an embedder with a custom surface), absence is not established, so the
+// requirement keeps its ordinary evidence path.
+func coordinateLookupAvailable(tools []agent.Tool, facts RepositoryFacts) bool {
+	languageGated := false
+	for _, tool := range tools {
+		if !agent.HasActionClass(tool, agent.ActionStructure) {
+			continue
+		}
+		languages := agent.ToolRequiredLanguages(tool)
+		if len(languages) == 0 {
+			continue
+		}
+		languageGated = true
+		for _, language := range languages {
+			if facts.HasLanguage(language) {
+				return true
+			}
+		}
+	}
+	return !languageGated
+}
+
+// noteRequirementMisses spends the acquisition budget of a heuristic target.
+func (s *EvidenceState) noteRequirementMisses(outcome agent.ToolOutcome) {
+	if outcome.Refused() || outcome.Result.IsError || len(s.Requirements) == 0 {
+		return
+	}
+	details := detailsMap(outcome.Result.Details)
+	notFound := strings.EqualFold(strings.TrimSpace(detailString(details, "status")), "not_found") ||
+		strings.Contains(strings.ToLower(outcome.Result.Text), "status: not_found")
+	if !notFound {
+		return
+	}
+	for i := range s.Requirements {
+		requirement := &s.Requirements[i]
+		if !strings.HasPrefix(requirement.Key, "target_coordinates:") || requirement.Unresolved != "" {
+			continue
+		}
+		value := strings.TrimPrefix(requirement.Key, "target_coordinates:")
+		if !outcomeNamesValue(outcome, details, value) {
+			continue
+		}
+		requirement.Misses++
+		if requirement.Misses < MaxRequirementMisses {
+			continue
+		}
+		requirement.Unresolved = fmt.Sprintf(
+			"%q is not a coordinate this repository contains (%d structural lookups reported not_found); treated as not applicable",
+			value, requirement.Misses)
+	}
+}
+
+// outcomeNamesValue reports whether one structural miss was a lookup of value.
+func outcomeNamesValue(outcome agent.ToolOutcome, details map[string]any, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, raw := range outcome.Args {
+		if text, ok := raw.(string); ok && strings.EqualFold(strings.TrimSpace(text), value) {
+			return true
+		}
+	}
+	for _, key := range []string{"name", "query", "selector", "value", "symbol"} {
+		if strings.EqualFold(strings.TrimSpace(detailString(details, key)), value) {
+			return true
+		}
+	}
+	return strings.Contains(outcome.Result.Text, value)
+}
+
+// noteVerificationGap records the definitive "no supported command" answer a
+// check capability can give. It is cleared by a successful verification,
+// because a later check proves the workspace could be verified after all.
+func (s *EvidenceState) noteVerificationGap(outcome agent.ToolOutcome) {
+	if outcome.Refused() {
+		return
+	}
+	if outcome.Result.Verifies {
+		s.VerificationGap = ""
+		return
+	}
+	if outcome.ToolName != "check" && outcome.ToolName != "verify" {
+		return
+	}
+	details := detailsMap(outcome.Result.Details)
+	if !strings.EqualFold(strings.TrimSpace(detailString(details, "status")), "NOT_RUN") {
+		return
+	}
+	s.VerificationGap = "no supported verification command was discovered for this workspace"
 }
 
 // addError records an exact diagnostic. A missing-file error also establishes
@@ -2258,9 +2523,11 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 	}
 	if outcome.Result.Verifies {
 		check := ""
+		class := ""
 		scope := ""
 		if outcome.Result.Verification != nil {
 			check = string(outcome.Result.Verification.EffectiveCheck())
+			class = string(outcome.Result.Verification.Class.EffectiveClass())
 			for _, s := range outcome.Result.Verification.Scopes {
 				if s.All {
 					scope = "*"
@@ -2280,7 +2547,7 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Summary:    bound("verification "+check+" "+scope+": "+summary, MaxEvidenceSummaryBytes),
 			Value:      text,
 			Digest:     digest(text),
-			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Check: check, Scope: scope},
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Check: check, Class: class, Scope: scope},
 			Seq:        seq,
 			Executed:   true,
 			Runtime:    runtime,

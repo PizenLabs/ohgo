@@ -1583,14 +1583,14 @@ func TestActBoundaryStopsUnboundedObservation(t *testing.T) {
 	var turns []agent.Turn
 	request(turns)
 	var projected agent.ProjectionResult
-	for i := 0; i <= MaxActObservationTurns; i++ {
+	for i := 0; i <= PreActionObservationAllowance(shape); i++ {
 		turns = append(turns, readTurn("read-"+itoa(i), "product"+itoa(i)+".go", "package product"))
 		projected = request(turns)
 	}
 	if !projected.Report.Terminal || len(projected.Tools) != 0 {
 		t.Fatalf("unbounded act-stage observation was not stopped: %+v", projected.Report)
 	}
-	if !strings.Contains(projected.Report.StopReason, "action boundary") {
+	if !strings.Contains(projected.Report.StopReason, "observation turns") {
 		t.Fatalf("stop reason = %q", projected.Report.StopReason)
 	}
 }

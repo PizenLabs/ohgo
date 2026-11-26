@@ -81,19 +81,45 @@ const (
 // changes the sufficiency stage or the unmet requirements, or establishes an
 // explicit blocker. During the verification stage, new evidence alone is not
 // progress: the task already has a change waiting for its check, and another
-// read cannot close that obligation. The bound is deliberately independent of
-// the model-turn budget; it stops the repeated-observation shape long before a
-// resource cap would, while a task that keeps changing state is never stopped
-// by this counter.
+// read cannot close that obligation. That wait is bounded by
+// MaxVerifyObservationTurns instead, which restarts on a new change; this
+// counter must not also count the same turns against a smaller bound. The bound
+// is deliberately independent of the model-turn budget; it stops the
+// repeated-observation shape long before a resource cap would, while a task
+// that keeps changing state is never stopped by this counter.
 const MaxConsecutiveNoProgress = 4
 
-// MaxActObservationTurns bounds how long a mutation may remain in the act
-// stage while the model keeps observing. It is deliberately larger than the
-// ordinary no-progress bound: a targetless change needs a few source reads,
-// but an unbounded survey is not progress toward the change. After this many
-// projections at the act boundary, the run reports instead of spending the
-// model-turn grant on another repository tour.
-const MaxActObservationTurns = 8
+// PreActionObservationFloor is the smallest window of model turns a change or
+// an execution may spend observing before it is applied.
+//
+// The number of projections a change needs is a property of the project, not of
+// the runtime: a page, its script and a 38 KB stylesheet are three files read in
+// several windows before the first edit, and a single-file change may need only
+// one. A fixed small window therefore ends legitimate work at the moment the
+// model is about to act, which is the one failure a task bound must not create.
+// The floor keeps an unmetered run finite without pretending to know how much
+// reading a patch needs.
+const PreActionObservationFloor = 24
+
+// PreActionObservationAllowance returns how many projections may be spent
+// observing before the requested change or execution is applied.
+//
+// The window is derived from the enclosing grant: at most half of the model
+// turns still available may be spent at a boundary whose deliverable is an
+// action. That keeps the bound finite and proportional, so a long first pass
+// over a real project is not cut short by a constant unrelated to its size,
+// while the observation phase can never consume the whole grant. A grant too
+// tight to hold the floor is its own bound.
+func PreActionObservationAllowance(shape TaskShape) int {
+	remaining := shape.Budget.MaxTurns - shape.Budget.TurnsUsed
+	if remaining <= 0 {
+		return PreActionObservationFloor
+	}
+	if half := remaining / 2; half > PreActionObservationFloor {
+		return half
+	}
+	return min(PreActionObservationFloor, remaining)
+}
 
 // MaxConclusionObservationTurns bounds how long a completed investigation may
 // keep reading before it records its verdict. The first two source
@@ -104,6 +130,16 @@ const MaxActObservationTurns = 8
 // the bound stays finite while leaving room for the closing evidence chain.
 const MaxConclusionObservationTurns = 10
 
+// MaxVerifyObservationTurns bounds how long a change may remain at the
+// verification boundary without a successful check. A change is new work and
+// restarts the window; without one, another turn cannot establish the pending
+// verification, whether the model is still reading or repeating a failing
+// check. This is the sole bound at that boundary, so the generic no-progress
+// counter does not close the surface first. Verification is a concrete,
+// already-available action, so its window is a constant rather than a share of
+// the grant.
+const MaxVerifyObservationTurns = 8
+
 // MaxConclusionAttempts bounds a provisional conclusion that names the same
 // unresolved code coordinate. It lives with the other semantic bounds because
 // it closes an investigation attempt, not a resource grant.
@@ -113,6 +149,7 @@ const MaxConclusionAttempts = 3
 type VerificationRecord struct {
 	Position int
 	Check    contract.VerificationCheck
+	Class    agent.VerificationClass
 	Scopes   []string
 }
 
@@ -204,7 +241,11 @@ func SummarizeExecution(turns []agent.Turn) ExecutionState {
 			if outcome.Result.Verifies {
 				state.Executed = true
 				state.LastVerification = position
-				record := VerificationRecord{Position: position, Check: outcome.Result.Verification.EffectiveCheck()}
+				record := VerificationRecord{
+					Position: position,
+					Check:    outcome.Result.Verification.EffectiveCheck(),
+					Class:    outcome.Result.Verification.Class.EffectiveClass(),
+				}
 				if outcome.Result.Verification != nil {
 					for _, scope := range outcome.Result.Verification.Scopes {
 						if scope.All {
@@ -272,8 +313,19 @@ func ExecutionFromEvidence(state *EvidenceState) ExecutionState {
 			if check == "" {
 				check = contract.CheckAny
 			}
+			class := agent.VerificationClass(item.Source.Class)
+			if class == "" {
+				// Legacy checkpoints did not record the observation class. A
+				// test kind is still an executed check; everything else is the
+				// conservative static reading.
+				if check == contract.CheckTest {
+					class = agent.VerificationTest
+				} else {
+					class = agent.VerificationStatic
+				}
+			}
 			scope := item.Source.Scope
-			record := VerificationRecord{Position: item.Seq, Check: check}
+			record := VerificationRecord{Position: item.Seq, Check: check, Class: class.EffectiveClass()}
 			if scope != "" {
 				record.Scopes = append(record.Scopes, scope)
 			}
@@ -340,8 +392,26 @@ type Sufficiency struct {
 	Reasons []string
 	// Missing names the requirements that are not satisfied.
 	Missing []string
+	// Unresolved names requirements the runtime established cannot be
+	// satisfied by this repository. They are reported limitations, not gaps to
+	// keep searching: the extraction that produced them was a hypothesis, and
+	// the runtime has now checked it.
+	Unresolved []string
+	// VerificationLimited is non-empty when the objective requires a check and
+	// the workspace has none. The change is observed; its verification is
+	// unavailable, which is a limitation to report rather than an incomplete
+	// objective.
+	VerificationLimited string
+	// Conclusion is the terminal semantic outcome when the runtime closes the
+	// task without an answer. It is set only with a terminal verdict, so a
+	// host can report UNRESOLVED instead of ending with no conclusion.
+	Conclusion *agent.RunConclusion
 	// Next names the highest-value evidence to acquire next, when insufficient.
 	Next []string
+	// VerificationConflict reports that an open user-reported contradiction of
+	// the last verification bounds the next action. The missing requirement is
+	// behavioral verification, not another change.
+	VerificationConflict bool
 	// Facets is the facet-level verdict for a relationship-shaped intent.
 	// Empty for a task with no facet requirements.
 	Facets []FacetStatus
@@ -389,6 +459,25 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 		return result
 	}
 
+	// A user report that contradicts a recorded verification is an explicit
+	// conflict, not a new round of discovery. The next action is a behavioral
+	// check of the reported behavior; until that observation exists, a
+	// mutation would repeat work the runtime already performed without
+	// addressing the report.
+	if conflict := evidence.OpenVerificationConflict(); conflict != nil {
+		result.State = Insufficient
+		result.Stage = StageVerify
+		result.VerificationConflict = true
+		result.Reasons = append(result.Reasons,
+			"the user reported behavior contradicting the last verification: "+conflict.Claim)
+		if conflict.EvidenceSummary != "" {
+			result.Reasons = append(result.Reasons, "disputed verification: "+conflict.EvidenceSummary)
+		}
+		result.Missing = append(result.Missing, "behavioral_verification")
+		result.Next = append(result.Next, nextEvidence("behavioral_verification"))
+		return result
+	}
+
 	// A mutation the task shape did not permit is a review boundary even when
 	// the workspace authority allowed the call. The task objective, not just
 	// the workspace, defines what may change; the projection must say so
@@ -428,6 +517,16 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 	}
 
 	missing := missingForAction(shape, evidence, execution)
+	blocking := make([]Requirement, 0, len(missing))
+	for _, requirement := range missing {
+		if requirement.Unresolved != "" {
+			result.Unresolved = append(result.Unresolved, requirement.Key+": "+requirement.Unresolved)
+			result.Reasons = append(result.Reasons, requirement.Unresolved)
+			continue
+		}
+		blocking = append(blocking, requirement)
+	}
+	missing = blocking
 	if len(missing) > 0 {
 		// A request that explicitly needs external knowledge cannot recover by
 		// guessing capability names forever. Different failed capabilities are
@@ -488,15 +587,10 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 	case contract.ObjectiveMutation:
 		targetsDone := mutationTargetsDone(shape, execution)
 		if execution.Mutated {
-			if len(shape.Verification) > 0 && !execution.VerifiedAfterMutation {
-				result.State = Insufficient
-				result.Stage = StageVerify
-				result.Missing = append(result.Missing, "verification")
-				result.Next = append(result.Next, nextEvidence("verification"))
-				result.Reasons = append(result.Reasons, "a change was observed but no successful check followed it")
-				return result
-			}
 			if !targetsDone {
+				// A named path that has not changed is the remaining work. It
+				// takes precedence over verification: a check of an incomplete
+				// change cannot satisfy the objective.
 				result.State = Insufficient
 				result.Stage = StageAct
 				for _, path := range shape.Mutation.Paths {
@@ -506,6 +600,25 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 						result.Reasons = append(result.Reasons, "the requested target "+path+" has not changed")
 					}
 				}
+				return result
+			}
+			if len(shape.Verification) > 0 && !execution.VerifiedAfterMutation {
+				if evidence.VerificationGap != "" {
+					// The workspace has no supported check. That is a
+					// limitation of verification, not an incomplete change:
+					// another turn cannot discover a command the check
+					// capability already reported missing.
+					result.Stage = StageComplete
+					result.VerificationLimited = evidence.VerificationGap
+					result.Reasons = append(result.Reasons,
+						"a change was observed; verification is limited: "+evidence.VerificationGap)
+					return result
+				}
+				result.State = Insufficient
+				result.Stage = StageVerify
+				result.Missing = append(result.Missing, "verification")
+				result.Next = append(result.Next, nextEvidence("verification"))
+				result.Reasons = append(result.Reasons, "a change was observed but no successful check followed it")
 				return result
 			}
 			result.Stage = StageComplete
@@ -518,6 +631,13 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 		return result
 	case contract.ObjectiveExecution:
 		if len(shape.Verification) > 0 && !execution.VerifiedAfterExecution {
+			if evidence.VerificationGap != "" {
+				result.Stage = StageComplete
+				result.VerificationLimited = evidence.VerificationGap
+				result.Reasons = append(result.Reasons,
+					"the requested execution was observed; verification is limited: "+evidence.VerificationGap)
+				return result
+			}
 			result.State = Insufficient
 			result.Stage = StageVerify
 			result.Missing = append(result.Missing, "verification")
@@ -730,6 +850,18 @@ func missingForAction(shape TaskShape, evidence *EvidenceState, execution Execut
 	}
 	for _, requirement := range evidence.Requirements {
 		if requirement.Key == "verification" {
+			continue
+		}
+		if requirement.Unresolved != "" {
+			// The runtime already established this coordinate is not in the
+			// repository. Keeping it here is what let a model search a
+			// sibling project (and then the filesystem) for a name the
+			// repository never contained.
+			missing = append(missing, Requirement{
+				Key:        requirement.Key,
+				Reason:     requirement.Unresolved,
+				Unresolved: requirement.Unresolved,
+			})
 			continue
 		}
 		if strings.HasPrefix(requirement.Key, "target_state:") && execution.Mutated {

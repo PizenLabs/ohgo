@@ -211,6 +211,9 @@ func TestBashReportsVerificationEvidence(t *testing.T) {
 	if !result.Verifies {
 		t.Fatalf("a successful go test was not recorded as verification: %s", result.Text)
 	}
+	if result.Verification == nil || result.Verification.EffectiveClass() != agent.VerificationTest {
+		t.Fatalf("test evidence = %+v, want TEST class", result.Verification)
+	}
 }
 
 func TestIsVerificationCommand(t *testing.T) {

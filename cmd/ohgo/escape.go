@@ -26,6 +26,10 @@ func attachShellEscape(program *tui.Program, root string, gate *securityGate) {
 				return exec.EscapeResult{}, fmt.Errorf(
 					"refused: %q is outside the workspace and outside the temporary execution area", target)
 			}
+			if target, outside := tools.OutsideWorkspaceRead(command, root); outside {
+				return exec.EscapeResult{}, fmt.Errorf(
+					"refused: %q is outside the workspace and cannot be read from this session", target)
+			}
 			readOnly := false
 			if gate != nil {
 				readOnly = gate.EvaluateCommand(command).ReadOnly

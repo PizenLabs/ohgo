@@ -251,10 +251,11 @@ func TestExecutionFromEvidenceKeepsPriorChangePendingVerification(t *testing.T) 
 	}
 }
 
-// Four consecutive observations that do not advance a change waiting for its
-// check are a semantic stop, not a reason to spend the rest of the turn grant.
-// The run stops before the resource cap and reports the missing verification.
-func TestProjectorStopsAfterConsecutiveNoProgressInVerification(t *testing.T) {
+// A change waiting for its check is bounded by the verification window, not by
+// the generic four-turn no-progress counter. The run must remain able to apply
+// the change after four observations, then stop when the dedicated window ends
+// and report the missing verification.
+func TestProjectorStopsAfterVerificationWindowWithoutAChange(t *testing.T) {
 	shape := BuildShape(readContract("Write README.md."), ShapeParams{Authority: "build"})
 	evidence := NewEvidenceState()
 	evidence.ObserveOutcome(writeEvidence("write-1", "README.md"))
@@ -284,24 +285,45 @@ func TestProjectorStopsAfterConsecutiveNoProgressInVerification(t *testing.T) {
 			first.Report.Terminal, len(first.Tools))
 	}
 
+	// The generic bound is four turns; this change still has its dedicated
+	// verification window open, so the surface must remain open too.
 	var projected agent.ProjectionResult
-	for turn := 0; turn < MaxConsecutiveNoProgress; turn++ {
+	for turn := range MaxConsecutiveNoProgress {
 		turns = append(turns, readTurn("read-"+itoa(turn), "README.md", "1\t# Project"))
 		projected = request(turns)
 	}
-	if !projected.Report.Terminal {
-		t.Fatalf("the run did not stop after %d no-progress turns: %+v",
-			MaxConsecutiveNoProgress, projected.Report)
+	if projected.Report.Terminal {
+		t.Fatalf("the generic counter closed the verification window: %+v", projected.Report)
+	}
+	if projected.Report.Progress == "stalled" || projected.Report.NoProgressTurns != 0 {
+		t.Fatalf("verification wait was counted by the generic stall: %s/%d",
+			projected.Report.Progress, projected.Report.NoProgressTurns)
+	}
+	if len(projected.Tools) == 0 {
+		t.Fatal("the verification wait still offered no tool")
+	}
+
+	terminal := false
+	for turn := range MaxVerifyObservationTurns {
+		turns = append(turns, readTurn("wait-"+itoa(turn), "README.md", "1\t# Project"))
+		projected = request(turns)
+		if projected.Report.Terminal {
+			terminal = true
+			break
+		}
+	}
+	if !terminal {
+		t.Fatalf("the run did not stop after its verification window: %+v", projected.Report)
 	}
 	if len(projected.Tools) != 0 {
 		t.Fatalf("the stalled projection still offered %d tool(s)", len(projected.Tools))
 	}
-	if !strings.Contains(projected.Report.StopReason, "no meaningful task progress") {
-		t.Fatalf("stop reason = %q, want the semantic no-progress reason", projected.Report.StopReason)
+	if !strings.Contains(projected.Report.StopReason, "verification turns") {
+		t.Fatalf("stop reason = %q, want the verification window", projected.Report.StopReason)
 	}
-	if projected.Report.Progress != "stalled" || projected.Report.NoProgressTurns < MaxConsecutiveNoProgress {
-		t.Fatalf("progress audit = %s/%d, want stalled/%d",
-			projected.Report.Progress, projected.Report.NoProgressTurns, MaxConsecutiveNoProgress)
+	if projected.Report.VerificationTurns <= MaxVerifyObservationTurns {
+		t.Fatalf("verification turns = %d, want more than %d",
+			projected.Report.VerificationTurns, MaxVerifyObservationTurns)
 	}
 }
 

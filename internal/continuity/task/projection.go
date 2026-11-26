@@ -32,6 +32,7 @@ func (c *Controller) ObserveTurns(turns []agent.Turn) {
 		c.evidence = cognition.NewEvidenceState()
 	}
 	c.evidence.ObserveTurns(cognition.TaskShape{}, turns)
+	c.retireResolvedVerificationConflict()
 }
 
 // ObserveJournal folds the host edit journal's workspace diff into the durable

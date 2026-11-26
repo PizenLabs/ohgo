@@ -125,7 +125,7 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	// not: a completion claim, a recorded proof, a blocked contract, or a
 	// non-intact recovery.
 	if state := t.ObjectiveState(); state == ObjectiveProven || state == ObjectiveCompletedUnproven ||
-		state == ObjectiveBlocked || t.Completion != nil {
+		state == ObjectiveCompletedLimited || state == ObjectiveBlocked || t.Completion != nil {
 		b.addBlock("Objective state", t.CompletionSummary())
 	}
 	if !t.Recovery.Empty() {
@@ -149,6 +149,13 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	// presenting it as current would make resolved uncertainty look live.
 	if t.Status == StatusNeedsReview {
 		b.addBlock("Review reason", t.ReviewReason)
+		if t.Conclusion != nil {
+			conclusion := t.Conclusion.Label()
+			if summary := strings.TrimSpace(t.Conclusion.Summary); summary != "" {
+				conclusion += " — " + summary
+			}
+			b.addBlock("Conclusion", conclusion)
+		}
 		if claims := agent.RepairInstructions(t.ReviewIssues); claims != "" {
 			b.addBlock("Rejected claims", claims)
 		}

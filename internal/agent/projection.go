@@ -123,7 +123,19 @@ type ProjectionReport struct {
 	Progress string `json:"progress,omitempty"`
 	// NoProgressTurns is the number of consecutive completed turns that did
 	// not advance the task boundary. It resets on any meaningful transition.
+	// Waiting at the verification boundary is counted by VerificationTurns
+	// instead, so this counter does not close that wait first.
 	NoProgressTurns int `json:"no_progress_turns,omitempty"`
+	// ExplorationTurns is the number of projections spent acquiring pre-action
+	// evidence for a change or execution, across the explore and act stages. It
+	// is the semantic budget that bounds a search which keeps finding something
+	// new; the window is a share of the remaining turn grant, not a constant.
+	ExplorationTurns int `json:"exploration_turns,omitempty"`
+	// VerificationTurns is the number of projections spent waiting for the
+	// check a change requires. It is the sole bound at that boundary and
+	// restarts on a new change; a workspace without a check command settles as
+	// a limitation instead of consuming this budget.
+	VerificationTurns int `json:"verification_turns,omitempty"`
 	// AnswerEligible reports that the runtime already holds the evidence an
 	// informational objective requires. The next visible assistant text is a
 	// candidate final answer, so tool calls emitted alongside it are
@@ -133,12 +145,34 @@ type ProjectionReport struct {
 	// Terminal reports that the runtime has closed the task. The loop must not
 	// start another unrestricted reasoning cycle after the current request.
 	Terminal bool `json:"terminal,omitempty"`
+	// ObjectiveComplete reports that the objective's evidence conditions are
+	// satisfied (the projection's complete stage). It is narrower than
+	// AnswerEligible: a closed surface can be answer-only because the model
+	// kept proposing refused calls, while a complete objective will still be
+	// true evidence if the model never answers. The loop uses this to end the
+	// run with the completed turns instead of reporting a block that would
+	// erase a satisfied objective.
+	ObjectiveComplete bool `json:"objective_complete,omitempty"`
 	// StopReason explains a terminal verdict in evidence terms.
 	StopReason string `json:"stop_reason,omitempty"`
+	// Conclusion is the terminal semantic outcome when the runtime cannot
+	// continue this run. It is set with a terminal verdict, so a host can
+	// report UNRESOLVED and publish an authoritative explanation even when the
+	// model produced no closing answer. It never completes or fails a task.
+	Conclusion *RunConclusion `json:"conclusion,omitempty"`
 	// Missing names the unresolved requirements the projection withheld an
 	// action for. It is audit data and the correction request's vocabulary:
 	// a premature answer must name the evidence frontier it did not close.
 	Missing []string `json:"missing,omitempty"`
+	// Unresolved names requirements the runtime checked and established
+	// cannot be satisfied by this repository. They are reported limitations,
+	// not reasons for another search.
+	Unresolved []string `json:"unresolved,omitempty"`
+	// VerificationLimited is non-empty when the objective requires a check and
+	// the workspace has no supported command. The observed change is complete;
+	// its verification is unavailable, so completion is limited rather than
+	// pending.
+	VerificationLimited string `json:"verification_limited,omitempty"`
 	// Facets is the required-facet verdict for a relationship-shaped task,
 	// formatted as "facet=STATE". Empty when the task declares no facets.
 	Facets []string `json:"facets,omitempty"`

@@ -13,11 +13,34 @@ import (
 	"github.com/PizenLabs/ohgo/internal/provider/creds"
 )
 
-// DefaultHTTPTimeout bounds one provider request, including the body read.
+// DefaultResponseHeaderTimeout bounds how long a provider may take to start
+// answering a request.
 //
-// A completion can legitimately stream for minutes, so this covers connection
-// establishment and response headers rather than the full stream duration.
-const DefaultHTTPTimeout = 10 * time.Minute
+// It is a header bound, not a request bound: a completion legitimately streams
+// for minutes after its headers, so a total client timeout would cut a healthy
+// stream. A request that has not produced headers is also the one shape the
+// runtime cannot distinguish from a hung connection; bounding it here turns a
+// silent provider into the same transport failure the retry policy already
+// classifies. Inactivity mid-stream is bounded separately by
+// DefaultStreamIdleTimeout.
+const DefaultResponseHeaderTimeout = 5 * time.Minute
+
+// newHTTPClient builds a provider HTTP client with a bounded wait for response
+// headers and no total timeout.
+//
+// Client.Timeout covers the whole exchange including the body, so it cannot be
+// used to bound headers without also aborting a long generation. The transport
+// is cloned from the standard one so proxy, keep-alive, and HTTP/2 defaults are
+// preserved.
+func newHTTPClient(headerTimeout time.Duration) *http.Client {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{}
+	}
+	cloned := transport.Clone()
+	cloned.ResponseHeaderTimeout = headerTimeout
+	return &http.Client{Transport: cloned}
+}
 
 // ErrMissingAPIKey means no credential was found for the requested provider.
 var ErrMissingAPIKey = errors.New("ai: missing API key for provider")
@@ -75,7 +98,7 @@ func NewRegistry() *Registry {
 		providerEnv: map[string][]string{},
 		keyOptional: map[string]bool{},
 		sessionIDs:  map[string]string{},
-		httpClient:  &http.Client{Timeout: DefaultHTTPTimeout},
+		httpClient:  newHTTPClient(DefaultResponseHeaderTimeout),
 	}
 }
 

@@ -219,6 +219,12 @@ type Task struct {
 	// re-auditing the answer from scratch. They are empty for lifecycle
 	// reviews, which carry no claim list.
 	ReviewIssues []contract.GroundingIssue `json:"reviewIssues,omitempty"`
+	// Conclusion is the terminal semantic outcome of a review that cannot
+	// continue this run, present only while the task is NEEDS_REVIEW. It is
+	// separate from the lifecycle: the task stays resumable, while the
+	// conclusion says the objective was left UNRESOLVED and why. Completion,
+	// failure, and cancellation clear it because they own a different outcome.
+	Conclusion *agent.RunConclusion `json:"conclusion,omitempty"`
 	// UpdatedAt is when the task last changed. It is the checkpoint ordering
 	// key: a write carrying an older stamp must never overwrite a newer one.
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -257,6 +263,14 @@ func (t Task) Validate() error {
 	}
 	if t.ExecutionContract.Origin != "" && !t.ExecutionContract.Valid() {
 		return fmt.Errorf("%w: unknown execution origin %q", ErrInvalidTask, t.ExecutionContract.Origin)
+	}
+	if t.Conclusion != nil {
+		if err := t.Conclusion.Validate(); err != nil {
+			return fmt.Errorf("%w: conclusion: %w", ErrInvalidTask, err)
+		}
+		if t.Status != StatusNeedsReview {
+			return fmt.Errorf("%w: conclusion is only current at a review boundary", ErrInvalidTask)
+		}
 	}
 	if (t.ExecutionContract.Execute || t.ExecutionContract.Mutate) && !t.ExecutionContract.Valid() {
 		return fmt.Errorf("%w: execution capabilities without a valid origin", ErrInvalidTask)
@@ -334,6 +348,10 @@ func (t Task) Clone() Task {
 	if t.Completion != nil {
 		cloned := t.Completion.Clone()
 		out.Completion = &cloned
+	}
+	if t.Conclusion != nil {
+		cloned := *t.Conclusion
+		out.Conclusion = &cloned
 	}
 	out.Timeline = make([]TimelineEvent, len(t.Timeline))
 	for i, event := range t.Timeline {
@@ -477,6 +495,13 @@ func (t *Task) transition(to Status, at time.Time) error {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, t.Status, to)
 	}
 	t.Status = to
+	if to != StatusNeedsReview {
+		// A conclusion is current state only at the review boundary it
+		// explains. Resuming, pausing, completing, or failing resolves or
+		// supersedes it; keeping it would report a terminal outcome the
+		// lifecycle no longer holds.
+		t.Conclusion = nil
+	}
 	t.UpdatedAt = at
 	return nil
 }
