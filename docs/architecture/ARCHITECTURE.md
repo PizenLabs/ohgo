@@ -962,6 +962,10 @@ the model said. Two properties keep the loop honest and small:
   wording implies is a hypothesis. A definitive `not_found` from a structural
   lookup is a positive observation of absence, so the requirement is recorded
   as `not applicable` and stops blocking the projection and completion alike.
+  The same outcome applies when the runtime has no structural adapter for any
+  source language the repository contains (the portable build in a web-only
+  repository): the lookup is unavailable, not pending, so the requirement is
+  reported as a limitation instead of blocking a change the runtime observed.
   Searching a sibling project, the parent directory, or the filesystem for a
   name the repository never contained is not evidence; it is the extraction
   mistake being re-litigated one directory at a time.

@@ -266,6 +266,15 @@ immutable.
 
 ### Fixed
 
+- A heuristic symbol target no longer blocks completion when the running build
+  has no structural adapter for the repository's source languages. The portable
+  (`CGO_ENABLED=0`) build compiles only the Go adapter, so in a web-only
+  repository the withheld structural tool left `target_coordinates:*` as a
+  permanent gap and a completed change ended as `NEEDS_REVIEW`. The projection
+  now records the requirement as not applicable with the capability limitation,
+  and completion accepts the projection's requirement-shaped entry; a
+  multi-language build still resolves the target from an actual `not_found`
+  lookup.
 - Assistant text on Chat Completions is serialized as a string, not a
   content-parts array. The gateway fronting `opencode-go` rejected the array on
   a text-bearing assistant turn with `HTTP 422 messages[i].content`, so the
