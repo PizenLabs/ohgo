@@ -448,7 +448,11 @@ composition root applies the result with `Loop.SetReasoning` before the first
 provider request. An automatic BUILD ↔ FUZZ handoff **preserves** the setting:
 changing the role must not silently change how deeply the model thinks. An
 explicit `--effort`, a per-role effort, or an enabled global reasoning policy is
-a human override and disables AUTO for that role.
+a human override and disables AUTO for that role. `/effort` writes that role
+override for the workspace the session is running under — ASK inside ASK, BUILD
+inside BUILD — and validates the level against the model that role will call.
+`/effort off` disables thinking for that role; `/effort auto` clears the claim so
+the demand selector (or the global policy) decides again.
 
 A transport must omit an empty effort rather than manufacture `medium`. A model
 whose reasoning is mandatory is never reported as disabled; omitting the
@@ -1590,7 +1594,10 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
-discovery), `/compact` (state-first manual compaction with a concise outcome),
+discovery), `/effort` (the active workspace role's thinking level, shown as a
+fixed choice card in the TUI and a report in the REPL, validated against that
+role's bound model), `/compact` (state-first manual compaction with a concise
+outcome),
 `/sessions`/`/resume`, `/jobs`, `/usage`,
 `/status`, `/update` (the same `update.Service` authority as `ohgo update`),
 `/doctor`, `/connect` (a Provider Manager modal browses the

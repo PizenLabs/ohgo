@@ -7,6 +7,14 @@ immutable.
 
 ### Added
 
+- `/effort [level|off|auto]` shows and changes the thinking effort for the
+  workspace role the session is running under. Bare `/effort` opens a fixed
+  choice card naming that role's live model and authoritative ladder; the
+  current level is pre-highlighted. Setting a level persists only the role's
+  effort, validates it against the bound model, and applies it to the next
+  turn. `off` disables thinking for the role and `auto` clears the role
+  override. The full-screen UI and the plain REPL share the same seam.
+
 - Verification evidence classes and conflicts. A successful check now records
   `STATIC`, `TEST`, or `BEHAVIORAL`; a static build or source assertion can no
   longer certify a behavioral answer claim. A user report that contradicts a

@@ -312,6 +312,7 @@ ohgo version
 /help /commands                        command & help center
 /clear /new [name]                     fresh context or session
 /model [provider/id] /models           model picker
+/effort [level|off|auto]               active workspace thinking effort
 /sessions /resume                      manage or resume sessions
 /jobs                                  inspect background jobs
 /task [status|list|show|resume|cancel|accept]
@@ -329,8 +330,11 @@ ohgo version
 ```
 
 The REPL and the full-screen UI share the same backend, so every command means
-the same thing in both. `/task` manages durable task continuity, which exists
-only in the full-screen UI; the plain REPL reports it as unavailable.
+the same thing in both. Bare `/effort` opens the active workspace role's
+thinking-effort picker in the full-screen UI; the plain REPL prints the same
+state as text. `/effort <level|off|auto>` applies directly in both. `/task`
+manages durable task continuity, which exists only in the full-screen UI; the
+plain REPL reports it as unavailable.
 
 ### Model picker
 
