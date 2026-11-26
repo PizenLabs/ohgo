@@ -59,9 +59,9 @@ type openAIStreamOptions struct {
 
 type openAIMessage struct {
 	Role string `json:"role"`
-	// Content is a string for system and tool messages and a list of content
-	// parts for user and assistant messages. A tool result with no output is
-	// the empty string: a text part with no text is rejected by providers.
+	// Content is a string for system, assistant, and tool messages and a list
+	// of content parts for user messages. A tool result with no output is the
+	// empty string: a text part with no text is rejected by providers.
 	Content    any                    `json:"content,omitempty"`
 	ToolCalls  []openAIReplayToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string                 `json:"tool_call_id,omitempty"`
@@ -318,13 +318,8 @@ func toOpenAIUserContent(content []ContentBlock) ([]openAIContent, error) {
 
 func openAIAssistantMessage(msg AssistantMessage) openAIMessage {
 	out := openAIMessage{Role: "assistant"}
-	var parts []openAIContent
 	for _, block := range msg.Content {
 		switch b := block.(type) {
-		case TextContent:
-			if b.Text != "" {
-				parts = append(parts, openAIContent{Type: "text", Text: b.Text})
-			}
 		case ThinkingContent:
 			// The wire model has no replayable reasoning channel. The canonical
 			// validator rejects a turn that carries only reasoning.
@@ -340,10 +335,13 @@ func openAIAssistantMessage(msg AssistantMessage) openAIMessage {
 			})
 		}
 	}
-	// OpenAI requires exactly one of content or tool_calls to be present. A
-	// tool-call turn omits content entirely; there is no empty text part.
-	if len(parts) > 0 {
-		out.Content = parts
+	// Assistant text travels as a string, not a content-parts array: the
+	// gateway fronting opencode-go rejects an array on an assistant turn with
+	// HTTP 422 (messages[i].content), and every Chat Completions endpoint
+	// accepts the string form. Assistant content is text-only, so flattening
+	// the blocks loses nothing. A tool-call-only turn omits content entirely.
+	if text := msg.Text(); text != "" {
+		out.Content = text
 	}
 	return out
 }

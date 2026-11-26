@@ -266,6 +266,12 @@ immutable.
 
 ### Fixed
 
+- Assistant text on Chat Completions is serialized as a string, not a
+  content-parts array. The gateway fronting `opencode-go` rejected the array on
+  a text-bearing assistant turn with `HTTP 422 messages[i].content`, so the
+  first answer draft after a tool-only history failed its correction request and
+  the task fell to `NEEDS_REVIEW`. Tool-call turns still omit content, and user
+  turns keep their parts array.
 - A verification window that closes now records a terminal `UNRESOLVED`
   conclusion (`verification_not_established`) on the `NEEDS_REVIEW` task, and
   the TUI publishes one runtime-authored final explanation before the footer
