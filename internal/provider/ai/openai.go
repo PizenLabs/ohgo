@@ -36,7 +36,7 @@ type OpenAIProvider struct {
 
 // NewOpenAIProvider returns a provider for the given credential.
 func NewOpenAIProvider(apiKey string) *OpenAIProvider {
-	return &OpenAIProvider{Client: &http.Client{}, APIKey: apiKey}
+	return &OpenAIProvider{Client: newHTTPClient(DefaultResponseHeaderTimeout), APIKey: apiKey}
 }
 
 // openAIRequest is the Chat Completions request body.
@@ -125,7 +125,7 @@ type openAIWireFunction struct {
 // Stream implements Provider.
 func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (*Stream, error) {
 	if p.Client == nil {
-		p.Client = &http.Client{}
+		p.Client = newHTTPClient(DefaultResponseHeaderTimeout)
 	}
 	base := p.BaseURL
 	if base == "" {

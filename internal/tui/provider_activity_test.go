@@ -39,7 +39,7 @@ func TestRunTurnPublishesProviderRetryBeforeBackoff(t *testing.T) {
 	p := NewProgram(loop, "test", 0)
 	p.runTurn("hello")
 
-	var retry, recovered *ProviderStatusEvent
+	var retry, streaming *ProviderStatusEvent
 	for {
 		select {
 		case event := <-p.events:
@@ -48,13 +48,13 @@ func TestRunTurnPublishesProviderRetryBeforeBackoff(t *testing.T) {
 				switch status.Phase {
 				case "retrying":
 					retry = &copy
-				case "recovered":
-					recovered = &copy
+				case "streaming":
+					streaming = &copy
 				}
 			}
 		default:
-			if retry == nil || recovered == nil {
-				t.Fatalf("provider events = retry %+v recovered %+v, want both", retry, recovered)
+			if retry == nil || streaming == nil {
+				t.Fatalf("provider events = retry %+v streaming %+v, want both", retry, streaming)
 			}
 			if retry.Status != 429 || retry.Delay <= 0 || retry.Attempt != 1 || retry.Attempts != 3 {
 				t.Fatalf("retry event = %+v, want 429 attempt 1/3 with a delay", retry)

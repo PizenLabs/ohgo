@@ -44,6 +44,11 @@ const (
 	// turn cannot change the outcome until the human changes the runtime or
 	// the objective.
 	RunBlocked
+	// RunCompletedLimited means the objective's observed result exists and the
+	// workspace has no supported verification command. It is a completion, not
+	// a review: the missing observation is a property of the workspace, and
+	// another turn cannot produce it.
+	RunCompletedLimited
 )
 
 // String returns the machine-readable class of the verdict.
@@ -66,6 +71,8 @@ func (v RunVerdict) String() string {
 		return "CANCELLED"
 	case RunBlocked:
 		return "CAPABILITY_UNAVAILABLE"
+	case RunCompletedLimited:
+		return "COMPLETED_LIMITED_VERIFICATION"
 	}
 	return "UNKNOWN"
 }
@@ -158,7 +165,10 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 	}
 	completion := EvaluateTaskCompletion(input)
 	if completion.Complete() {
-		return RunCompleted, "", nil
+		if completion.State == CompletionCompletedLimited {
+			return RunCompletedLimited, completion.Limitation, nil
+		}
+		return RunCompleted, completion.Limitation, nil
 	}
 	return RunNeedsReview, completion.Reason, completion.Issues
 }
@@ -167,8 +177,12 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 // complete evidence remains authoritative, and everything else stays paused
 // under the caller's reason.
 func budgetVerdict(input CompletionInput, reason string) (RunVerdict, string, []contract.GroundingIssue) {
-	if EvaluateBudgetCompletion(input, true).Complete() {
-		return RunCompleted, "", nil
+	completion := EvaluateBudgetCompletion(input, true)
+	if completion.Complete() {
+		if completion.State == CompletionCompletedLimited {
+			return RunCompletedLimited, completion.Limitation, nil
+		}
+		return RunCompleted, completion.Limitation, nil
 	}
 	return RunPaused, reason, nil
 }

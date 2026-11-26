@@ -1335,6 +1335,9 @@ func (s *State) Apply(event Event) {
 		if s.Cancelled {
 			return
 		}
+		// A streamed call is content: the provider is answering, so the
+		// transport wait ends even though no text or reasoning arrived.
+		s.ProviderWait = nil
 		// An action ends any open reasoning trace: the model stopped thinking
 		// and asked the runtime to do something.
 		s.closeReasoning(e.At)
@@ -1707,10 +1710,14 @@ func (s *State) Apply(event Event) {
 		// A transport transition is immediate: it must not wait behind the
 		// presentation dwell that smooths tool phrases.
 		s.telemetry = telemetryStatus{}
-		if e.Phase == "recovered" || e.Phase == "" {
+		if e.Phase == "" {
 			s.ProviderWait = nil
 			break
 		}
+		// Every reported phase is a wait the runtime is actually in, including
+		// "streaming": the request was accepted and the stream is open, but no
+		// content has arrived. Clearing it there left the turn looking like
+		// workspace preparation for as long as the model stayed silent.
 		s.ProviderWait = &ProviderWait{
 			Phase: e.Phase, Attempt: e.Attempt, Attempts: e.Attempts,
 			Delay: e.Delay, Status: e.Status, Message: e.Message, At: e.At,

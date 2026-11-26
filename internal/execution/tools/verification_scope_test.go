@@ -1,6 +1,10 @@
 package tools
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
+)
 
 // A successful check is evidence only for the packages it named. Misreporting
 // the scope would let "go test ./ast" stand in for a broken "tools" change.
@@ -128,6 +132,12 @@ func TestVerificationEvidenceRecordsCheckKind(t *testing.T) {
 		if got := string(evidence.EffectiveCheck()); got != want {
 			t.Errorf("VerificationFor(%q).Check = %q, want %q", command, got, want)
 		}
+	}
+	if got := VerificationFor("go test ./...").EffectiveClass(); got != agent.VerificationTest {
+		t.Errorf("go test class = %s, want TEST", got)
+	}
+	if got := VerificationFor("go build ./...").EffectiveClass(); got != agent.VerificationStatic {
+		t.Errorf("go build class = %s, want STATIC", got)
 	}
 }
 

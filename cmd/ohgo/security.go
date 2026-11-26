@@ -138,6 +138,27 @@ func (g *securityGate) SetTaskSource(source func() string) {
 func (g *securityGate) Evaluate(call ai.ToolCall, tool agent.Tool) security.Decision {
 	taskID, sessionID := g.identity()
 	req := securityRequest(g.root, tool, call.Arguments, call.ID, taskID, sessionID)
+	// A shell command is the one capability whose filesystem targets are
+	// carried in text. The bash tool refuses an outside read before it runs;
+	// this is the same decision at the authorization boundary, so a host that
+	// dispatches a call without the tool's own guard still cannot grant a read
+	// of a sibling, parent, or home path the workspace does not own.
+	if tool.Name() == "bash" {
+		if command, _ := call.Arguments["command"].(string); strings.TrimSpace(command) != "" {
+			if target, outside := tools.OutsideWorkspaceRead(command, g.root); outside {
+				return security.Decision{
+					Outcome:    security.OutcomeDeny,
+					Capability: req.Capability,
+					Scope:      req.Scope,
+					Risk:       req.Risk,
+					Mutates:    req.Mutates,
+					Reason: fmt.Sprintf(
+						"denied by workspace authority: %q is outside the workspace", target),
+					Rule: security.RuleOutsideWorkspace,
+				}
+			}
+		}
+	}
 
 	// Settings are trusted policy: a user who denied a tool is never asked
 	// again, and an allowed one skips the prompt. Authority is still enforced
@@ -310,6 +331,20 @@ func (g *securityGate) EvaluateCommand(command string) security.Decision {
 		Mutates:    mutates,
 		ToolName:   "shell",
 		Summary:    command,
+	}
+	// The human escape crosses the same filesystem authority as a tool call:
+	// a human may run a command, but a session authorizes reads inside its
+	// workspace, not a sibling project's files.
+	if target, outside := tools.OutsideWorkspaceRead(command, g.root); outside {
+		return security.Decision{
+			Outcome:    security.OutcomeDeny,
+			Capability: req.Capability,
+			Scope:      req.Scope,
+			Risk:       req.Risk,
+			Mutates:    req.Mutates,
+			Reason:     fmt.Sprintf("denied by workspace authority: %q is outside the workspace", target),
+			Rule:       security.RuleOutsideWorkspace,
+		}
 	}
 	req.TaskID, req.SessionID = g.identity()
 	ws := g.authorityInForce()

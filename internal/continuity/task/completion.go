@@ -46,6 +46,11 @@ const (
 	ObjectiveCompletedUnproven ObjectiveState = "COMPLETED_UNPROVEN"
 	// ObjectiveCancelled means the user deliberately abandoned the task.
 	ObjectiveCancelled ObjectiveState = "CANCELLED"
+	// ObjectiveCompletedLimited means the observed objective was reached and
+	// the recorded verification limitation is current: the workspace had no
+	// supported check, so the change could not be verified. It is a completion
+	// with a stated limitation, not an unproven claim and not a review.
+	ObjectiveCompletedLimited ObjectiveState = "COMPLETED_LIMITED_VERIFICATION"
 )
 
 // Valid reports whether the state is defined.
@@ -53,7 +58,7 @@ func (s ObjectiveState) Valid() bool {
 	switch s {
 	case ObjectiveActive, ObjectiveInterrupted, ObjectiveNeedsReview,
 		ObjectiveBlocked, ObjectiveProven, ObjectiveCompletedUnproven,
-		ObjectiveCancelled:
+		ObjectiveCompletedLimited, ObjectiveCancelled:
 		return true
 	default:
 		return false
@@ -90,6 +95,11 @@ type CompletionProof struct {
 	// Verified are bounded descriptions of the checks that followed the last
 	// change. They explain what was actually observed.
 	Verified []string `json:"verified,omitempty"`
+	// Limitation is non-empty when the objective was completed with an
+	// unavailable observation. It currently records a verification limitation:
+	// the change was observed and the workspace has no supported check command.
+	// The proof stays a completion; it never claims the missing check happened.
+	Limitation string `json:"limitation,omitempty"`
 	// At is when the proof was recorded.
 	At time.Time `json:"at"`
 }
@@ -143,6 +153,11 @@ type CompletionEvidence struct {
 	Answered bool
 	// Role is the role that completed the work. Empty uses the live role.
 	Role workspace.Workspace
+	// VerificationLimitation is the control plane's observation that the
+	// workspace has no supported check command. Non-empty allows a mutation
+	// completion to record ObjectiveCompletedLimited when the change was
+	// observed and no check exists. It never substitutes for the change.
+	VerificationLimitation string
 }
 
 // ObjectiveState returns the objective's truthful state.
@@ -171,6 +186,9 @@ func (t Task) ObjectiveState() ObjectiveState {
 		return ObjectiveCancelled
 	case StatusCompleted:
 		if t.proofCurrent() {
+			if t.Completion != nil && strings.TrimSpace(t.Completion.Limitation) != "" {
+				return ObjectiveCompletedLimited
+			}
 			return ObjectiveProven
 		}
 		return ObjectiveCompletedUnproven
@@ -233,6 +251,12 @@ func (t Task) proofCurrent() bool {
 		}
 		return len(proof.EvidenceIDs) > 0 && (proof.Executed || len(proof.Verified) > 0)
 	case t.Contract.Kind == contract.ObjectiveMutation:
+		if proof.Observed && proof.Limitation != "" {
+			// A declared verification limitation still needs the observed
+			// change and the evidence that names it; it never stands in for
+			// the objective.
+			return len(proof.EvidenceIDs) > 0
+		}
 		return proof.Observed && len(proof.Verified) > 0 && len(proof.EvidenceIDs) > 0
 	default:
 		// An unknown contract kind cannot authorize any completion claim.
@@ -328,6 +352,16 @@ func (t Task) CompletionSummary() string {
 			return "completed without a recorded proof; completion is not verified"
 		}
 		return "completed, but the recorded proof no longer resolves to current evidence"
+	case ObjectiveCompletedLimited:
+		limitation := "verification is unavailable"
+		if t.Completion != nil && strings.TrimSpace(t.Completion.Limitation) != "" {
+			limitation = t.Completion.Limitation
+		}
+		summary := "completed with limited verification — an observed change was recorded; " + limitation
+		if t.Completion != nil && len(t.Completion.EvidenceIDs) > 0 {
+			summary += " — evidence:" + strings.Join(t.Completion.EvidenceIDs, ",")
+		}
+		return truncate(summary, 520)
 	case ObjectiveBlocked:
 		if t.Contract == nil {
 			return "blocked: the task has no completion contract; it can be cancelled or replaced, not completed"
@@ -412,18 +446,26 @@ func (c *Controller) CompleteWithEvidence(in CompletionEvidence) (Task, error) {
 			return c.task.Clone(), fmt.Errorf("%w: no observed change supports the mutation objective", ErrUnprovenCompletion)
 		}
 		verified := c.verificationsAfterChange(change)
-		if len(verified) == 0 {
+		limitation := strings.TrimSpace(in.VerificationLimitation)
+		switch {
+		case len(verified) > 0:
+			if !c.verificationsCoverContract(verified) {
+				return c.task.Clone(), fmt.Errorf("%w: no current verification covers the contract's required scope", ErrUnprovenCompletion)
+			}
+			proof.Verified = verificationSummaries(verified)
+			for _, record := range verified {
+				proof.EvidenceIDs = appendUniqueEvidenceIDs(proof.EvidenceIDs, record)
+			}
+		case limitation != "":
+			// The workspace has no supported check. The change is still the
+			// objective's evidence; the proof records what could not be
+			// observed instead of pretending a check happened.
+			proof.Limitation = limitation
+		default:
 			return c.task.Clone(), fmt.Errorf("%w: the last observed change has no verification after it", ErrUnprovenCompletion)
 		}
-		if !c.verificationsCoverContract(verified) {
-			return c.task.Clone(), fmt.Errorf("%w: no current verification covers the contract's required scope", ErrUnprovenCompletion)
-		}
 		proof.Observed = true
-		proof.Verified = verificationSummaries(verified)
 		proof.EvidenceIDs = appendUniqueEvidenceIDs(proof.EvidenceIDs, change)
-		for _, record := range verified {
-			proof.EvidenceIDs = appendUniqueEvidenceIDs(proof.EvidenceIDs, record)
-		}
 	case contract.ObjectiveExecution:
 		executed := c.executionEvidence()
 		verified := c.verificationEvidence()
@@ -470,7 +512,7 @@ func (c *Controller) CompleteWithEvidence(in CompletionEvidence) (Task, error) {
 		At:      now,
 		Kind:    TimelineCompleted,
 		Role:    role,
-		Status:  string(ObjectiveProven),
+		Status:  string(c.task.ObjectiveState()),
 		Summary: completionEventSummary(c.task.Contract.Kind, c.task.Contract.ExecutionMode, proof),
 		Refs:    proof.EvidenceIDs,
 	})

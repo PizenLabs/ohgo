@@ -13,12 +13,12 @@ import (
 )
 
 // A continuation after an interrupted change must resume at verification. A
-// model that keeps reading instead is stopped by the semantic no-progress
-// bound, not by the model-turn resource cap, and the task records the real
-// reason. This is the production regression: an edit was applied, the user
-// continued, and the run spent its whole turn grant rediscovering the
-// repository.
-func TestResumedMutationStopsAtTheSemanticNoProgressBound(t *testing.T) {
+// model that keeps reading instead is stopped by the verification window, not
+// by the generic four-turn counter or the model-turn resource cap, and the
+// task records the real reason. This is the production regression: an edit was
+// applied, the user continued, and the run spent its whole turn grant
+// rediscovering the repository.
+func TestResumedMutationStopsAtTheVerificationWindow(t *testing.T) {
 	root := t.TempDir()
 	writeReadinessModule(t, root)
 	objective := "Fix GrepTool in tools/grep.go and run go test ./tools"
@@ -52,6 +52,9 @@ func TestResumedMutationStopsAtTheSemanticNoProgressBound(t *testing.T) {
 			readinessToolCall("read-4", "read", map[string]any{"path": "go.mod"}),
 			readinessToolCall("read-5", "read", map[string]any{"path": "tools/grep.go"}),
 			readinessToolCall("read-6", "read", map[string]any{"path": "tools/grep_test.go"}),
+			readinessToolCall("read-7", "read", map[string]any{"path": "go.mod"}),
+			readinessToolCall("read-8", "read", map[string]any{"path": "tools/grep.go"}),
+			readinessToolCall("read-9", "read", map[string]any{"path": "tools/grep_test.go"}),
 			readinessAnswer("I could not verify the change"),
 		})
 	briefing := strings.Join(resuming.controller.Context(), "\n")
@@ -70,15 +73,16 @@ func TestResumedMutationStopsAtTheSemanticNoProgressBound(t *testing.T) {
 		t.Fatalf("stalled task status = %s, want NEEDS_REVIEW", current.Status)
 	}
 	reason := strings.ToLower(current.ReviewReason)
-	if !strings.Contains(reason, "no meaningful task progress") {
-		t.Fatalf("review reason = %q, want the semantic no-progress reason", current.ReviewReason)
+	if !strings.Contains(reason, "verification") {
+		t.Fatalf("review reason = %q, want the verification window", current.ReviewReason)
 	}
 	if strings.Contains(reason, "turn limit") {
 		t.Fatalf("review reason = %q, want the semantic bound rather than the resource cap", current.ReviewReason)
 	}
 	results := resuming.toolResults()
-	if len(results) != cognition.MaxConsecutiveNoProgress {
-		t.Fatalf("executed %d no-progress observations, want %d", len(results), cognition.MaxConsecutiveNoProgress)
+	if len(results) != cognition.MaxVerifyObservationTurns {
+		t.Fatalf("executed %d observations, want the verification window %d",
+			len(results), cognition.MaxVerifyObservationTurns)
 	}
 	if len(results) >= 16 {
 		t.Fatalf("the run reached the fixture's turn cap (%d observations)", len(results))

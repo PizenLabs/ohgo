@@ -38,7 +38,7 @@ type AnthropicProvider struct {
 
 // NewAnthropicProvider returns a provider for the given credential.
 func NewAnthropicProvider(apiKey string) *AnthropicProvider {
-	return &AnthropicProvider{Client: &http.Client{}, APIKey: apiKey}
+	return &AnthropicProvider{Client: newHTTPClient(DefaultResponseHeaderTimeout), APIKey: apiKey}
 }
 
 // anthropicRequest is the Messages API request body.
@@ -116,7 +116,7 @@ type anthropicImageSource struct {
 // Stream implements Provider.
 func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (*Stream, error) {
 	if p.Client == nil {
-		p.Client = &http.Client{}
+		p.Client = newHTTPClient(DefaultResponseHeaderTimeout)
 	}
 	base := p.BaseURL
 	if base == "" {

@@ -176,7 +176,7 @@ func TestTurnTaskOutcomeProvesTechnologyMigration(t *testing.T) {
 		},
 	}
 	action, reason, _ := turnTaskOutcomeForAuthority(nil, turns, intent, nil, nil, "", false,
-		agent.EvidenceProvenance{}, mutations, "build")
+		agent.EvidenceProvenance{}, mutations, "build", projectionLimit{})
 	if action != taskActionComplete {
 		t.Fatalf("action = %v (%s), want complete", action, reason)
 	}

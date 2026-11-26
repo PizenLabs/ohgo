@@ -111,6 +111,11 @@ type TaskResume struct {
 	RecoveryDetail string
 	// Warning is a continuity warning that did not block recovery.
 	Warning string
+	// VerificationConflict is the user's current report that contradicts a
+	// recorded verification. It is continuity evidence, not authority: the
+	// turn boundary routes it to behavioral investigation before another
+	// change.
+	VerificationConflict string
 }
 
 // TimelineView is the UI projection of one durable task event.
@@ -147,6 +152,10 @@ type CompletionEvidence struct {
 	Reason string
 	// Answered reports a non-empty answer for an informational objective.
 	Answered bool
+	// VerificationLimitation is the control plane's observation that the
+	// workspace has no supported check command. Non-empty completes a mutation
+	// with a recorded limitation instead of an unavailable verification.
+	VerificationLimitation string
 }
 
 // HandoffView is the UI projection of one durable role transition.
@@ -204,6 +213,10 @@ type TaskHooks struct {
 	// from the deterministic answer audits; they are empty for lifecycle
 	// reviews, which have no claim list.
 	NeedsReview func(reason string, issues []contract.GroundingIssue) TaskProjection
+	// RecordVerificationConflict records a user's report that observed
+	// behavior contradicts the last verification. It creates explicit
+	// conflict evidence; it never authorizes a repair.
+	RecordVerificationConflict func(claim string) TaskProjection
 	// Complete records a successful end and returns the projection.
 	Complete func() TaskProjection
 	// CompleteWithEvidence records a successful end only when the durable
@@ -1136,6 +1149,55 @@ func hasNoMutationConstraint(next contract.IntentContract) bool {
 	return false
 }
 
+// verificationConflictContinuation reports whether the prompt belongs to an
+// explicit verification conflict.
+//
+// A user report that the observed behavior contradicts the last verification
+// is not a new objective and not an ordinary follow-up: it opens a conflict
+// that must be investigated before another change. Once a conflict is current,
+// the task's own follow-up vocabulary keeps it attached until a behavioral
+// observation answers it.
+func verificationConflictContinuation(current TaskResume, text, active string, next contract.IntentContract) bool {
+	if !current.HasContract {
+		return false
+	}
+	switch current.Contract.Kind {
+	case contract.ObjectiveMutation, contract.ObjectiveExecution:
+	default:
+		return false
+	}
+	if workspace.IsVerificationContradiction(text) {
+		return true
+	}
+	if strings.TrimSpace(current.VerificationConflict) == "" {
+		return false
+	}
+	return continuationPrompt(text) ||
+		verificationContinuation(current, text) ||
+		taskFollowUp(current, text) ||
+		conflictRepairFollowUp(text) ||
+		implementationRefinement(current, text, active, next)
+}
+
+// conflictRepairFollowUp recognizes a repair request that explicitly refers to
+// the disputed result but adds a courtesy clause ("fix it help me and test it")
+// the narrow task-follow-up vocabulary does not parse. It applies only while a
+// verification conflict is open.
+func conflictRepairFollowUp(text string) bool {
+	normalized := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(text))), " ")
+	for _, prefix := range []string{
+		"fix it", "fix this", "fix that", "fix the issue", "fix the bug",
+		"make it", "make this", "make that", "do it", "apply it",
+		"verify it", "verify this", "test it", "test this", "check it",
+	} {
+		if normalized == prefix || strings.HasPrefix(normalized, prefix+" ") ||
+			strings.HasPrefix(normalized, prefix+",") {
+			return true
+		}
+	}
+	return false
+}
+
 // taskTurnDecision reports which continuation rule owns the prompt, if any.
 // The task layer makes one decision; routing, prediction, and attachment all
 // consume it instead of each classifying the text separately.
@@ -1143,6 +1205,8 @@ func taskTurnDecision(current TaskResume, text, active string, next contract.Int
 	switch {
 	case continuationPrompt(text):
 		return "EXPLICIT_RESUME", true
+	case verificationConflictContinuation(current, text, active, next):
+		return "VERIFICATION_CONFLICT", true
 	case handoffContinuation(current, active, text, next):
 		return "HANDOFF_CONTINUATION", true
 	case executionFollowUp(current, text):

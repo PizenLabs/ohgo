@@ -74,7 +74,10 @@ func projectLiveTelemetry(s State) liveTelemetry {
 // tools" requires a running tool; "formatting response" requires visible
 // answer text. The fallback is never inferred from model prose.
 func telemetryIntentLabel(s State, thinking ThinkingState) string {
-	if s.ProviderWait != nil {
+	// The transport state names the label only while the runtime is still
+	// waiting for the model. Once reasoning, visible text, or a tool exists,
+	// that evidence is what the runtime can prove and it owns the line.
+	if thinking.Phase == ThinkingModel && s.ProviderWait != nil {
 		if label := providerWaitLabel(*s.ProviderWait, s.frameAt); label != "" {
 			return label
 		}
@@ -117,6 +120,11 @@ func providerWaitLabel(w ProviderWait, now time.Time) string {
 	kind := providerFailureKind(w.Status)
 	switch w.Phase {
 	case "requested":
+		return "waiting for provider"
+	case "streaming":
+		// The stream is open and silent. The runtime knows the provider has
+		// not produced content yet, and saying so is the only truthful label
+		// while it waits.
 		return "waiting for provider"
 	case "retrying":
 		delay := w.Delay

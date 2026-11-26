@@ -150,14 +150,14 @@ func TestProviderActivityReportsRateLimitBeforeTheBackoff(t *testing.T) {
 	if retry.Attempt != 1 || retry.Attempts != 3 {
 		t.Errorf("retry attempt = %d/%d, want 1/3", retry.Attempt, retry.Attempts)
 	}
-	foundRecovered := false
+	foundStreaming := false
 	for _, a := range activities {
-		if a.Phase == ProviderRecovered {
-			foundRecovered = true
+		if a.Phase == ProviderStreaming {
+			foundStreaming = true
 		}
 	}
-	if !foundRecovered {
-		t.Errorf("activities = %+v, want a recovered phase", activities)
+	if !foundStreaming {
+		t.Errorf("activities = %+v, want an open-stream phase", activities)
 	}
 }
 

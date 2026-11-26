@@ -58,7 +58,11 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			if !ok {
 				return tui.TaskResume{}, false
 			}
-			return taskResume(current), true
+			resume := taskResume(current)
+			if conflict, ok := controller.VerificationConflict(); ok {
+				resume.VerificationConflict = conflict.Claim
+			}
+			return resume, true
 		},
 		Sync: func() tui.TaskProjection {
 			recorded, err := controller.Sync()
@@ -72,15 +76,20 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			recorded, err := controller.NeedsReview(reason, issues...)
 			return taskProjection(recorded, err)
 		},
+		RecordVerificationConflict: func(claim string) tui.TaskProjection {
+			recorded, err := controller.RecordVerificationConflict(claim)
+			return taskProjection(recorded, err)
+		},
 		Complete: func() tui.TaskProjection {
 			recorded, err := controller.Complete()
 			return taskProjection(recorded, err)
 		},
 		CompleteWithEvidence: func(evidence tui.CompletionEvidence) tui.TaskProjection {
 			recorded, err := controller.CompleteWithEvidence(task.CompletionEvidence{
-				Complete: evidence.Complete,
-				Reason:   evidence.Reason,
-				Answered: evidence.Answered,
+				Complete:               evidence.Complete,
+				Reason:                 evidence.Reason,
+				Answered:               evidence.Answered,
+				VerificationLimitation: evidence.VerificationLimitation,
 			})
 			return taskProjection(recorded, err)
 		},
@@ -389,6 +398,9 @@ func taskResume(recorded task.Task) tui.TaskResume {
 	if recorded.Contract != nil {
 		resume.Contract = *recorded.Contract
 		resume.HasContract = true
+	}
+	if conflict, ok := recorded.VerificationConflict(); ok {
+		resume.VerificationConflict = conflict.Claim
 	}
 	resume.Snapshot = recorded.Snapshot
 	return resume

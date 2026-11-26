@@ -13,6 +13,10 @@ type taskAction int
 
 const (
 	taskActionComplete taskAction = iota
+	// taskActionCompleteLimited records a completion whose observed result
+	// exists but whose verification is unavailable in this workspace. It is a
+	// completion with a recorded limitation, never a review.
+	taskActionCompleteLimited
 	taskActionReview
 	taskActionPause
 	taskActionFail
@@ -44,7 +48,21 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 // The stop classification and the completion rules belong to agent.ClassifyRun;
 // this function only projects its verdict into the durable task lifecycle.
 func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance) (taskAction, string, []contract.GroundingIssue) {
-	return turnTaskOutcomeForAuthority(err, turns, intent, snapshot, resolver, evidenceReview, priorChange, provenance, agent.MutationProvenance{}, "")
+	return turnTaskOutcomeForAuthority(err, turns, intent, snapshot, resolver, evidenceReview, priorChange, provenance, agent.MutationProvenance{}, "", projectionLimit{})
+}
+
+// projectionLimit is the control plane's reported limitation set for the turn.
+//
+// Both fields come from the projection report, never from model output. A
+// target the runtime established is absent stops being a review boundary; a
+// workspace with no supported check completes with a stated limitation rather
+// than demanding exploration for a command that does not exist.
+type projectionLimit struct {
+	// Unresolved names symbol or package targets the repository does not
+	// contain.
+	Unresolved []string
+	// Verification is non-empty when no supported check command exists.
+	Verification string
 }
 
 // turnTaskOutcomeForAuthority is the completion boundary when the live
@@ -57,33 +75,37 @@ func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.In
 // An empty or invalid authority disables the phase projection. The caller has
 // no trustworthy capability context, so the persisted objective is evaluated
 // unchanged.
-func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance, mutations agent.MutationProvenance, authority string) (taskAction, string, []contract.GroundingIssue) {
+func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance, mutations agent.MutationProvenance, authority string, limit projectionLimit) (taskAction, string, []contract.GroundingIssue) {
 	if err == nil {
 		if active, parseErr := workspace.Parse(authority); parseErr == nil {
 			if phase, deferred := workspace.PhaseContract(intent, active); deferred {
 				verdict, reason, issues := agent.ClassifyRun(nil, agent.CompletionInput{
-					Turns:          turns,
-					Contract:       phase,
-					Snapshot:       snapshot,
-					Resolver:       resolver,
-					EvidenceReview: evidenceReview,
-					PriorChange:    priorChange,
-					Provenance:     provenance,
-					Mutations:      mutations,
+					Turns:                  turns,
+					Contract:               phase,
+					Snapshot:               snapshot,
+					Resolver:               resolver,
+					EvidenceReview:         evidenceReview,
+					PriorChange:            priorChange,
+					Provenance:             provenance,
+					Mutations:              mutations,
+					UnresolvedTargets:      limit.Unresolved,
+					VerificationLimitation: limit.Verification,
 				}, false)
 				return projectTaskVerdict(verdict, reason, issues, true)
 			}
 		}
 	}
 	verdict, reason, issues := agent.ClassifyRun(err, agent.CompletionInput{
-		Turns:          turns,
-		Contract:       intent,
-		Snapshot:       snapshot,
-		Resolver:       resolver,
-		EvidenceReview: evidenceReview,
-		PriorChange:    priorChange,
-		Provenance:     provenance,
-		Mutations:      mutations,
+		Turns:                  turns,
+		Contract:               intent,
+		Snapshot:               snapshot,
+		Resolver:               resolver,
+		EvidenceReview:         evidenceReview,
+		PriorChange:            priorChange,
+		Provenance:             provenance,
+		Mutations:              mutations,
+		UnresolvedTargets:      limit.Unresolved,
+		VerificationLimitation: limit.Verification,
 	}, false)
 	// A conditional mutation that has not entered its change branch completed
 	// the investigation phase, not the persisted objective. The mutation is
@@ -109,6 +131,17 @@ func projectTaskVerdict(verdict agent.RunVerdict, reason string, issues []contra
 			return taskActionPhaseComplete, "", nil
 		}
 		return taskActionComplete, "", nil
+	case agent.RunCompletedLimited:
+		// The observed result exists and the workspace cannot verify it. The
+		// durable task records a completion with the stated limitation; a
+		// review here would keep a finished objective open forever.
+		if phase {
+			return taskActionPhaseComplete, "", nil
+		}
+		if reason == "" {
+			reason = "verification is unavailable in this workspace"
+		}
+		return taskActionCompleteLimited, reason, nil
 	case agent.RunNeedsReview:
 		return taskActionReview, reason, issues
 	case agent.RunCancelled:

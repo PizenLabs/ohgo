@@ -681,6 +681,10 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			recorded, err := controller.NeedsReview(reason)
 			return runtimeProjection(recorded, err)
 		},
+		RecordVerificationConflict: func(claim string) TaskProjection {
+			recorded, err := controller.RecordVerificationConflict(claim)
+			return runtimeProjection(recorded, err)
+		},
 		Complete: func() TaskProjection {
 			recorded, err := controller.Complete()
 			return runtimeProjection(recorded, err)
@@ -778,6 +782,9 @@ func runtimeResume(current task.Task) TaskResume {
 	resume.ObjectiveState = string(current.ObjectiveState())
 	resume.CompletionSummary = current.CompletionSummary()
 	resume.Warning = current.ContextWarning
+	if conflict, ok := current.VerificationConflict(); ok {
+		resume.VerificationConflict = conflict.Claim
+	}
 	if !current.Recovery.Empty() {
 		resume.RecoveryState = string(current.Recovery.State)
 		resume.RecoveryDetail = current.Recovery.Detail

@@ -85,6 +85,9 @@ func TestCheckToolRunsScopedGoTestWithVerificationEvidence(t *testing.T) {
 	if result.Verification.EffectiveCheck() != contract.CheckTest {
 		t.Fatalf("check = %s, want test", result.Verification.EffectiveCheck())
 	}
+	if result.Verification.EffectiveClass() != agent.VerificationTest {
+		t.Fatalf("class = %s, want TEST", result.Verification.EffectiveClass())
+	}
 	if len(result.Verification.Scopes) != 1 || result.Verification.Scopes[0].Path != "pkg" ||
 		!result.Verification.Scopes[0].Recursive {
 		t.Fatalf("scopes = %+v, want recursive pkg", result.Verification.Scopes)

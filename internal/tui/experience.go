@@ -95,7 +95,7 @@ func (p *Program) SetExperienceHooks(hooks ExperienceHooks) { p.experience = hoo
 // itself remains active and the mapped outcome makes no completion claim.
 func experienceOutcome(action taskAction) string {
 	switch action {
-	case taskActionComplete, taskActionPhaseComplete:
+	case taskActionComplete, taskActionCompleteLimited, taskActionPhaseComplete:
 		return "completed"
 	case taskActionReview:
 		return "needs_review"

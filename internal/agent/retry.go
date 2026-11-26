@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"time"
 
@@ -25,8 +26,13 @@ const (
 	ProviderRetrying ProviderActivityPhase = "retrying"
 	// ProviderFailed means no further attempt will be made in this run.
 	ProviderFailed ProviderActivityPhase = "failed"
-	// ProviderRecovered means an attempt opened successfully after a retry.
-	ProviderRecovered ProviderActivityPhase = "recovered"
+	// ProviderStreaming means the request was accepted and its stream is open,
+	// but no content has arrived yet.
+	//
+	// It is the state a slow or silent model produces after the transport
+	// succeeds: the runtime is still waiting on the provider, not preparing the
+	// workspace, and the UI can only say so if it is told.
+	ProviderStreaming ProviderActivityPhase = "streaming"
 )
 
 // ProviderActivity reports one provider transport transition.
@@ -57,15 +63,27 @@ type RetryPolicy struct {
 	Base time.Duration
 	// Max caps one backoff, including a provider's Retry-After hint.
 	Max time.Duration
+	// Budget bounds the whole open phase: every attempt and every backoff.
+	//
+	// Attempts alone does not bound time. A provider that accepts a connection
+	// and never answers spends its response-header timeout on the first try, so
+	// six attempts can mean tens of minutes of a busy turn with nothing to
+	// show. The budget states how long the runtime is willing to keep a turn
+	// waiting on a transport at all; a backoff that would cross it is not
+	// started, and the failure is reported instead.
+	Budget time.Duration
 }
 
 // DefaultRetryPolicy tolerates a rolling rate-limit window: six tries with
 // exponential backoff spend about one minute waiting, which is the window most
-// hosted providers use for tokens-per-minute limits.
+// hosted providers use for tokens-per-minute limits. The budget bounds the
+// pathological shape — a provider that accepts and then never answers — so a
+// hung connection fails the turn in minutes rather than consuming the run.
 var DefaultRetryPolicy = RetryPolicy{
 	Attempts: 6,
 	Base:     2 * time.Second,
 	Max:      30 * time.Second,
+	Budget:   5 * time.Minute,
 }
 
 // normalized fills the zero fields with the defaults.
@@ -81,6 +99,9 @@ func (p RetryPolicy) normalized() RetryPolicy {
 	}
 	if p.Max < p.Base {
 		p.Max = p.Base
+	}
+	if p.Budget <= 0 {
+		p.Budget = DefaultRetryPolicy.Budget
 	}
 	return p
 }
@@ -146,22 +167,39 @@ func (p RetryPolicy) delay(attempt int, err error) time.Duration {
 // duplicate model-visible work.
 //
 // Every transition is reported before the wait starts. A UI must not keep
-// saying "preparing workspace" while the loop sleeps through a 429 backoff.
+// saying "preparing workspace" while the loop sleeps through a 429 backoff,
+// and the budget stops a provider that accepts a request and never answers from
+// holding the turn: the attempt count alone does not bound that shape, because
+// one silent attempt can last as long as the transport's header timeout.
 func (l *Loop) openStream(ctx context.Context, req ai.Request) (*ai.Stream, error) {
 	policy := l.cfg.Retry.normalized()
+	started := time.Now()
 	var lastErr error
 	for attempt := 0; attempt < policy.Attempts; attempt++ {
+		if attempt > 0 && time.Since(started) >= policy.Budget {
+			l.reportProvider(ProviderActivity{
+				Phase: ProviderFailed, Attempt: attempt, Attempts: policy.Attempts,
+				Status: providerHTTPStatus(lastErr), Err: lastErr,
+			})
+			return nil, providerBudgetError(policy.Budget, lastErr)
+		}
 		l.reportProvider(ProviderActivity{
 			Phase: ProviderRequested, Attempt: attempt + 1, Attempts: policy.Attempts,
 		})
 		stream, err := l.cfg.Stream(ctx, req)
 		if err == nil {
 			l.reportProvider(ProviderActivity{
-				Phase: ProviderRecovered, Attempt: attempt + 1, Attempts: policy.Attempts,
+				Phase: ProviderStreaming, Attempt: attempt + 1, Attempts: policy.Attempts,
 			})
 			return stream, nil
 		}
 		lastErr = err
+		// A cancelled turn is not a provider policy decision: the context is
+		// the caller's stop and it outranks the retry budget or the attempt
+		// count, or an interrupt would be reported as a transport failure.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		if attempt == policy.Attempts-1 || !retryableProviderError(err) {
 			l.reportProvider(ProviderActivity{
 				Phase: ProviderFailed, Attempt: attempt + 1, Attempts: policy.Attempts,
@@ -170,6 +208,13 @@ func (l *Loop) openStream(ctx context.Context, req ai.Request) (*ai.Stream, erro
 			return nil, lastErr
 		}
 		delay := policy.delay(attempt, err)
+		if time.Since(started)+delay >= policy.Budget {
+			l.reportProvider(ProviderActivity{
+				Phase: ProviderFailed, Attempt: attempt + 1, Attempts: policy.Attempts,
+				Status: providerHTTPStatus(err), Err: err,
+			})
+			return nil, providerBudgetError(policy.Budget, lastErr)
+		}
 		if !l.canWait(delay) {
 			l.reportProvider(ProviderActivity{
 				Phase: ProviderFailed, Attempt: attempt + 1, Attempts: policy.Attempts,
@@ -186,6 +231,13 @@ func (l *Loop) openStream(ctx context.Context, req ai.Request) (*ai.Stream, erro
 		}
 	}
 	return nil, lastErr
+}
+
+// providerBudgetError names the bound that ended the open phase, so the reason
+// the turn stopped is the runtime's own decision rather than a provider message
+// about one attempt.
+func providerBudgetError(budget time.Duration, cause error) error {
+	return fmt.Errorf("the provider did not answer within %s; retrying was stopped: %w", budget, cause)
 }
 
 // reportProvider publishes one transport transition when a host is listening.

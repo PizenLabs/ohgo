@@ -101,6 +101,21 @@ func (k TargetKind) Filesystem() bool {
 	return k == TargetPath || k == TargetSymbol || k == TargetPackage
 }
 
+// MaxTargetLookupMisses bounds how many definitive structural lookups may
+// report a named coordinate absent before the runtime treats it as not
+// applicable.
+//
+// A target extracted from a request's wording is a hypothesis about where the
+// work lives. A structural lookup that answers not_found is a positive
+// observation of absence from the repository index, not a failed attempt: the
+// index has looked and the name is not there. One such observation is enough
+// to stop treating the wording as an obligation; keeping it blocking is what
+// turns a wording heuristic into unbounded exploration.
+//
+// The bound is shared by the evidence layer and the completion evaluator so the
+// two cannot disagree about when a target stopped being an obligation.
+const MaxTargetLookupMisses = 1
+
 // Target is one object named by the request.
 type Target struct {
 	// Kind is how Value is interpreted.

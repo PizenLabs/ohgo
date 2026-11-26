@@ -175,6 +175,20 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			FailureClass: agent.ToolFailureOutsideWorkspace,
 		}
 	}
+	// The same boundary applies to a read. Every dedicated read capability is
+	// confined to the workspace root; a shell command that names a sibling,
+	// parent, or home path is the bypass this check closes, whatever authority
+	// the session runs under.
+	if target, outside := OutsideWorkspaceRead(command, t.Root); outside {
+		return agent.Result{
+			Text: fmt.Sprintf(
+				"command refused: %q is outside the workspace and outside the temporary execution area; "+
+					"read it from an authorized workspace, or ask the human to open one", target),
+			IsError:      true,
+			Refused:      true,
+			FailureClass: agent.ToolFailureOutsideWorkspace,
+		}
+	}
 
 	// A per-call working directory is how a model scopes a build or test
 	// command to a submodule without a shell `cd`. It is resolved through the

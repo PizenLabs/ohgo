@@ -7,6 +7,17 @@ immutable.
 
 ### Added
 
+- Verification evidence classes and conflicts. A successful check now records
+  `STATIC`, `TEST`, or `BEHAVIORAL`; a static build or source assertion can no
+  longer certify a behavioral answer claim. A user report that contradicts a
+  recorded verification becomes an explicit `VerificationConflict` that routes
+  the next turn to behavioral investigation and withholds duplicate BUILD
+  mutation until a behavioral observation answers it. A rendered-text browser
+  check proves the content the page rendered, not motion or performance; those
+  claims stay unverified unless an observation measures them. The answer gate
+  and completion use the same claim audit, and provider failure after a
+  mutation preserves the completed turns and evidence for resume.
+
 - Claim-preserving answer lifecycle. A candidate is now an internal
   `agent.AnswerDraft` with sentence-sized claims, provenance, a version, and a
   `SUPERSEDES` link. Review marks only the refused claims `REPAIR_REQUIRED`;
@@ -255,6 +266,14 @@ immutable.
 
 ### Fixed
 
+- A run that is still implementing a change is no longer closed as `no
+  meaningful task progress` after four observation turns at the verification
+  boundary. `MaxVerifyObservationTurns` is now the sole bound there and restarts
+  on each new change, so the recorded front-end run can read the files it is
+  about to patch and apply the final edit instead of receiving `No tool is
+  available in the current task stage`. The stop reason also reports that
+  verification was not established, which is true for both repeated reads and
+  repeated failing checks.
 - A serialized tool call whose tag carries a provider decoration, such as
   `<tool_call_24b82c79>`, is recognized as the `<tool_call>` family. The
   envelope is consumed as one unsupported-envelope diagnostic instead of being

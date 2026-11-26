@@ -80,10 +80,10 @@ func (o runOutcome) exitCode() int {
 }
 
 // line renders the one terminal line both headless paths print.
+//
+// A completion can carry a limitation as well as a reason; dropping it would
+// hide the one fact the caller needs to know about a successful run.
 func (o runOutcome) line() string {
-	if o.State == runCompleted {
-		return string(o.State)
-	}
 	if o.Reason == "" {
 		return string(o.State)
 	}
@@ -127,15 +127,17 @@ func debugSwitch(name string) bool {
 // reimplements completion or the stop classification: agent.ClassifyRun owns
 // the decision, and this function only projects the verdict into the exit-code
 // vocabulary a script can branch on.
-func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, deadlineExpired bool, evidenceReview string, provenance agent.EvidenceProvenance, mutations agent.MutationProvenance) runOutcome {
+func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, deadlineExpired bool, evidenceReview string, provenance agent.EvidenceProvenance, mutations agent.MutationProvenance, unresolved []string, verificationLimited string) runOutcome {
 	input := agent.CompletionInput{
-		Turns:          turns,
-		Contract:       intent,
-		Snapshot:       snapshot,
-		Resolver:       resolver,
-		EvidenceReview: evidenceReview,
-		Provenance:     provenance,
-		Mutations:      mutations,
+		Turns:                  turns,
+		Contract:               intent,
+		Snapshot:               snapshot,
+		Resolver:               resolver,
+		EvidenceReview:         evidenceReview,
+		Provenance:             provenance,
+		Mutations:              mutations,
+		UnresolvedTargets:      unresolved,
+		VerificationLimitation: verificationLimited,
 	}
 
 	// The claim issues behind a review verdict are durable-task data: the TUI
@@ -146,6 +148,11 @@ func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, s
 	switch verdict {
 	case agent.RunCompleted:
 		return newOutcome(runCompleted, "")
+	case agent.RunCompletedLimited:
+		// The objective's observed result exists and the workspace cannot
+		// verify it. That is a completion with a stated limitation, not a
+		// review the user must resolve.
+		return newOutcome(runCompleted, reason)
 	case agent.RunNeedsReview:
 		return newOutcome(runNeedsReview, reason)
 	case agent.RunPaused:
@@ -306,11 +313,15 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 	deadlineExpired := !deadline.IsZero() && !time.Now().Before(deadline)
 	review := ""
 	var provenance agent.EvidenceProvenance
+	var unresolved []string
+	verificationLimited := ""
 	if haveReport {
 		review = lastReport.EvidenceReview()
 		provenance = lastReport.Provenance
+		unresolved = lastReport.Unresolved
+		verificationLimited = lastReport.VerificationLimited
 	}
-	outcome := projectRun(err, turns, intent, snapshot, resolver, deadlineExpired, review, provenance, loop.LastMutation())
+	outcome := projectRun(err, turns, intent, snapshot, resolver, deadlineExpired, review, provenance, loop.LastMutation(), unresolved, verificationLimited)
 	if responseAuditEnabled() {
 		audit := struct {
 			Response       agent.ResponseAudit `json:"response"`

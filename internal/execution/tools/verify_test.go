@@ -62,6 +62,9 @@ func TestVerifyToolStartsReadyHTTPAndCleansUp(t *testing.T) {
 	if result.Runtime == nil {
 		t.Fatal("a service that reached readiness and passed a check produced no runtime evidence")
 	}
+	if result.Verification == nil || result.Verification.EffectiveClass() != agent.VerificationBehavioral {
+		t.Fatalf("verification evidence = %+v, want BEHAVIORAL class", result.Verification)
+	}
 	if result.Runtime.Checks < 1 || result.Runtime.PID <= 0 || result.Runtime.Command == "" {
 		t.Fatalf("runtime evidence = %+v, want one passing check against an owned process", result.Runtime)
 	}
@@ -91,6 +94,33 @@ func TestVerifyToolStartsReadyHTTPAndCleansUp(t *testing.T) {
 	})
 	if !completion.Complete() {
 		t.Fatalf("passing service + HTTP verification did not prove the objective: %s", completion.Reason)
+	}
+}
+
+// A live service is runtime evidence, but it does not upgrade a shell
+// assertion into a behavioral observation. Only the check's own class can do
+// that; a grep or "true" check remains static.
+func TestVerifyServiceWithShellCheckKeepsStaticClass(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	result := NewVerifyTool(root).Execute(agent.Context{Ctx: context.Background()}, map[string]any{
+		"service": map[string]any{"command": advertisingService(server.URL)},
+		"checks": []any{map[string]any{
+			"kind": "command", "command": "true",
+		}},
+	})
+	if result.IsError || !result.Verifies {
+		t.Fatalf("verification failed: %s", result.Text)
+	}
+	if result.Runtime == nil {
+		t.Fatal("a ready service with a passing check produced no runtime evidence")
+	}
+	if result.Verification == nil || result.Verification.EffectiveClass() != agent.VerificationStatic {
+		t.Fatalf("verification evidence = %+v, want STATIC class", result.Verification)
 	}
 }
 

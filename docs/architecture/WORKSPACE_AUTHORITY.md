@@ -631,6 +631,42 @@ agent.Loop.execute
 - A refused route never reaches the model: `harness.RouteTurn` is consulted in
   `repl`, in `tui.Program.runTurn`, and in `runOnce` before `Loop.Run`.
 
+### Filesystem scope of a shell command
+
+The workspace is also the task's filesystem scope, not only its mutation scope.
+Every dedicated read capability resolves its path argument through the same
+containment rule, so `read`, `grep`, `glob`, and the structural tools cannot
+reach a sibling, a parent, `$HOME`, or `/`.
+
+A shell command is the one capability whose targets are text, so it is analysed
+separately and enforced in three places from one rule
+(`tools.OutsideWorkspaceRead`):
+
+- the `bash` tool refuses an outside read target before the process starts;
+- `securityGate.Evaluate` denies the same invocation at the authorization
+  boundary, so a caller that skips the tool's own guard still cannot grant it;
+- the `!` shell escape applies the identical check, so the human path and the
+  agent path cannot disagree.
+
+The analysis is a target parse, not a string filter: it resolves literal paths
+against the command's effective working directory, recognises the utilities
+whose positional arguments are files, treats `cd`/`pushd` out of the workspace
+as the escape it is, and recurses into `sh -c` payloads. Existing absolute or
+`$HOME`-relative literals are refused wherever they appear, which covers a
+shell loop whose body the segment parser cannot model. Writes keep their
+separate rule: a persistent write outside the workspace and outside the
+temporary execution area is refused, while build staging in `TMPDIR` is
+ordinary execution. Reads share the staging exemption conditionally: the
+operating system's temporary tree is a sandbox for a workspace that lives
+elsewhere, but when the workspace itself is rooted there, that tree is its
+neighborhood and a sibling directory is a sibling project.
+
+Consequence for the model: an authority denial is final for that target.
+Re-issuing the same read through `bash`, `grep`, `find`, or `sed` is refused by
+the same boundary, so a refusal cannot become an exploration strategy. A
+legitimate cross-workspace task is expressed by opening a session in that
+workspace, not by reaching out of this one.
+
 Prompts are not the boundary. `prompt.WorkspaceContract` tells the model what
 its mode means, but deleting it cannot grant a capability: the gate denies the
 call regardless.

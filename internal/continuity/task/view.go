@@ -125,7 +125,7 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	// not: a completion claim, a recorded proof, a blocked contract, or a
 	// non-intact recovery.
 	if state := t.ObjectiveState(); state == ObjectiveProven || state == ObjectiveCompletedUnproven ||
-		state == ObjectiveBlocked || t.Completion != nil {
+		state == ObjectiveCompletedLimited || state == ObjectiveBlocked || t.Completion != nil {
 		b.addBlock("Objective state", t.CompletionSummary())
 	}
 	if !t.Recovery.Empty() {

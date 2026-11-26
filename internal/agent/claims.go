@@ -1052,6 +1052,8 @@ func claimIsBounded(sentence string) bool {
 	for _, marker := range []string{
 		"not verified", "unverified", "cannot verify", "can't verify",
 		"could not verify", "couldn't verify", "not established",
+		"could not measure", "couldn't measure", "not measured", "unmeasured",
+		"could not observe", "couldn't observe", "not observed",
 		"no evidence", "would need", "worth verifying", "not evaluated",
 		"not inspected", "not checked", "not probed", "in the probes",
 		"in this pass", "in this scan", "does not show", "doesn't show",

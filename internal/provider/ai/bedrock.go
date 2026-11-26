@@ -52,7 +52,7 @@ type BedrockProvider struct {
 
 // NewBedrockProvider returns a provider for the given Bedrock API key.
 func NewBedrockProvider(apiKey string) *BedrockProvider {
-	return &BedrockProvider{Client: &http.Client{}, APIKey: apiKey}
+	return &BedrockProvider{Client: newHTTPClient(DefaultResponseHeaderTimeout), APIKey: apiKey}
 }
 
 type bedrockRequest struct {
@@ -153,7 +153,7 @@ type bedrockSpecificTool struct {
 // Stream implements Provider.
 func (p *BedrockProvider) Stream(ctx context.Context, req Request) (*Stream, error) {
 	if p.Client == nil {
-		p.Client = &http.Client{}
+		p.Client = newHTTPClient(DefaultResponseHeaderTimeout)
 	}
 	base := p.BaseURL
 	if base == "" {

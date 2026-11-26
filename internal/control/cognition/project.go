@@ -101,10 +101,17 @@ type Projector struct {
 	// progress tracks consecutive completed turns that did not advance the
 	// task. It is runtime-only state for one run; a new run starts fresh.
 	progress progressTracker
-	// actTurns counts projections spent at the mutation act boundary without
-	// the requested change. It is a semantic bound, separate from the generic
-	// no-progress counter: a novel read still does not satisfy a change.
-	actTurns int
+	// preActionTurns counts projections spent observing before the requested
+	// change or execution is applied. It is a semantic bound, separate from the
+	// generic no-progress counter: novelty does not satisfy an action, so a
+	// survey that keeps finding new files is still bounded. It covers the
+	// explore and act stages together, because those stages name different
+	// evidence states, not different budgets, and a per-stage window let one
+	// phase quietly double the other.
+	preActionTurns int
+	// verifyTurns counts projections spent at the verification boundary
+	// without a successful check.
+	verifyTurns int
 	// conclusionTurns counts projections whose only missing requirement is the
 	// terminal investigation verdict.
 	conclusionTurns int
@@ -126,25 +133,32 @@ type progressTracker struct {
 }
 
 // trackProgress records whether the completed turns since the last projection
-// changed the task boundary.
+// changed the task boundary, and reports what those turns did.
 //
 // During verification, novelty is deliberately not progress: the task already
 // has a change waiting for its check, and another read cannot close that
 // obligation. A successful check or a corrective change is progress. Outside
 // verification, new evidence and a changed stage/requirement/blocker are
 // progress, so ordinary exploration is not cut short.
-func (p *Projector) trackProgress(turns []agent.Turn, suff Sufficiency, novel int) {
+//
+// Waiting at the verification boundary is bounded by verifyTurns, a dedicated
+// window that restarts on a new change. The generic counter must not also count
+// those turns: with a smaller bound it closed the surface after four reads
+// while the model was still implementing the change, before the window that
+// exists to bound exactly that wait could end.
+func (p *Projector) trackProgress(turns []agent.Turn, suff Sufficiency, novel int) turnActivity {
 	tracker := &p.progress
+	var activity turnActivity
 	if !tracker.seeded {
 		tracker.seeded = true
 		tracker.lastTurn = len(turns)
 		tracker.stage = suff.Stage
 		tracker.missing = strings.Join(suff.Missing, "\x00")
 		tracker.kind = suff.Kind
-		return
+		return activity
 	}
 	if len(turns) <= tracker.lastTurn {
-		return
+		return activity
 	}
 	completed := turns[tracker.lastTurn:]
 	advanced := false
@@ -152,6 +166,9 @@ func (p *Projector) trackProgress(turns []agent.Turn, suff Sufficiency, novel in
 		for _, outcome := range turn.Results {
 			if outcome.Refused() || outcome.Result.IsError {
 				continue
+			}
+			if outcome.Result.Mutates || (outcome.Authorization != nil && outcome.Authorization.Mutates) {
+				activity.mutated = true
 			}
 			if outcome.Result.Mutates || outcome.Result.Verifies {
 				advanced = true
@@ -163,7 +180,7 @@ func (p *Projector) trackProgress(turns []agent.Turn, suff Sufficiency, novel in
 		(suff.Stage != StageVerify && novel > 0) {
 		advanced = true
 	}
-	if advanced {
+	if advanced || suff.Stage == StageVerify {
 		tracker.stalled = 0
 	} else {
 		tracker.stalled++
@@ -172,6 +189,15 @@ func (p *Projector) trackProgress(turns []agent.Turn, suff Sufficiency, novel in
 	tracker.stage = suff.Stage
 	tracker.missing = strings.Join(suff.Missing, "\x00")
 	tracker.kind = suff.Kind
+	return activity
+}
+
+// turnActivity is what the completed turns definitely did, as opposed to what
+// the model said about them. A stage-scoped bound restarts on it: a change is
+// new work, so the wait for its check starts over.
+type turnActivity struct {
+	// mutated reports a change the runtime admitted and observed.
+	mutated bool
 }
 
 // stall applies the semantic stop to a sufficiency verdict that has not
@@ -187,6 +213,31 @@ func (p *Projector) stall(suff *Sufficiency) bool {
 		fmt.Sprintf("no meaningful task progress for %d consecutive turns: no change, verification, required evidence, or blocker advanced the task", p.progress.stalled))
 	suff.Next = []string{"report the remaining evidence gap and require review; do not repeat the same observation"}
 	return true
+}
+
+// preActionObservation reports whether this projection is still observing
+// before the change or execution the request asked for.
+//
+// The explore and act stages name different evidence states, not different
+// budgets: in both the deliverable is an action, and another observation cannot
+// satisfy it. Counting them separately would let a stage transition reset the
+// window, so one phase could spend the budget twice.
+func preActionObservation(shape TaskShape, suff Sufficiency) bool {
+	if suff.Kind != BlockNone {
+		return false
+	}
+	if shape.Kind != contract.ObjectiveMutation && shape.Kind != contract.ObjectiveExecution {
+		return false
+	}
+	return suff.Stage == StageExplore || suff.Stage == StageAct
+}
+
+// preActionDeliverable names the action the observation window is waiting for.
+func preActionDeliverable(shape TaskShape) string {
+	if shape.Kind == contract.ObjectiveExecution {
+		return "execution"
+	}
+	return "change"
 }
 
 // NewProjector returns a projector for one turn.
@@ -258,7 +309,7 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// produce a listing, and the model must be told which restriction blocks it
 	// rather than being left to discover it one failing call at a time.
 	suff = workspaceUnreadable(p.Facts, suff)
-	p.trackProgress(req.Turns, suff, novel)
+	activity := p.trackProgress(req.Turns, suff, novel)
 	p.stall(&suff)
 	if len(suff.Missing) == 1 && suff.Missing[0] == "investigation_conclusion" &&
 		suff.State == Insufficient && suff.Stage != StageAnswer && suff.Stage != StageComplete {
@@ -286,18 +337,49 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	} else if suff.Missing == nil || len(suff.Missing) != 1 || suff.Missing[0] != "investigation_conclusion" {
 		p.conclusionTurns = 0
 	}
-	if shape.Mutation.Allowed && suff.Stage == StageAct && suff.Kind == BlockNone {
-		p.actTurns++
-		if p.actTurns > MaxActObservationTurns {
+	// Observation before an action is bounded even when every turn finds a new
+	// path: novelty proves the search is working, not that the objective needs
+	// it, and another observation cannot apply the requested change. The
+	// window is a share of the remaining model-turn grant, so it ends the shape
+	// that walks a filesystem one directory at a time without ending a
+	// legitimate first pass over a multi-file project. It is deliberately not a
+	// wall-clock limit.
+	if preActionObservation(shape, suff) {
+		p.preActionTurns++
+		if p.preActionTurns > PreActionObservationAllowance(shape) {
 			suff.State = Blocked
 			suff.Stage = StageBlocked
 			suff.Kind = BlockProgressStalled
 			suff.Reasons = append(suff.Reasons,
-				fmt.Sprintf("the action boundary was available for %d turns without a change; another observation cannot satisfy it", p.actTurns))
-			suff.Next = []string{"act on the requested change or report the remaining gap; no further survey is required"}
+				fmt.Sprintf("the requested %s was not performed in %d observation turns; further evidence cannot be acquired by another survey",
+					preActionDeliverable(shape), p.preActionTurns))
+			suff.Next = []string{"perform the requested action with the tools already offered, or report the remaining gap and the work performed"}
 		}
-	} else if suff.Stage != StageAct {
-		p.actTurns = 0
+	} else if suff.Stage != StageExplore && suff.Stage != StageAct {
+		p.preActionTurns = 0
+	}
+	// Verification has a finite budget too. If the check has not succeeded
+	// after the allowed attempts, another turn cannot establish it; the
+	// truthful outcome is a report of the change and the missing verification,
+	// not more exploration. A new change is new work, so it restarts the wait:
+	// the window bounds waiting, not iteration. This is the only bound at the
+	// verification boundary; the generic no-progress counter is reset there
+	// rather than closing the surface first.
+	if activity.mutated {
+		p.verifyTurns = 0
+	}
+	if suff.Stage == StageVerify && suff.Kind == BlockNone {
+		p.verifyTurns++
+		if p.verifyTurns > MaxVerifyObservationTurns {
+			suff.State = Blocked
+			suff.Stage = StageBlocked
+			suff.Kind = BlockProgressStalled
+			suff.Reasons = append(suff.Reasons,
+				fmt.Sprintf("the requested verification was not established in %d verification turns; another turn cannot establish it", p.verifyTurns))
+			suff.Next = []string{"report the change and the missing verification; do not repeat the same observation or check"}
+		}
+	} else if suff.Stage != StageVerify {
+		p.verifyTurns = 0
 	}
 	failures := p.Evidence.FailureState()
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
@@ -457,6 +539,8 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		report.Progress = "stalled"
 	}
 	report.NoProgressTurns = p.progress.stalled
+	report.ExplorationTurns = p.preActionTurns
+	report.VerificationTurns = p.verifyTurns
 	// An informational task whose required evidence is known is done
 	// observing. If the model answers in the same turn as a tool call, the
 	// answer is final and the call is continuation, not evidence gathering.
@@ -482,7 +566,10 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		report.AnswerEligible = true
 	}
 	report.Terminal = suff.Kind == BlockCapabilityFailure || suff.Kind == BlockProgressStalled
+	report.ObjectiveComplete = suff.Stage == StageComplete
 	report.Missing = append([]string(nil), suff.Missing...)
+	report.Unresolved = append([]string(nil), suff.Unresolved...)
+	report.VerificationLimited = suff.VerificationLimited
 	report.Facets = facetReportRows(suff.Facets)
 	if suff.RequiredFacets > 0 {
 		report.FacetCoverage = fmt.Sprintf("%d/%d", suff.SatisfiedFacets, suff.RequiredFacets)
