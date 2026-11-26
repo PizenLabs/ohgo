@@ -5,12 +5,10 @@ import (
 	"unicode"
 )
 
-// knownEfforts is the thinking-effort vocabulary the catalog exposes (see
-// catalog.Thinking.Efforts: max, xhigh, high, medium, low, minimal). It is
-// data, not per-model policy: the assignment seam validates a level against
-// the bound model's own ladder, while the header only normalizes spelling so
-// "MAX" and " max " read as one level and anything else stays absent rather
-// than rendering as a badge.
+// knownEfforts is the bundled catalog vocabulary used only to recognize a
+// trailing "(effort)" variant in a model reference. It is not a display
+// allowlist: a configured endpoint may publish another native level, and the
+// header must show the level the authority accepted.
 var knownEfforts = map[string]bool{
 	"max":     true,
 	"xhigh":   true,
@@ -28,15 +26,25 @@ func isKnownEffort(level string) bool {
 
 // NormalizeEffort canonicalizes a raw effort level for display.
 //
-// It trims space, lowercases, and returns "" for empty, "off", or any level
-// outside the catalog vocabulary, so the header omits rather than invents a
-// badge. "off" disables thinking outright and never renders as a level.
+// It trims space, lowercases, and returns "" for empty, "off", "none", or a
+// token with unsafe characters. The level itself is model data, not a fixed
+// catalog enum: a configured endpoint may publish "standard" or another native
+// name, and hiding it would make AUTO's selected level invisible. Authority
+// validation remains the harness's job; this function only protects rendering.
 func NormalizeEffort(effort string) string {
 	level := strings.ToLower(strings.TrimSpace(effort))
-	if level == "" || level == "off" {
+	if level == "" || level == "off" || level == "none" ||
+		level == "auto" || level == "default" || level == "unset" {
 		return ""
 	}
-	if !isKnownEffort(level) {
+	runes := []rune(level)
+	if len(runes) > 32 {
+		return ""
+	}
+	for _, r := range runes {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
+			continue
+		}
 		return ""
 	}
 	return level
@@ -161,16 +169,30 @@ func effortTitle(level string) string {
 }
 
 // effortAutoDetail explains what Auto does for this role. An explicit
-// configured level is cleared; with no override, the row names the level the
-// role currently resolves to so selecting Auto is informed.
-func effortAutoDetail(configured, current string) string {
+// configured level is cleared; a global or invocation policy is replaced by
+// demand. The current level is named only when it is a real observed level.
+func effortAutoDetail(configured, current string, auto bool, mode string) string {
+	current = NormalizeEffort(current)
+	if auto {
+		if current != "" {
+			return "work demand · last " + current
+		}
+		return "follow the work's demand"
+	}
 	if strings.TrimSpace(configured) != "" {
 		return "clear the role override"
 	}
-	if current = NormalizeEffort(current); current != "" {
-		return "role default · currently " + current
+	switch mode {
+	case EffortModeGlobal, EffortModeInvocation:
+		if current != "" {
+			return "enable work demand · currently " + current
+		}
+		return "enable work demand"
+	case EffortModeOff:
+		return "enable work demand"
+	default:
+		return "follow the work's demand"
 	}
-	return "role default"
 }
 
 // effortPickerSummary names the role and live model the effort card edits.
@@ -190,10 +212,10 @@ func effortPickerSummary(state State) string {
 // FormatEffortReport renders /effort's answer for one workspace role.
 //
 // model is the reference the runtime is calling; assignment carries the role's
-// configured effort and the bound model's authoritative ladder; effective is
-// the level the next turn would use, which differs from the configured level
-// under AUTO. The report names the role and model first because adjusting the
-// wrong role's thinking is the failure the command exists to prevent.
+// mode, configured effort, and the bound model's authoritative ladder;
+// effective is the last level the per-request policy projected. The report
+// names the role and model first because adjusting the wrong role's thinking
+// is the failure the command exists to prevent.
 func FormatEffortReport(role, model string, assignment RoleAssignment, effective string) string {
 	role = strings.ToUpper(strings.TrimSpace(role))
 	if role == "" {
@@ -206,26 +228,51 @@ func FormatEffortReport(role, model string, assignment RoleAssignment, effective
 	if model == "" {
 		model = "no model"
 	}
-	state := effortState(assignment.Effort, effective)
+	state := effortState(assignment, effective)
 	return role + " · " + model + " · effort: " + state +
 		"\nlevels: " + strings.Join(effortLevels(assignment.Efforts), ", ") +
 		" · /effort <level|off|auto>"
 }
 
-// effortState names the configured effort, or the role default with the level
-// AUTO is currently applying when one is visible.
-func effortState(configured, effective string) string {
-	level := strings.ToLower(strings.TrimSpace(configured))
-	switch level {
-	case EffortOff:
+// effortState names the actual authority selecting effort. "auto" is reserved
+// for demand; a global or invocation policy is reported as such even though the
+// role stores no level.
+func effortState(assignment RoleAssignment, effective string) string {
+	level := strings.ToLower(strings.TrimSpace(assignment.Effort))
+	if level == EffortOff {
 		return EffortOff
-	case "":
-		if current := strings.ToLower(strings.TrimSpace(effective)); current != "" {
-			return "auto (currently " + current + ")"
+	}
+	if level != "" {
+		return level
+	}
+	current := strings.ToLower(strings.TrimSpace(effective))
+	if assignment.Auto {
+		if current != "" {
+			return "auto (last " + current + ")"
 		}
 		return "auto"
+	}
+	switch assignment.EffortMode {
+	case EffortModeOff:
+		return EffortOff
+	case EffortModeGlobal:
+		if current != "" {
+			return "global (currently " + current + ")"
+		}
+		return "global"
+	case EffortModeInvocation:
+		if current != "" {
+			return "run override (currently " + current + ")"
+		}
+		return "run override"
 	default:
-		return level
+		// Assignments produced before the mode field existed still describe
+		// an inherited role policy; keep the truthful old spelling rather than
+		// claiming auto for an unknown mode.
+		if current != "" {
+			return "auto (last " + current + ")"
+		}
+		return "auto"
 	}
 }
 
@@ -245,16 +292,25 @@ func effortLevels(efforts []string) []string {
 	return out
 }
 
-// FormatEffortApplied names the role, the applied level, and the model the
-// next turn will call. An empty level reads as "auto": the role override was
-// cleared, not set to an invisible value.
+// FormatEffortApplied names the role, the applied mode or level, and the model
+// the next request will call. An empty level is reported as "auto" only when
+// demand owns the role; a global/cleared policy is reported as "default".
 func FormatEffortApplied(result RoleAssignment, model string) string {
 	if strings.TrimSpace(model) == "" {
 		model = result.Model
 	}
 	level := strings.ToLower(strings.TrimSpace(result.Effort))
 	if level == "" {
-		level = "auto"
+		switch {
+		case result.Auto || result.EffortMode == "" || result.EffortMode == EffortModeAuto:
+			level = "auto"
+		case result.EffortMode == EffortModeInvocation:
+			level = "run override"
+		case result.EffortMode == EffortModeOff:
+			level = EffortOff
+		default:
+			level = "default"
+		}
 	}
 	role := strings.ToUpper(strings.TrimSpace(result.Role))
 	if strings.TrimSpace(model) == "" {

@@ -113,7 +113,8 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	held.rec = recoverer
 	held.usage.SetCost(opts.model.Cost)
 	held.workspace = opts.authority().Label()
-	held.autoReasoning = opts.autoReasoning
+	held.reasoningFlag = opts.reasoningFlag
+	held.effortFlag = opts.effortFlag
 	held.gate = opts.gate
 	held.security = opts.security
 	held.support = surface
@@ -124,17 +125,8 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	program.SetMentionLister(mentionLister(opts.root))
 	program.SetMentionReader(mentionReader(opts.root))
 
-	program.SetEffortProvider(func() string {
-		role := held.sessionRole()
-		if role == "" {
-			role = strings.ToLower(opts.authority().String())
-		}
-		enabled, level := held.reasoningFor(held.roleEffortFor(role))
-		if !enabled {
-			return ""
-		}
-		return level
-	})
+	program.SetEffortProvider(held.currentEffort)
+	program.PublishEffort(held.currentEffort())
 
 	program.SetModelSwitcher(
 		func(id string) error {
@@ -178,6 +170,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		SetEffort: func(role, effort string) (tui.RoleAssignment, []tui.RoleAssignment, error) {
 			return held.SetEffort(role, effort)
 		},
+		Effort:          held.EffortAssignment,
 		EffectiveWindow: func() int { return held.model.ContextWindow },
 		SaveKey: func(provider, key string) error {
 			return held.SavePlaneKey(provider, key)
@@ -194,7 +187,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		},
 	})
 	installWorkspaceHooks(program, held, controller, &opts)
-	program.SetReasoningSelector(func(intent workspace.IntentContract, text string, request []agent.Message) (bool, string) {
+	program.SetReasoningSelector(func(intent workspace.IntentContract, text string, facts agent.ReasoningFacts) (bool, string) {
 		var current *task.Task
 		if controller != nil {
 			if open, ok := controller.Current(); ok {
@@ -202,7 +195,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 				current = &opened
 			}
 		}
-		return held.reasoningForWork(intent, workspace.AnalyzeRequest(text), current, request)
+		return held.reasoningForWork(intent, workspace.AnalyzeRequest(text), current, facts)
 	})
 	program.SetJobsLister(func() []tui.JobItem {
 		for _, tool := range loop.Tools() {

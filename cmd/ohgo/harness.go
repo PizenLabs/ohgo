@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
@@ -83,9 +84,19 @@ type harness struct {
 	// announce anything. The function reads only the local cache; it never
 	// performs network I/O in the prompt loop.
 	updateNotice func(io.Writer)
-	// autoReasoning reports that the turn's reasoning level is selected from
-	// the work's demand because no human effort override applies.
-	autoReasoning bool
+	// reasoningFlag and effortFlag are the invocation-level overrides. They
+	// are separate from settings because a flag belongs to this run, not to
+	// durable role configuration; /effort auto can still re-enable demand for
+	// the active role during the session.
+	reasoningFlag bool
+	effortFlag    string
+	// autoForced records roles whose Auto mode the human selected at runtime.
+	// It lets that explicit action win over an invocation flag for the rest of
+	// the session while leaving the persisted role mode unchanged.
+	autoForced map[string]bool
+	// reasoningMu guards lastReasoningEffort and autoForced. The per-request
+	// policy runs on the request goroutine while the UI reads the badge.
+	reasoningMu sync.RWMutex
 	// lastReasoningEffort is the level the demand selector last applied. It
 	// survives a role handoff, because reasoning is independent of role, and
 	// feeds the header badge without inventing a level for a disabled or
@@ -502,7 +513,10 @@ func (h *harness) RoleAssignments() []tui.RoleAssignment {
 	var out []tui.RoleAssignment
 	for _, role := range config.RoleNames() {
 		ref, effort, source := settings.RoleModel(string(role))
-		out = append(out, h.roleAssignment(string(role), ref, effort, source, facts))
+		assignment := h.roleAssignment(string(role), ref, effort, source, facts)
+		assignment.Auto = h.demandActive(string(role))
+		assignment.EffortMode = h.effortMode(string(role))
+		out = append(out, assignment)
 	}
 	return out
 }
@@ -511,6 +525,67 @@ func (h *harness) RoleAssignments() []tui.RoleAssignment {
 func (h *harness) snapshotEntries() []catalog.SnapshotEntry {
 	entries, _ := catalog.SnapshotAll()
 	return entries
+}
+
+// EffortAssignment reports the role target for /effort. Unlike the broader
+// model-control roster, the session's own role uses the live model the next
+// request will call, so a --model/resume override cannot leave the card
+// offering levels the runtime will refuse.
+func (h *harness) EffortAssignment(role string) tui.RoleAssignment {
+	name := config.NormalizeRole(role)
+	settings := h.settingsOrDefault()
+	ref, effort, source := settings.RoleModel(string(name))
+	model, err := h.effortModel(name)
+	if err != nil {
+		// Keep the configured reference visible. Substituting the catalog
+		// default here would name a model the role does not call and could
+		// make the card look valid for the wrong ladder.
+		return tui.RoleAssignment{
+			Role: string(name), Model: ref, Effort: effort, Source: source,
+			Auto: h.demandActive(string(name)), EffortMode: h.effortMode(string(name)),
+		}
+	}
+	if h.activeRole() == name && h.model.Ref() != "" {
+		model = h.model
+		if strings.TrimSpace(ref) == "" || model.Ref() != ref {
+			source = "session"
+		}
+	}
+	assignment := tui.RoleAssignment{
+		Role:       string(name),
+		Model:      model.Ref(),
+		Provider:   model.Provider,
+		Name:       model.Name,
+		Effort:     effort,
+		Source:     source,
+		Auto:       h.demandActive(string(name)),
+		EffortMode: h.effortMode(string(name)),
+		Reasoning:  model.Reasoning,
+		Efforts:    append([]string(nil), model.ReasoningEfforts...),
+	}
+	assignment.ReasoningKnown = model.Reasoning || len(assignment.Efforts) > 0
+	// Bundled rows merge discovered facts, which is the same ladder
+	// effortSupported validates against. A configured endpoint's model facts
+	// are already authoritative and must not be replaced by a bundled row.
+	if !h.customModel(model.Ref()) {
+		if thinking := catalog.ThinkingFor(model.Ref()); thinking != nil {
+			assignment.Efforts = append([]string(nil), thinking.Efforts...)
+			assignment.ReasoningKnown = true
+		}
+	}
+	if h.sessionRole() == string(name) && h.sess != nil {
+		assignment.SessionModel = h.sess.Model
+	}
+	return assignment
+}
+
+// customModel reports whether the reference belongs to a configured endpoint.
+func (h *harness) customModel(ref string) bool {
+	if h.registry == nil {
+		return false
+	}
+	_, handled, err := h.registry.CustomModel(ref)
+	return handled && err == nil
 }
 
 // roleAssignment builds one role's display row from its effective reference.
@@ -593,13 +668,19 @@ func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []t
 	if err := config.Save(*h.settings); err != nil {
 		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("save configuration: %w", err)
 	}
+	h.reasoningMu.Lock()
+	delete(h.autoForced, string(role))
+	h.reasoningMu.Unlock()
 	if h.sessionRole() == string(role) {
 		h.applyModel(model)
-		// Under AUTO an empty role effort means "let the work decide". Setting
-		// the global default here would replace that decision until the next
-		// turn boundary; an explicit effort is still the human's override.
-		if effort != "" || !h.autoReasoning {
-			enabled, level := h.reasoningFor(effort)
+		// An empty effort with demand active means the per-request policy
+		// owns the next request; do not replace it with the global default.
+		// An explicit effort, or a non-demand policy, applies immediately.
+		if effort != "" || !h.demandActive(string(role)) {
+			enabled, level := h.nonDemandReasoning()
+			if effort != "" {
+				enabled, level = h.reasoningFor(effort)
+			}
 			if h.loop != nil {
 				h.loop.SetReasoning(enabled, level)
 			}
@@ -619,8 +700,9 @@ func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []t
 //
 // The level is validated against the model the role will actually call: the
 // live model for the session's own role, otherwise the role's resolved
-// profile. "off" disables thinking, and an empty level (also spelled "auto")
-// clears the role override so the work or the global policy decides again.
+// profile. "off" disables thinking. "auto" persists a demand-driven role mode
+// and records a runtime choice that wins over an invocation flag for this
+// session; "default"/"unset" clear the role to the global policy.
 func (h *harness) SetEffort(role, effort string) (tui.RoleAssignment, []tui.RoleAssignment, error) {
 	name := config.NormalizeRole(role)
 	if !config.ValidRole(name) {
@@ -629,43 +711,58 @@ func (h *harness) SetEffort(role, effort string) (tui.RoleAssignment, []tui.Role
 	if h.settings == nil {
 		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("configuration is unavailable")
 	}
+	requested := strings.ToLower(strings.TrimSpace(effort))
+	autoMode := requested == tui.EffortAuto
 	level := normalizeEffortSetting(effort)
 	model, err := h.effortModel(name)
 	if err != nil {
 		return tui.RoleAssignment{}, h.RoleAssignments(), err
 	}
 	canonical := model.Ref()
-	if level != "" && level != tui.EffortOff && !h.effortSupported(canonical, model, level) {
+	if !autoMode && level != "" && level != tui.EffortOff && !h.effortSupported(canonical, model, level) {
 		return tui.RoleAssignment{}, h.RoleAssignments(),
 			fmt.Errorf("%s does not expose thinking effort %q", canonical, level)
 	}
-	h.settings.AssignRole(string(name), "", level)
+	if autoMode {
+		h.settings.AssignAuto(string(name), "")
+	} else {
+		h.settings.AssignRole(string(name), "", level)
+	}
 	if err := config.Save(*h.settings); err != nil {
 		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("save configuration: %w", err)
 	}
-	if h.activeRole() == name {
+	h.reasoningMu.Lock()
+	if autoMode {
+		if h.autoForced == nil {
+			h.autoForced = map[string]bool{}
+		}
+		h.autoForced[string(name)] = true
+		if h.activeRole() == name {
+			h.lastReasoningEffort = ""
+		}
+	} else {
+		delete(h.autoForced, string(name))
+		if h.activeRole() == name {
+			h.lastReasoningEffort = ""
+		}
+	}
+	h.reasoningMu.Unlock()
+	if h.activeRole() == name && !autoMode {
 		// An explicit level, including "off", is a human override and takes
-		// effect now. Clearing it under AUTO leaves the demand selector in
-		// charge; outside AUTO the global policy applies immediately.
-		if level != "" || !h.autoReasoning {
-			enabled, setting := h.reasoningFor(level)
-			if h.loop != nil {
-				h.loop.SetReasoning(enabled, setting)
-			}
+		// effect now. Auto has no level to apply: the per-request policy owns
+		// the next request and selects from the work.
+		enabled, setting := h.reasoningFor(level)
+		if h.loop != nil {
+			h.loop.SetReasoning(enabled, setting)
 		}
 	}
-	roles := h.RoleAssignments()
-	for _, assignment := range roles {
-		if assignment.Role == string(name) {
-			return assignment, roles, nil
-		}
-	}
-	return tui.RoleAssignment{Role: string(name), Effort: level}, roles, nil
+	return h.EffortAssignment(string(name)), h.RoleAssignments(), nil
 }
 
-// normalizeEffortSetting canonicalizes a /effort argument. "auto" is the
-// explicit spelling of "clear the role override"; every other word is a level
-// the bound model must validate.
+// normalizeEffortSetting canonicalizes a /effort argument to a fixed level.
+// "auto", "default", and "unset" have no level; SetEffort distinguishes Auto
+// as a persisted mode before calling this, while the other spellings clear the
+// role back to the global policy.
 func normalizeEffortSetting(effort string) string {
 	level := strings.ToLower(strings.TrimSpace(effort))
 	switch level {
@@ -703,6 +800,9 @@ func (h *harness) reasoningFor(effort string) (bool, string) {
 		return false, ""
 	case "":
 		settings := h.settingsOrDefault()
+		if strings.EqualFold(strings.TrimSpace(settings.ReasoningEffort), "off") {
+			return false, ""
+		}
 		return settings.Reasoning, settings.ReasoningEffort
 	default:
 		return true, effort
@@ -770,6 +870,13 @@ func (h *harness) applyModel(model ai.Model) {
 	h.model = model
 	if h.usage != nil {
 		h.usage.SetCost(model.Cost)
+	}
+	// A level selected for the previous model or work is not a claim about the
+	// next request, even when the new model happens to publish the same name.
+	// Drop it; the per-request policy will record the real selection before a
+	// request is sent, and until then the badge is honestly unknown.
+	if h.lastReasoningLevel() != "" {
+		h.clearLastReasoning()
 	}
 }
 
@@ -914,17 +1021,26 @@ func (h *harness) SetModel(ref string) (ai.Model, error) {
 	canonical := model.Ref()
 	// A model switch must not carry an effort the new model does not expose:
 	// the incompatible claim is dropped instead of persisted to fail at
-	// invocation time. A still-valid effort survives the switch.
+	// invocation time. A still-valid effort survives the switch, and Auto
+	// survives because it is a mode rather than a level.
+	auto := h.settings.RoleAuto(role)
 	effort := h.roleEffortFor(role)
 	if effort != "" && effort != tui.EffortOff && !h.effortSupported(canonical, model, effort) {
 		effort = ""
 	}
-	h.settings.AssignRole(role, canonical, effort)
+	if auto && effort == "" {
+		h.settings.SetRoleModel(role, canonical)
+	} else {
+		h.settings.AssignRole(role, canonical, effort)
+	}
 	if err := config.Save(*h.settings); err != nil {
 		return model, fmt.Errorf("save configuration: %w", err)
 	}
-	if effort != "" || !h.autoReasoning {
-		enabled, level := h.reasoningFor(effort)
+	if effort != "" || !h.demandActive(role) {
+		enabled, level := h.nonDemandReasoning()
+		if effort != "" {
+			enabled, level = h.reasoningFor(effort)
+		}
 		if h.loop != nil {
 			h.loop.SetReasoning(enabled, level)
 		}
@@ -944,22 +1060,38 @@ func (h *harness) roleEffortFor(role string) string {
 	return strings.TrimSpace(effort)
 }
 
-// currentEffort reports the level the next turn on the active role would use.
-// It is the single projection of role effort and AUTO demand, so the header
-// badge, /effort, and the plain REPL cannot disagree.
+// currentEffort reports the level the next request on the active role would
+// use, with the same precedence the per-request policy applies. It is the
+// single projection of role effort, role Auto, invocation flags, and global
+// policy, so the header badge, /effort, and the plain REPL cannot disagree.
 func (h *harness) currentEffort() string {
 	role := string(h.activeRole())
-	if h.autoReasoning {
-		if explicit := h.roleEffortFor(role); explicit != "" {
-			enabled, level := h.reasoningFor(explicit)
-			if !enabled {
-				return ""
+	if explicit := h.roleEffortFor(role); explicit != "" {
+		enabled, level := h.reasoningFor(explicit)
+		if !enabled {
+			return ""
+		}
+		return level
+	}
+	if h.demandActive(role) {
+		level := h.lastReasoningLevel()
+		if level == "" {
+			return ""
+		}
+		// A handoff or model switch can outrun the next policy call. Never
+		// report a level the live model does not publish. The model facts are
+		// authoritative; the catalog fallback covers merged bundled rosters.
+		for _, candidate := range h.model.ReasoningEfforts {
+			if candidate == level {
+				return level
 			}
+		}
+		if h.effortSupported(h.model.Ref(), h.model, level) {
 			return level
 		}
-		return h.lastReasoningEffort
+		return ""
 	}
-	enabled, level := h.reasoningFor(h.roleEffortFor(role))
+	enabled, level := h.nonDemandReasoning()
 	if !enabled {
 		return ""
 	}
@@ -1409,23 +1541,30 @@ func (h *harness) SwitchWorkspace(name string) (workspace.Workspace, error) {
 	// that the bundle knows switches instantly. Unknown ids keep the current
 	// model so a workspace switch never fails for a catalog reason — the
 	// authority still changes, which is the transition's contract.
+	role := strings.ToLower(ws.String())
+	// A role move invalidates the previous demand selection even when the
+	// model is unchanged; the next request maps the new role's work onto the
+	// ladder.
+	h.clearLastReasoning()
 	if h.settings != nil {
-		if ref, effort, _ := h.settings.RoleModel(strings.ToLower(ws.String())); strings.TrimSpace(ref) != "" {
+		if ref, _, _ := h.settings.RoleModel(role); strings.TrimSpace(ref) != "" {
 			resolve := catalog.Resolve
 			if h.registry != nil {
 				resolve = dynamicResolver(context.Background(), h.registry)
 			}
 			if model, rerr := resolve(ref); rerr == nil {
 				h.applyModel(model)
-				if !h.autoReasoning {
-					enabled, level := h.reasoningFor(strings.TrimSpace(effort))
-					if h.loop != nil {
-						h.loop.SetReasoning(enabled, level)
-					}
-				}
 			}
-		} else if !h.autoReasoning {
-			enabled, level := h.reasoningFor("")
+		}
+		// Explicit levels and non-demand policies apply immediately. When
+		// demand owns the role, the per-request policy will map it onto the
+		// newly active model before the next call.
+		if !h.demandActive(role) {
+			effort := h.roleEffortFor(role)
+			enabled, level := h.nonDemandReasoning()
+			if effort != "" {
+				enabled, level = h.reasoningFor(effort)
+			}
 			if h.loop != nil {
 				h.loop.SetReasoning(enabled, level)
 			}

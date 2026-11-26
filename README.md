@@ -293,7 +293,7 @@ ohgo version
 | `--no-tools` | Run without any tools |
 | `-y, --yes` | Auto-approve every tool call |
 | `--reasoning` | Enable extended thinking |
-| `--effort level` | Reasoning effort: `minimal`, `low`, `medium`, `high` |
+| `--effort level` | Reasoning effort for this run (`minimal`, `low`, `medium`, `high`); demand is the default without a flag |
 | `--max-depth n` | Subagent nesting depth, counting this agent (1 disables delegation) |
 | `--max-turns n` | Maximum model turns per run |
 | `--max-model-calls n` | Tree-wide provider requests per run |
@@ -332,9 +332,12 @@ ohgo version
 The REPL and the full-screen UI share the same backend, so every command means
 the same thing in both. Bare `/effort` opens the active workspace role's
 thinking-effort picker in the full-screen UI; the plain REPL prints the same
-state as text. `/effort <level|off|auto>` applies directly in both. `/task`
-manages durable task continuity, which exists only in the full-screen UI; the
-plain REPL reports it as unavailable.
+state as text. `/effort <level|off|auto>` applies directly in both.
+`/effort auto` persists a role mode: that role's effort is selected from the
+work before every provider request. An invocation `--effort` or `--reasoning`
+is a per-run override, but choosing Auto during the session restores demand for
+that role. `/task` manages durable task continuity, which exists only in the
+full-screen UI; the plain REPL reports it as unavailable.
 
 ### Model picker
 

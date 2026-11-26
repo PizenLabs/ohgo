@@ -76,13 +76,14 @@ type options struct {
 	autoApprove bool
 	// reasoning enables extended thinking.
 	reasoning bool
-	// effort is the reasoning effort level.
+	// effort is the resolved starting reasoning effort level.
 	effort string
-	// autoReasoning reports that no human effort override applies, so the
-	// turn's reasoning level is selected from the work's demand. An explicit
-	// --effort, --reasoning, per-role effort, or global reasoning setting is
-	// an override and disables AUTO for this invocation.
-	autoReasoning bool
+	// reasoningFlag and effortFlag preserve the invocation-level flags after
+	// the starting configuration is resolved. The per-request policy needs to
+	// distinguish a flag from global settings so /effort auto can win during
+	// the session without rewriting configuration.
+	reasoningFlag bool
+	effortFlag    string
 }
 
 // authority returns the workspace in force.
@@ -149,6 +150,8 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	opts.autoApprove, _ = cmd.Flags().GetBool("yes")
 	opts.reasoning, _ = cmd.Flags().GetBool("reasoning")
 	opts.effort, _ = cmd.Flags().GetString("effort")
+	opts.reasoningFlag = opts.reasoning
+	opts.effortFlag = strings.TrimSpace(opts.effort)
 
 	// The workspace is a runtime authority, resolved before the model because
 	// it participates in model selection (§11, §14). An unknown name is fatal,
@@ -220,22 +223,19 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 		opts.deadline = time.Now().Add(timeout)
 	}
 
-	// Effort precedence: --effort, then the role's configured effort, then the
-	// global default. An explicit effort turns thinking on; "off" turns it off
-	// outright. The global default alone does not enable thinking — that stays
-	// governed by the reasoning setting, so an untouched install behaves as
-	// before.
+	// Starting loop effort uses --effort, then the role's fixed level, then the
+	// global default. This is only the pre-request starting point: the
+	// per-request policy applies the full precedence (explicit role level,
+	// role Auto, invocation flag, global policy, demand). An explicit effort
+	// turns thinking on; "off" turns it off outright.
 	roleEffort := ""
 	if _, level, _ := opts.settings.RoleModel(opts.workspace.String()); level != "" {
 		roleEffort = level
 	}
-	// AUTO applies only when the human has not stated a preference. An
-	// explicit flag, a role profile, an enabled global reasoning setting, or a
-	// global "off" is an override; the work's demand must not silently replace
-	// it.
-	globalOff := strings.EqualFold(strings.TrimSpace(opts.settings.ReasoningEffort), "off")
-	opts.autoReasoning = opts.effort == "" && !opts.reasoning &&
-		roleEffort == "" && !opts.settings.Reasoning && !globalOff
+	// The starting loop setting uses flag, then role, then global. AUTO is not
+	// a session flag anymore: the per-request policy decides per role, so an
+	// explicit role Auto can override a global default while a flag remains a
+	// deliberate invocation override.
 	if opts.effort == "" {
 		opts.effort = roleEffort
 	}

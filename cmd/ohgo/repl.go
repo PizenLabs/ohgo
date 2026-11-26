@@ -95,15 +95,8 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			case "effort":
 				role := h.activeRole()
 				if len(command.Args) == 0 {
-					assignment := tui.RoleAssignment{Role: string(role)}
-					for _, candidate := range h.RoleAssignments() {
-						if strings.EqualFold(candidate.Role, string(role)) {
-							assignment = candidate
-							break
-						}
-					}
 					_, _ = fmt.Fprintln(out, tui.FormatEffortReport(
-						string(role), h.model.Ref(), assignment, h.currentEffort()))
+						string(role), h.model.Ref(), h.EffortAssignment(string(role)), h.currentEffort()))
 					continue
 				}
 				if len(command.Args) > 1 {
@@ -375,18 +368,24 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			h.loop.SetBudget(h.newBudget())
 		}
 		// The line-oriented REPL has no durable task controller, so the
-		// request contract is the demand evidence. The setting is applied per
-		// turn after the fresh grant is installed and survives the automatic
-		// BUILD <-> FUZZ handoff below.
+		// request contract is the demand evidence. The policy is consulted
+		// before every provider request after the fresh grant is installed,
+		// and the automatic BUILD <-> FUZZ handoff changes the model under it.
+		reasoningIntent := workspace.BuildIntentContract(text)
+		reasoningRequirement := workspace.AnalyzeRequest(text)
 		reasoningEnabled, reasoningLevel := h.reasoningForWork(
-			workspace.BuildIntentContract(text), workspace.AnalyzeRequest(text), nil, request)
+			reasoningIntent, reasoningRequirement, nil, h.loop.RequestFacts(request))
 		h.loop.SetReasoning(reasoningEnabled, reasoningLevel)
+		h.loop.SetReasoningPolicy(func(facts agent.ReasoningFacts) (bool, string) {
+			return h.reasoningForWork(reasoningIntent, reasoningRequirement, nil, facts)
+		})
 		// The plain REPL records the same edit boundary as the full-screen UI:
 		// one explicit turn, one recovery point. The journal is bound to the
 		// session this turn belongs to and cleared afterwards.
 		h.loop.SetJournal(h.journal())
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		_, turns := runHeadlessTurnAs(ctx, h.loop, h.root, out, text, history, authority)
+		h.loop.SetReasoningPolicy(nil)
 		h.loop.SetJournal(nil)
 		stop()
 		if h.usage != nil {

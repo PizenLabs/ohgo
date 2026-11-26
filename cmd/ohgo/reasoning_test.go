@@ -26,8 +26,13 @@ func reasoningTestHarness(t *testing.T, model ai.Model, limits budget.Limits) *h
 	}
 	return &harness{
 		loop: loop, settings: &config.Settings{}, model: model,
-		autoReasoning: true, workspace: workspace.Build.Label(),
+		workspace: workspace.Build.Label(),
 	}
+}
+
+// unmeteredFacts is the policy input for a run with no turn or call cap.
+func unmeteredFacts() agent.ReasoningFacts {
+	return agent.ReasoningFacts{RemainingTurns: -1, RemainingModelCalls: -1}
 }
 
 // The AUTO path selects the demand from the work, not the role or a fixed
@@ -40,7 +45,7 @@ func TestAutoReasoningSelectsFromTheWork(t *testing.T) {
 	h := reasoningTestHarness(t, model, budget.Limits{Turns: 50, ModelCalls: 50})
 
 	simple := workspace.BuildIntentContract("Rename this variable.")
-	enabled, level := h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, nil)
+	enabled, level := h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, unmeteredFacts())
 	if !enabled || level != "low" {
 		t.Fatalf("simple rename = %v/%q, want the lowest native rung", enabled, level)
 	}
@@ -59,7 +64,7 @@ func TestAutoReasoningSelectsFromTheWork(t *testing.T) {
 			Ambiguities: []contract.Ambiguity{{Kind: "scope", Material: true}},
 		},
 	}
-	enabled, level = h.reasoningForWork(complex, workspace.Requirement{Capability: workspace.CapabilityInvestigate}, nil, nil)
+	enabled, level = h.reasoningForWork(complex, workspace.Requirement{Capability: workspace.CapabilityInvestigate}, nil, unmeteredFacts())
 	if !enabled || level != "high" {
 		t.Fatalf("complex refactor = %v/%q, want the highest native rung", enabled, level)
 	}
@@ -81,7 +86,8 @@ func TestAutoReasoningRespectsTheRunBudget(t *testing.T) {
 		},
 		Verification: []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
 	}
-	enabled, level := h.reasoningForWork(complex, workspace.Requirement{Capability: workspace.CapabilityMutate}, nil, nil)
+	enabled, level := h.reasoningForWork(complex, workspace.Requirement{Capability: workspace.CapabilityMutate}, nil,
+		agent.ReasoningFacts{RemainingTurns: 1, RemainingModelCalls: 1})
 	if !enabled || level != "low" {
 		t.Fatalf("last-request demand = %v/%q, want the lowest native rung", enabled, level)
 	}
@@ -100,7 +106,7 @@ func TestAutoReasoningPreservesOverridesAndOmissions(t *testing.T) {
 	h.settings = &settings
 
 	simple := workspace.BuildIntentContract("Rename this variable.")
-	enabled, level := h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, nil)
+	enabled, level := h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, unmeteredFacts())
 	if !enabled || level != "high" {
 		t.Fatalf("explicit override = %v/%q, want the human's high effort", enabled, level)
 	}
@@ -108,7 +114,7 @@ func TestAutoReasoningPreservesOverridesAndOmissions(t *testing.T) {
 	unknown := ai.Model{Provider: "test", ID: "unknown", Reasoning: true}
 	h.model = unknown
 	h.settings = &config.Settings{}
-	enabled, level = h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, nil)
+	enabled, level = h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, unmeteredFacts())
 	if enabled || level != "" {
 		t.Fatalf("unknown ladder = %v/%q, want omission", enabled, level)
 	}
@@ -117,7 +123,7 @@ func TestAutoReasoningPreservesOverridesAndOmissions(t *testing.T) {
 	off.ReasoningEffort = "off"
 	h.model = model
 	h.settings = &off
-	enabled, level = h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, nil)
+	enabled, level = h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, unmeteredFacts())
 	if enabled || level != "" {
 		t.Fatalf("global off = %v/%q, want reasoning disabled", enabled, level)
 	}
@@ -125,7 +131,7 @@ func TestAutoReasoningPreservesOverridesAndOmissions(t *testing.T) {
 	plain := ai.Model{Provider: "test", ID: "plain"}
 	h.model = plain
 	h.settings = &config.Settings{}
-	enabled, level = h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, nil)
+	enabled, level = h.reasoningForWork(simple, workspace.AnalyzeRequest("Rename this variable."), nil, unmeteredFacts())
 	if enabled || level != "" {
 		t.Fatalf("non-reasoning model = %v/%q, want omission", enabled, level)
 	}

@@ -249,9 +249,10 @@ func TestSetEffortRefusesAnUnsupportedLevel(t *testing.T) {
 	}
 }
 
-// "auto" clears only the role override: the model binding survives, and the
-// next turn returns to the global/AUTO decision.
-func TestSetEffortAutoClearsTheOverrideAndKeepsTheModel(t *testing.T) {
+// "auto" is a persisted role mode, not an empty effort: the model binding
+// survives, the explicit level is cleared, and the per-request policy owns the
+// next turn.
+func TestSetEffortAutoPersistsTheRoleModeAndKeepsTheModel(t *testing.T) {
 	h, settings := modelControlHarness(t)
 	settings.AssignRole("build", assignLaddered, "high")
 	if err := config.Save(*settings); err != nil {
@@ -262,8 +263,8 @@ func TestSetEffortAutoClearsTheOverrideAndKeepsTheModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetEffort(auto): %v", err)
 	}
-	if applied.Effort != "" {
-		t.Errorf("applied effort = %q, want cleared", applied.Effort)
+	if applied.Effort != "" || !applied.Auto || applied.EffortMode != "auto" {
+		t.Errorf("applied = %+v, want auto with no fixed level", applied)
 	}
 	reloaded, err := config.Load("")
 	if err != nil {
@@ -273,8 +274,11 @@ func TestSetEffortAutoClearsTheOverrideAndKeepsTheModel(t *testing.T) {
 	if profile.Model != assignLaddered {
 		t.Errorf("model = %q, want the earlier binding kept", profile.Model)
 	}
-	if profile.Effort != "" {
-		t.Errorf("effort = %q, want the override cleared", profile.Effort)
+	if profile.Effort != "" || !profile.Auto {
+		t.Errorf("profile = %+v, want an Auto role with no fixed level", profile)
+	}
+	if !reloaded.RoleAuto("build") {
+		t.Error("reloaded role is not demand-driven")
 	}
 }
 

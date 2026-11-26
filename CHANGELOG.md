@@ -10,10 +10,12 @@ immutable.
 - `/effort [level|off|auto]` shows and changes the thinking effort for the
   workspace role the session is running under. Bare `/effort` opens a fixed
   choice card naming that role's live model and authoritative ladder; the
-  current level is pre-highlighted. Setting a level persists only the role's
-  effort, validates it against the bound model, and applies it to the next
-  turn. `off` disables thinking for the role and `auto` clears the role
-  override. The full-screen UI and the plain REPL share the same seam.
+  current mode is pre-highlighted. An explicit level is validated against the
+  live model and persists only that role's effort. `off` disables thinking for
+  the role. `auto` persists a role mode and selects effort from the work before
+  every provider request; an invocation flag yields to that later human choice
+  for the rest of the session. The full-screen UI and the plain REPL share the
+  same seam.
 
 - Verification evidence classes and conflicts. A successful check now records
   `STATIC`, `TEST`, or `BEHAVIORAL`; a static build or source assertion can no
@@ -237,6 +239,18 @@ immutable.
 
 ### Changed
 
+- AUTO effort is now evaluated per provider request instead of once per user
+  turn. The loop passes live remaining turns, model calls, context window, and
+  measured context to the policy, so the last request in a run can lower
+  effort and newly recorded task state can raise it. A role handoff changes
+  the model under the same policy, and the next request remaps the demand onto
+  the new model's ladder instead of carrying a raw level the model may reject.
+- Reasoning demand now rises for unresolved-scope mutation requests, multiple
+  required facets, runtime execution, multiple verification requirements, and
+  broad objectives of eight or more words. The old forty-word objective
+  threshold was almost unreachable from real request extraction.
+- Header effort display accepts native endpoint level names rather than only
+  the bundled vocabulary, so an AUTO selection such as `standard` is visible.
 - Answer prose now carries one explicit runtime disposition
   (`agent.AnswerDisposition`) instead of three independent booleans. The
   publication gate classifies a turn as narration, superseded, terminal
@@ -274,6 +288,17 @@ immutable.
 
 ### Fixed
 
+- `/effort auto` now actually re-enables demand. The previous runtime tracked a
+  session-global "auto allowed" flag computed at launch; clearing a role level
+  could therefore fall back to the global policy and disable thinking entirely,
+  and a starting BUILD profile suppressed demand for ASK. Auto is now a
+  persisted per-role mode with explicit precedence, and a runtime Auto choice
+  wins over an invocation flag for that role.
+- The `/effort` card now reads the active role's live model and ladder. A
+  `--model` or resumed session override could previously show the configured
+  role model's levels and offer choices the runtime would reject.
+- A demand-selected level is cleared when the model or role changes, so the
+  header cannot report a level the live model does not publish.
 - A heuristic symbol target no longer blocks completion when the running build
   has no structural adapter for the repository's source languages. The portable
   (`CGO_ENABLED=0`) build compiles only the Go adapter, so in a web-only

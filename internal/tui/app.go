@@ -765,9 +765,14 @@ type ModelControlHooks struct {
 	Assign func(update RoleAssignment) (RoleAssignment, []RoleAssignment, error)
 	// SetEffort validates and persists a thinking level for one role without
 	// rebinding its model. It is the seam /effort writes through; an empty
-	// level clears the role override. Nil means /effort reports configuration
-	// unavailable.
+	// level clears the role override and an Auto level selects demand. Nil
+	// means /effort reports configuration unavailable.
 	SetEffort func(role, effort string) (RoleAssignment, []RoleAssignment, error)
+	// Effort reports the effective model, ladder, and effort mode for one
+	// role's /effort card. The active role uses the live model, so the card
+	// never offers a level the next request would reject. Optional; nil falls
+	// back to the general Roles roster.
+	Effort func(role string) RoleAssignment
 	// EffectiveWindow reports the runtime context window after an apply, so
 	// the status line does not keep a stale budget. Optional.
 	EffectiveWindow func() int
@@ -2959,9 +2964,9 @@ func (p *Program) effortCommand(args []string) {
 }
 
 // openEffortPicker builds the active role's fixed effort card. The current
-// role effort is pre-highlighted, so Enter without moving reaffirms the
-// choice; Auto is first so the role can return to the demand/global policy
-// without knowing the spelling.
+// mode is highlighted: an explicit level, Off, or Auto. Auto is first so the
+// role can choose demand without knowing the spelling; it is active only when
+// demand actually owns the role, never merely because no level is stored.
 func (p *Program) openEffortPicker(role string) {
 	assignment := p.effortAssignment(role)
 	current := NormalizeEffort(p.state.Status.Effort)
@@ -2970,8 +2975,8 @@ func (p *Program) openEffortPicker(role string) {
 	}
 	configured := strings.ToLower(strings.TrimSpace(assignment.Effort))
 	items := []PickerItem{
-		{Title: "Auto", Detail: effortAutoDetail(configured, current), Value: EffortAuto, Active: configured == ""},
-		{Title: "Off", Detail: "disable thinking for this role", Value: EffortOff, Active: configured == EffortOff},
+		{Title: "Auto", Detail: effortAutoDetail(configured, current, assignment.Auto, assignment.EffortMode), Value: EffortAuto, Active: assignment.Auto},
+		{Title: "Off", Detail: "disable thinking for this role", Value: EffortOff, Active: assignment.EffortMode == EffortModeOff},
 	}
 	seen := map[string]bool{EffortAuto: true, EffortOff: true}
 	for _, candidate := range assignment.Efforts {
@@ -2988,6 +2993,9 @@ func (p *Program) openEffortPicker(role string) {
 			cursor = i
 			break
 		}
+	}
+	if cursor < 0 || cursor >= len(items) {
+		cursor = 0
 	}
 	p.state.Apply(PickerOpened{
 		Kind:   PickerEfforts,
@@ -3029,6 +3037,9 @@ func (p *Program) applyEffort(role, effort string) {
 // effortAssignment resolves one role's row for the picker. A missing roster
 // leaves only the universal Auto/Off choices: the UI never invents a ladder.
 func (p *Program) effortAssignment(role string) RoleAssignment {
+	if p.modelControl.Effort != nil {
+		return p.modelControl.Effort(role)
+	}
 	assignment := RoleAssignment{Role: role}
 	if p.modelControl.Roles != nil {
 		if found, ok := roleAssignmentFor(p.modelControl.Roles(), role); ok {
@@ -6259,10 +6270,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 
 	request := append(append([]agent.Message(nil), history...), user)
 
-	// Reasoning is selected from the work, not the role, and applied before the
-	// first provider request. It is re-evaluated at every turn boundary; an
-	// internal BUILD <-> FUZZ handoff preserves it.
+	// Reasoning is selected from the work, not the role. The policy is
+	// installed for this run and consulted before every provider request, so a
+	// depleting budget, growing context, or newly recorded evidence reaches the
+	// next request rather than waiting for the next user turn. A role handoff
+	// changes the model under the same policy, so the next request remaps the
+	// demand onto that model's ladder.
 	p.applyReasoning(intent, text, request)
+	defer p.loop.SetReasoningPolicy(nil)
 
 	// Progress is forwarded live so a slow tool is visible while it runs.
 	// The loop's hook is installed for the duration of the turn rather than
