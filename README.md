@@ -72,8 +72,9 @@ it is done. ohgo is built around the opposite contract.
 
 - **A focused tool set** — `read`, `write`, `edit`, `delete`, `bash`, `wait`,
   `verify`, `check`, `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`,
-  `structure`, `webfetch`, `todo`, `task`, and `artifact` when a session is
-  attached. `verify` owns a service's start/readiness/checks/cleanup lifecycle
+  `structure`, `retrieve`, `investigate`, `conclude`, `webfetch`, `todo`,
+  `task`, and `artifact` when a session is attached. `verify` owns a service's
+  start/readiness/checks/cleanup lifecycle
   instead of making the model poll and kill it turn by turn; `check` discovers
   the repository's own test, static-analysis, and build commands from its
   manifests, executes only the requested kinds, and returns parsed outcomes
@@ -93,6 +94,14 @@ it is done. ohgo is built around the opposite contract.
   static rather than being presented as coverage. Intent `drift` compares
   documented repository paths with the same inventory and reports each missing
   or unverifiable target with the document line and the inventory evidence.
+- **Search and discovery share the repository scope** — `grep`, `glob`, and
+  recursive `ls` use the same `.gitignore` and nested-repository evaluation as
+  the structural snapshot. Excluded paths are named with the deciding rule and
+  the `gitignore: false` override; a targeted ignored path is skipped with that
+  explanation instead of an empty result. `grep` uses `ripgrep` when available
+  and the native scanner otherwise, with the same limits and binary skipping.
+  Exact text lookup stays distinct from ranked retrieval (`retrieve`),
+  declarations (`symbols`), and bounded inventory or impact (`structure`).
 - **Sessions that survive** — transcripts are stored in a pure-Go SQLite
   database, and a resumed session restores its own workspace, project, and
   effective model.
@@ -172,6 +181,14 @@ sudo make install PREFIX=/usr/local
 `make install` installs the host-toolchain build, so a machine with a C
 compiler gets the tree-sitter adapters. `make install-portable` installs the
 static Go-only variant. `DESTDIR` is supported for packagers.
+
+### Optional: ripgrep
+
+`grep` uses `ripgrep` (`rg`) when it is on `PATH` and falls back to the
+built-in Go scanner otherwise. Ripgrep is never required, adds no CGO
+dependency, and is invoked directly rather than through a shell. Both backends
+apply the same repository scope, binary-file skip, line-length, file-window,
+match-count, and timeout limits, and `ohgo doctor` reports which one is active.
 
 ### Go install
 
@@ -807,6 +824,10 @@ Key properties:
   no code branches on model id strings.
 - **Containment is structural.** Tool paths resolve inside the working root in
   one place, so no call site can forget the check.
+- **Repository membership has one owner.** `grep`, `glob`, a recursive `ls`,
+  and the structural index evaluate the same `.gitignore` and
+  nested-repository scope. A pruned path is reported with the rule that
+  excluded it, and the shell cannot silently substitute a different scope.
 - **Isolation is structural.** A subagent at the depth cap is built without a
   `task` tool, so it cannot delegate however it is prompted.
 - **Budgets are explicit.** Completion budget defaults to the model's ceiling;
