@@ -958,31 +958,119 @@ func (h *harness) UsageReport() string {
 }
 
 // DoctorLines runs the same diagnostics as `ohgo doctor`, minus the workdir
-// row the CLI adds around them. One implementation serves both: a check that
-// passes in one interface and fails in the other would be a lie in one of
-// them.
-func (h *harness) DoctorLines() []tui.DoctorLine {
+// row the CLI adds around them. Args select the same drill-downs as the CLI
+// flags. One implementation serves both: a check that passes in one interface
+// and fails in the other would be a lie in one of them.
+func (h *harness) DoctorLines(args []string) []tui.DoctorLine {
+	view, err := parseDoctorViewArgs(args)
+	if err != nil {
+		return []tui.DoctorLine{{
+			Section: "Diagnostics", Name: "doctor", Status: "ERROR", Detail: err.Error(),
+		}}
+	}
 	registry := h.registry
 	if registry == nil {
 		registry = ai.NewRegistry()
 	}
-	reports := collectReports(h.model.Ref(), registry)
-	out := make([]tui.DoctorLine, 0, len(reports))
-	for _, rep := range reports {
+	diagnosis := collectDiagnosis(h.model.Ref(), registry)
+
+	if view.JSON {
+		var document strings.Builder
+		if err := renderDoctorJSON(&document, diagnosis, view); err != nil {
+			return []tui.DoctorLine{{
+				Section: "Diagnostics", Name: "json", Status: "ERROR", Detail: err.Error(),
+			}}
+		}
+		return []tui.DoctorLine{{Raw: true, Detail: document.String()}}
+	}
+
+	out := make([]tui.DoctorLine, 0, len(diagnosis.Reports))
+	for _, rep := range diagnosis.Reports {
 		out = append(out, tui.DoctorLine{
 			Section: string(rep.Section),
 			Name:    rep.Name,
 			Status:  string(rep.Status),
-			Detail:  rep.Detail,
+			Detail:  rep.detail(view.Verbose),
 		})
 	}
-	for _, remediation := range collectRecommendations(reports) {
+	for _, remediation := range collectRecommendations(diagnosis.Reports) {
 		out = append(out, tui.DoctorLine{
-			Section:        string(doctorSectionRecommendations),
-			Name:           remediation.Name,
-			Status:         string(doctorStatusOptional),
-			Detail:         remediation.Detail,
-			Recommendation: true,
+			Section:       string(doctorSectionRecommendations),
+			Name:          remediation.Name,
+			Status:        string(doctorStatusOptional),
+			Detail:        remediation.Detail,
+			Informational: true,
+		})
+	}
+	if view.Tools {
+		out = append(out, doctorToolLines(diagnosis.Tools)...)
+	}
+	if view.Intelligence {
+		out = append(out, doctorIntelligenceLines(diagnosis.Intelligence)...)
+	}
+	if view.compact() {
+		out = append(out, tui.DoctorLine{Hint: true, Informational: true, Detail: doctorHintText})
+	}
+	return out
+}
+
+// doctorToolLines projects the live tool detail into TUI rows.
+func doctorToolLines(tools []doctorTool) []tui.DoctorLine {
+	if len(tools) == 0 {
+		return []tui.DoctorLine{{
+			Section: "Registered Tools", Name: "tools", Status: "OPTIONAL",
+			Detail: "no tools registered", Informational: true,
+		}}
+	}
+	out := make([]tui.DoctorLine, 0, len(tools)+len(doctorToolGroupOrder))
+	for _, group := range groupToolDetails(tools) {
+		section := "Tools · " + group.Name
+		for _, tool := range group.Tools {
+			out = append(out, tui.DoctorLine{
+				Section: section, Name: tool.Name, Status: tool.Safety,
+				Detail: tool.Backend + " · " + tool.Purpose, Informational: true,
+			})
+		}
+	}
+	return out
+}
+
+// doctorIntelligenceLines projects the intelligence detail into TUI rows.
+func doctorIntelligenceLines(detail doctorIntelligence) []tui.DoctorLine {
+	if detail.Error != "" {
+		return []tui.DoctorLine{{
+			Section: "Code Intelligence Detail", Name: "inventory", Status: "WARN",
+			Detail: detail.Error, Informational: true,
+		}}
+	}
+	out := make([]tui.DoctorLine, 0, len(detail.Adapters)+len(detail.Languages)+len(detail.Unsupported)+3)
+	for _, adapter := range detail.Adapters {
+		out = append(out, tui.DoctorLine{
+			Section: "Structural Adapters", Name: adapter.Name, Status: "adapter",
+			Detail: fmt.Sprintf("languages: %s; extensions: %s; facts: %s",
+				compactList(adapter.Languages, 3),
+				compactList(adapter.Extensions, 3),
+				compactList(adapter.Capabilities, 8)),
+			Informational: true,
+		})
+	}
+	for _, mapping := range detail.Languages {
+		server := mapping.Server
+		if server == "" {
+			server = "-"
+		} else if mapping.Path != "" {
+			server += " (" + compactPath(mapping.Path, 36) + ")"
+		}
+		out = append(out, tui.DoctorLine{
+			Section: "Workspace Languages", Name: mapping.Language, Status: mapping.Status,
+			Detail:        fmt.Sprintf("%d file(s); %s; structural: %s", mapping.Files, server, mapping.Structural),
+			Informational: true,
+		})
+	}
+	for _, unsupported := range detail.Unsupported {
+		out = append(out, tui.DoctorLine{
+			Section: "Unsupported Extensions", Name: unsupported.Extension, Status: "unsupported",
+			Detail: fmt.Sprintf("%d file(s)", unsupported.Files), Informational: true,
 		})
 	}
 	return out

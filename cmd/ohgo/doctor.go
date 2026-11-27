@@ -11,7 +11,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
@@ -45,13 +47,21 @@ A missing API key for the default provider is the common failure: the fix is
 printed with the check, e.g. "export ANTHROPIC_API_KEY=...". Ripgrep and
 language servers are optional accelerators; Recommendations names the install
 command for this operating system when one is missing. Only ERROR sets a
-non-zero exit status.`,
+non-zero exit status.
+
+Use --tools for a grouped breakdown of every registered tool (functional
+group, approval safety, active backend, and purpose), and --intelligence (or
+--lsp) for structural adapters, workspace language-to-LSP mappings, and
+unsupported extensions. Both compose with --json.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctor(cmd)
 		},
 	}
 	cmd.Flags().Bool("json", false, "emit deterministic machine-readable diagnostics")
 	cmd.Flags().BoolP("verbose", "v", false, "show full adapter, server, and tool lists")
+	cmd.Flags().Bool("tools", false, "show every registered tool with group, safety, backend, and purpose")
+	cmd.Flags().Bool("intelligence", false, "show structural adapters, workspace language mappings, and unsupported extensions")
+	cmd.Flags().Bool("lsp", false, "alias for --intelligence")
 	return cmd
 }
 
@@ -124,6 +134,91 @@ func (r doctorReport) detail(verbose bool) string {
 	return r.Detail
 }
 
+// doctorView selects which diagnostic detail to render.
+type doctorView struct {
+	// Tools adds the live registered-tool breakdown.
+	Tools bool
+	// Intelligence adds structural adapter and language-server mappings.
+	Intelligence bool
+	// Verbose expands check details.
+	Verbose bool
+	// JSON selects the machine-readable document.
+	JSON bool
+}
+
+// compact reports whether the default summary is being rendered without a
+// drill-down or verbose expansion. Only that form earns the footer hint.
+func (v doctorView) compact() bool {
+	return !v.Tools && !v.Intelligence && !v.Verbose && !v.JSON
+}
+
+// doctorDiagnosis is the complete evidence a view may render. Reports are the
+// always-present checks; Tools and Intelligence are collected from the same
+// live composition, so a drill-down cannot describe a different tool set.
+type doctorDiagnosis struct {
+	Reports      []doctorReport
+	Tools        []doctorTool
+	Intelligence doctorIntelligence
+}
+
+// doctorTool is one live tool registration.
+type doctorTool struct {
+	Name      string   `json:"name"`
+	Group     string   `json:"group"`
+	Safety    string   `json:"safety"`
+	Backend   string   `json:"backend"`
+	Source    string   `json:"source"`
+	Purpose   string   `json:"purpose"`
+	Classes   []string `json:"classes,omitempty"`
+	Languages []string `json:"languages,omitempty"`
+}
+
+// doctorAdapterDetail describes one structural adapter compiled into this
+// binary.
+type doctorAdapterDetail struct {
+	Name         string   `json:"name"`
+	Languages    []string `json:"languages"`
+	Extensions   []string `json:"extensions"`
+	Capabilities []string `json:"capabilities"`
+}
+
+// doctorLanguageMapping connects one workspace language to its structural
+// adapter and language server. Status is ready, missing, or unsupported.
+type doctorLanguageMapping struct {
+	Language   string `json:"language"`
+	Files      int    `json:"files"`
+	Structural string `json:"structural"`
+	Server     string `json:"server,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Status     string `json:"status"`
+}
+
+// doctorUnsupportedExtension is a source-bearing extension the active build
+// cannot parse.
+type doctorUnsupportedExtension struct {
+	Extension string `json:"extension"`
+	Files     int    `json:"files"`
+}
+
+// doctorIntelligence is the expanded code-intelligence view. Error is set when
+// the workspace inventory itself could not be read.
+type doctorIntelligence struct {
+	Error       string                       `json:"error,omitempty"`
+	Adapters    []doctorAdapterDetail        `json:"adapters"`
+	Languages   []doctorLanguageMapping      `json:"languages"`
+	Unsupported []doctorUnsupportedExtension `json:"unsupported"`
+}
+
+// doctorToolGroupOrder is the display order for tool groups. It names groups,
+// never tools: the members come from the live registry.
+var doctorToolGroupOrder = []tools.ToolGroup{
+	tools.ToolGroupFileOperations,
+	tools.ToolGroupSearchDiscovery,
+	tools.ToolGroupCodeIntelligence,
+	tools.ToolGroupExecutionVerification,
+	tools.ToolGroupWorkflowNetwork,
+}
+
 // doctorHost is the platform and binary-resolution seam for install guidance.
 type doctorHost struct {
 	GOOS   string
@@ -158,18 +253,64 @@ func (h doctorHost) has(command string) bool {
 
 func runDoctor(cmd *cobra.Command) error {
 	out := cmd.OutOrStdout()
-	reports := collectDoctorReports(cmd)
+	diagnosis := collectDoctorDiagnosis(cmd)
+	view := doctorViewFromCmd(cmd)
 
-	jsonOut, _ := cmd.Flags().GetBool("json")
-	verbose, _ := cmd.Flags().GetBool("verbose")
-	if jsonOut {
-		if err := renderDoctorJSON(out, reports); err != nil {
+	if view.JSON {
+		if err := renderDoctorJSON(out, diagnosis, view); err != nil {
 			return err
 		}
 	} else {
-		renderDoctorText(out, reports, verbose)
+		renderDoctorText(out, diagnosis.Reports, view.Verbose)
+		if view.Tools {
+			renderDoctorToolDetails(out, diagnosis.Tools)
+		}
+		if view.Intelligence {
+			renderDoctorIntelligenceDetails(out, diagnosis.Intelligence)
+		}
+		if view.compact() {
+			renderDoctorHint(out)
+		}
 	}
-	return doctorFailure(reports)
+	return doctorFailure(diagnosis.Reports)
+}
+
+// doctorViewFromCmd projects the CLI flags onto the shared view.
+func doctorViewFromCmd(cmd *cobra.Command) doctorView {
+	toolDetail, _ := cmd.Flags().GetBool("tools")
+	intelligence, _ := cmd.Flags().GetBool("intelligence")
+	lsp, _ := cmd.Flags().GetBool("lsp")
+	verbose, _ := cmd.Flags().GetBool("verbose")
+	jsonOut, _ := cmd.Flags().GetBool("json")
+	return doctorView{
+		Tools:        toolDetail,
+		Intelligence: intelligence || lsp,
+		Verbose:      verbose,
+		JSON:         jsonOut,
+	}
+}
+
+// parseDoctorViewArgs is the TUI/REPL form of the CLI flags. The same option
+// words select the same detail in both interfaces.
+func parseDoctorViewArgs(args []string) (doctorView, error) {
+	var view doctorView
+	for _, arg := range args {
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "tools", "--tools", "tool":
+			view.Tools = true
+		case "intelligence", "--intelligence", "intel", "lsp", "--lsp":
+			view.Intelligence = true
+		case "verbose", "--verbose", "-v":
+			view.Verbose = true
+		case "json", "--json":
+			view.JSON = true
+		case "":
+			// An extra space is not an option.
+		default:
+			return view, fmt.Errorf("unknown doctor option %q; use --tools, --intelligence, --verbose, or --json", arg)
+		}
+	}
+	return view, nil
 }
 
 // doctorFailure is the exit contract: OK, FALLBACK, OPTIONAL, and WARN are
@@ -205,13 +346,19 @@ func countWarnings(reports []doctorReport) int {
 // collectDoctorReports runs every check. It is split from runDoctor so tests
 // assert on the reports without parsing formatted output.
 func collectDoctorReports(cmd *cobra.Command) []doctorReport {
-	return collectReports(flagValue(cmd, "model"), ai.NewRegistry())
+	return collectDoctorDiagnosis(cmd).Reports
 }
 
-// collectReports runs every check from explicit inputs so the harness — and
-// therefore /doctor in both interfaces — uses the same implementation as the
-// CLI. One diagnostic path, not two that can disagree.
-func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
+// collectDoctorDiagnosis runs every check and collects the drill-down detail
+// from the same live composition.
+func collectDoctorDiagnosis(cmd *cobra.Command) doctorDiagnosis {
+	return collectDiagnosis(flagValue(cmd, "model"), ai.NewRegistry())
+}
+
+// collectDiagnosis returns the checks plus the tool and intelligence detail a
+// drill-down may render. The harness and the CLI both call it, so the summary
+// and the drill-down describe the same live composition.
+func collectDiagnosis(modelFlag string, registry *ai.Registry) doctorDiagnosis {
 	var reports []doctorReport
 	add := func(section doctorSection, name string, status doctorStatus, detail, verbose string) {
 		reports = append(reports, doctorReport{
@@ -322,11 +469,12 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 		add(doctorSectionProvider, "endpoint", doctorStatusError, "skipped: no model resolved", "")
 	}
 
-	// One inventory scan serves both the build-capability check and the
-	// workspace-scoped LSP recommendations. It is the same structural
-	// inventory production tools use, so an ignored directory is not counted
-	// here either.
-	languages, inventoryErr := workspaceLanguages(cwd)
+	// One inventory scan serves the build-capability check, the
+	// workspace-scoped LSP recommendations, and the intelligence drill-down.
+	// It is the same structural inventory production tools use, so an ignored
+	// directory is not counted here either.
+	inventory, inventoryErr := workspaceInventoryFor(cwd)
+	languages := inventory.Languages
 	reports = append(reports, structuralReport(languages))
 
 	host := defaultDoctorHost()
@@ -340,25 +488,21 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 	} else {
 		names := make([]string, 0, len(toolSet))
 		var externalErrors []string
+		seenErrors := map[string]bool{}
 		external := 0
 		for _, tool := range toolSet {
 			names = append(names, tool.Name())
-			switch typed := tool.(type) {
-			case *tools.SearchTool:
-				external++
-				if typed.ConfigErr != "" {
-					externalErrors = append(externalErrors, "search: "+typed.ConfigErr)
-				}
-			case *tools.MCPListTool:
-				external++
-				if typed.ConfigErr != "" {
-					externalErrors = append(externalErrors, "mcp: "+typed.ConfigErr)
-				}
-			case *tools.MCPReadTool:
-				external++
-			case *tools.MCPCallTool:
-				external++
+			reporter, ok := tool.(tools.ExternalCapabilityReporter)
+			if !ok || !reporter.ExternalCapability() {
+				continue
 			}
+			external++
+			message := reporter.ConfigError()
+			if message == "" || seenErrors[message] {
+				continue
+			}
+			seenErrors[message] = true
+			externalErrors = append(externalErrors, tool.Name()+": "+message)
 		}
 		sort.Strings(names)
 		add(doctorSectionIntelligence, "tools", doctorStatusOK,
@@ -377,7 +521,36 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 		}
 	}
 
-	return reports
+	return doctorDiagnosis{
+		Reports:      reports,
+		Tools:        collectToolDetails(toolSet),
+		Intelligence: collectIntelligence(host, inventory, inventoryErr),
+	}
+}
+
+// doctorWorkspaceInventory is the structural inventory the intelligence view
+// and the semantic recommendation share.
+type doctorWorkspaceInventory struct {
+	Languages   []ast.LanguageCoverage
+	Unsupported []ast.UnsupportedLanguage
+}
+
+// workspaceInventoryFor reads the workspace language and unsupported-extension
+// inventory from the same adaptive structural source production tools use.
+func workspaceInventoryFor(root string) (doctorWorkspaceInventory, error) {
+	source := tools.NewStructuralSource(root)
+	idx, err := source.Index()
+	if err != nil {
+		return doctorWorkspaceInventory{}, err
+	}
+	info := idx.Info()
+	inventory := doctorWorkspaceInventory{
+		Languages:   make([]ast.LanguageCoverage, len(info.Languages)),
+		Unsupported: make([]ast.UnsupportedLanguage, len(info.Unsupported)),
+	}
+	copy(inventory.Languages, info.Languages)
+	copy(inventory.Unsupported, info.Unsupported)
+	return inventory, nil
 }
 
 // workspaceLanguages returns the source-language inventory of root. It uses
@@ -385,15 +558,255 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 // recommends servers for the workspace it would actually analyze rather than
 // for every language this binary knows.
 func workspaceLanguages(root string) ([]ast.LanguageCoverage, error) {
-	source := tools.NewStructuralSource(root)
-	idx, err := source.Index()
-	if err != nil {
-		return nil, err
+	inventory, err := workspaceInventoryFor(root)
+	return inventory.Languages, err
+}
+
+// collectToolDetails projects every registered tool from its live metadata. No
+// names, descriptions, or group membership are maintained here: the tool owns
+// its description and group, and the approval/action classes own safety.
+func collectToolDetails(toolSet []agent.Tool) []doctorTool {
+	out := make([]doctorTool, 0, len(toolSet))
+	for _, tool := range toolSet {
+		group := string(tools.ToolGroupSearchDiscovery)
+		if reporter, ok := tool.(interface{ Group() tools.ToolGroup }); ok {
+			if reported := reporter.Group(); reported != "" {
+				group = string(reported)
+			}
+		}
+		classes := agent.ToolActionClasses(tool)
+		classNames := make([]string, 0, len(classes))
+		for _, class := range classes {
+			classNames = append(classNames, string(class))
+		}
+		sort.Strings(classNames)
+		source := "built-in"
+		switch {
+		case agent.HasActionClass(tool, agent.ActionConfigured):
+			source = "mcp"
+		case agent.HasActionClass(tool, agent.ActionExternal):
+			source = "external"
+		}
+		languages := agent.ToolRequiredLanguages(tool)
+		sort.Strings(languages)
+		backend := doctorToolBackend(tool)
+		if reporter, ok := tool.(tools.ExternalCapabilityReporter); ok && reporter.ConfigError() != "" {
+			backend += " (config error)"
+		}
+		out = append(out, doctorTool{
+			Name:      tool.Name(),
+			Group:     group,
+			Safety:    doctorToolSafety(tool),
+			Backend:   backend,
+			Source:    source,
+			Purpose:   doctorToolPurpose(tool.Description()),
+			Classes:   classNames,
+			Languages: languages,
+		})
 	}
-	info := idx.Info()
-	out := make([]ast.LanguageCoverage, len(info.Languages))
-	copy(out, info.Languages)
-	return out, nil
+	sort.SliceStable(out, func(i, j int) bool {
+		left, right := toolGroupRank(out[i].Group), toolGroupRank(out[j].Group)
+		if left != right {
+			return left < right
+		}
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func toolGroupRank(group string) int {
+	for index, candidate := range doctorToolGroupOrder {
+		if string(candidate) == group {
+			return index
+		}
+	}
+	return len(doctorToolGroupOrder)
+}
+
+// doctorToolSafety reports the approval class and any additional mutation or
+// execution surface. The tier is the authoritative approval boundary; action
+// classes add the second capability when a tool exercises one.
+func doctorToolSafety(tool agent.Tool) string {
+	tier := tool.Approval().Tier
+	safety := "read-only"
+	switch tier {
+	case agent.TierWrite:
+		safety = "mutating"
+	case agent.TierExec:
+		safety = "shell"
+	}
+	mutates := agent.HasActionClass(tool, agent.ActionMutate)
+	executes := agent.HasActionClass(tool, agent.ActionExecute)
+	switch {
+	case tier == agent.TierExec && mutates:
+		safety += ", mutating"
+	case tier == agent.TierWrite && executes:
+		safety += ", shell"
+	}
+	return safety
+}
+
+// doctorToolBackend reports the runtime binding a tool will actually use.
+func doctorToolBackend(tool agent.Tool) string {
+	if reporter, ok := tool.(interface{ SearchBackend() (string, string) }); ok {
+		backend, path := reporter.SearchBackend()
+		if strings.TrimSpace(path) == "" {
+			return backend
+		}
+		return fmt.Sprintf("%s (%s)", backend, compactPath(path, 40))
+	}
+	if namer, ok := tool.(agent.CapabilityNamer); ok {
+		return string(namer.SecurityCapability())
+	}
+	return "built-in"
+}
+
+// doctorToolPurpose condenses the tool's own model-facing description to its
+// first sentence. The description remains the single source; the doctor does
+// not maintain a second purpose table that can drift.
+func doctorToolPurpose(description string) string {
+	text := strings.Join(strings.Fields(description), " ")
+	if index := strings.Index(text, ". "); index >= 0 {
+		text = text[:index+1]
+	}
+	return compactText(text, 110)
+}
+
+// compactText bounds one line at a word boundary without splitting a rune.
+func compactText(text string, max int) string {
+	runes := []rune(text)
+	if len(runes) <= max || max < 2 {
+		return text
+	}
+	cut := max
+	for cut > 0 && !unicode.IsSpace(runes[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		cut = max
+	}
+	return strings.TrimSpace(string(runes[:cut])) + "..."
+}
+
+// collectIntelligence maps each workspace language to its structural adapter
+// and resolved language server. Adapter and server identities come from the
+// live registries, never from a doctor-local table.
+func collectIntelligence(host doctorHost, inventory doctorWorkspaceInventory, inventoryErr error) doctorIntelligence {
+	detail := doctorIntelligence{
+		Adapters:    adapterDetails(),
+		Languages:   []doctorLanguageMapping{},
+		Unsupported: []doctorUnsupportedExtension{},
+	}
+	if inventoryErr != nil {
+		detail.Error = inventoryErr.Error()
+		return detail
+	}
+
+	installed := languageServerCommands(host.lookPath())
+	byLanguage := map[string]semantic.Spec{}
+	for _, spec := range installed {
+		for _, language := range spec.Languages {
+			if _, ok := byLanguage[language]; !ok {
+				byLanguage[language] = spec
+			}
+		}
+	}
+
+	aggregated := map[string]*doctorLanguageMapping{}
+	for _, coverage := range inventory.Languages {
+		language := lspLanguageID(string(coverage.Language))
+		if language == "" {
+			continue
+		}
+		mapping := aggregated[language]
+		if mapping == nil {
+			mapping = &doctorLanguageMapping{
+				Language: language, Structural: "adapter", Status: "missing",
+			}
+			aggregated[language] = mapping
+		}
+		mapping.Files += coverage.Files
+		if !coverage.Supported {
+			mapping.Structural = "unsupported"
+		}
+	}
+	languages := make([]string, 0, len(aggregated))
+	for language := range aggregated {
+		languages = append(languages, language)
+	}
+	sort.Strings(languages)
+	for _, language := range languages {
+		mapping := *aggregated[language]
+		if spec, ok := byLanguage[language]; ok {
+			mapping.Server = spec.Name
+			if len(spec.Command) > 0 {
+				mapping.Path = spec.Command[0]
+			}
+			mapping.Status = "ready"
+		} else if definition, ok := languageServerDefinitionFor(language); ok {
+			mapping.Server = definition.name
+		}
+		detail.Languages = append(detail.Languages, mapping)
+	}
+	for _, unsupported := range inventory.Unsupported {
+		detail.Unsupported = append(detail.Unsupported, doctorUnsupportedExtension{
+			Extension: unsupported.Extension, Files: unsupported.Files,
+		})
+	}
+	sort.SliceStable(detail.Unsupported, func(i, j int) bool {
+		return detail.Unsupported[i].Extension < detail.Unsupported[j].Extension
+	})
+	return detail
+}
+
+// adapterDetails projects the adapters compiled into this binary.
+func adapterDetails() []doctorAdapterDetail {
+	adapters := ast.DefaultAdapters()
+	out := make([]doctorAdapterDetail, 0, len(adapters))
+	for _, adapter := range adapters {
+		languages := make([]string, 0, len(adapter.Languages()))
+		for _, language := range adapter.Languages() {
+			languages = append(languages, string(language))
+		}
+		sort.Strings(languages)
+		extensions := append([]string(nil), adapter.Extensions()...)
+		sort.Strings(extensions)
+		out = append(out, doctorAdapterDetail{
+			Name:         adapter.Name(),
+			Languages:    languages,
+			Extensions:   extensions,
+			Capabilities: adapterCapabilities(adapter.Capabilities()),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func adapterCapabilities(capabilities ast.Capabilities) []string {
+	values := []struct {
+		name    string
+		enabled bool
+	}{
+		{"symbols", capabilities.Symbols},
+		{"imports", capabilities.Imports},
+		{"exports", capabilities.Exports},
+		{"references", capabilities.References},
+		{"calls", capabilities.Calls},
+		{"inheritance", capabilities.Inheritance},
+		{"tests", capabilities.Tests},
+		{"entrypoints", capabilities.Entrypoints},
+		{"semantic", capabilities.Semantic},
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value.enabled {
+			out = append(out, value.name)
+		}
+	}
+	return out
 }
 
 // structuralReport names the syntax adapters compiled into this binary.
@@ -842,6 +1255,95 @@ func renderDoctorText(out io.Writer, reports []doctorReport, verbose bool) {
 	}
 }
 
+// doctorToolGroup is one rendered tool group.
+type doctorToolGroup struct {
+	Name  string
+	Tools []doctorTool
+}
+
+// groupToolDetails preserves the registry order established by
+// collectToolDetails, which is already group-major and name-sorted.
+func groupToolDetails(tools []doctorTool) []doctorToolGroup {
+	var groups []doctorToolGroup
+	for _, tool := range tools {
+		if len(groups) == 0 || groups[len(groups)-1].Name != tool.Group {
+			groups = append(groups, doctorToolGroup{Name: tool.Group})
+		}
+		groups[len(groups)-1].Tools = append(groups[len(groups)-1].Tools, tool)
+	}
+	return groups
+}
+
+// renderDoctorToolDetails prints the live tool breakdown requested by --tools.
+func renderDoctorToolDetails(out io.Writer, tools []doctorTool) {
+	_, _ = fmt.Fprintf(out, "\nRegistered Tools (%d)\n", len(tools))
+	if len(tools) == 0 {
+		_, _ = fmt.Fprintln(out, "  no tools registered")
+		return
+	}
+	_, _ = fmt.Fprintf(out, "\n  %-16s %-16s %-9s %-30s %s\n",
+		"TOOL", "SAFETY", "SOURCE", "BACKEND", "PURPOSE")
+	for _, group := range groupToolDetails(tools) {
+		_, _ = fmt.Fprintf(out, "\n  %s\n", group.Name)
+		for _, tool := range group.Tools {
+			_, _ = fmt.Fprintf(out, "  %-16s %-16s %-9s %-30s %s\n",
+				tool.Name, tool.Safety, tool.Source, tool.Backend, tool.Purpose)
+		}
+	}
+}
+
+// renderDoctorIntelligenceDetails prints the --intelligence expansion.
+func renderDoctorIntelligenceDetails(out io.Writer, detail doctorIntelligence) {
+	_, _ = fmt.Fprintln(out, "\nCode Intelligence Detail")
+	if detail.Error != "" {
+		_, _ = fmt.Fprintf(out, "  ERROR workspace inventory unavailable: %s\n", detail.Error)
+		return
+	}
+
+	_, _ = fmt.Fprintf(out, "\nStructural Adapters (%d)\n", len(detail.Adapters))
+	_, _ = fmt.Fprintf(out, "  %-24s %-18s %-26s %s\n",
+		"ADAPTER", "LANGUAGES", "EXTENSIONS", "FACTS")
+	for _, adapter := range detail.Adapters {
+		_, _ = fmt.Fprintf(out, "  %-24s %-18s %-26s %s\n",
+			adapter.Name,
+			compactList(adapter.Languages, 3),
+			compactList(adapter.Extensions, 3),
+			compactList(adapter.Capabilities, 8))
+	}
+
+	_, _ = fmt.Fprintf(out, "\nWorkspace Languages (%d)\n", len(detail.Languages))
+	_, _ = fmt.Fprintf(out, "  %-14s %-6s %-8s %-40s %s\n",
+		"LANGUAGE", "FILES", "STATUS", "SERVER", "STRUCTURAL")
+	for _, mapping := range detail.Languages {
+		server := mapping.Server
+		if server == "" {
+			server = "-"
+		} else if mapping.Path != "" {
+			server += " (" + compactPath(mapping.Path, 36) + ")"
+		}
+		_, _ = fmt.Fprintf(out, "  %-14s %-6d %-8s %-40s %s\n",
+			mapping.Language, mapping.Files, mapping.Status, server, mapping.Structural)
+	}
+
+	_, _ = fmt.Fprintf(out, "\nUnsupported Extensions (%d)\n", len(detail.Unsupported))
+	if len(detail.Unsupported) == 0 {
+		_, _ = fmt.Fprintln(out, "  none")
+		return
+	}
+	for _, unsupported := range detail.Unsupported {
+		_, _ = fmt.Fprintf(out, "  %-10s %d file(s)\n", unsupported.Extension, unsupported.Files)
+	}
+}
+
+// doctorHintText is the compact-view footer shown by every interface.
+const doctorHintText = "--tools shows every tool's group, safety, and backend; --intelligence shows language mappings; --verbose expands checks"
+
+// renderDoctorHint points at the targeted views without forcing --verbose.
+func renderDoctorHint(out io.Writer) {
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "hint: "+doctorHintText)
+}
+
 // doctorJSONCheck is one machine-readable check.
 type doctorJSONCheck struct {
 	Name    string       `json:"name"`
@@ -858,22 +1360,24 @@ type doctorJSONSection struct {
 
 // doctorJSON is the deterministic machine-readable diagnosis. Sections are in
 // display order, checks keep their diagnostic order, and no field depends on
-// map iteration.
+// map iteration. Tools and Intelligence are present only when requested.
 type doctorJSON struct {
-	OK       bool                `json:"ok"`
-	Failed   int                 `json:"failed"`
-	Warnings int                 `json:"warnings"`
-	Sections []doctorJSONSection `json:"sections"`
+	OK           bool                `json:"ok"`
+	Failed       int                 `json:"failed"`
+	Warnings     int                 `json:"warnings"`
+	Sections     []doctorJSONSection `json:"sections"`
+	Tools        *[]doctorTool       `json:"tools,omitempty"`
+	Intelligence *doctorIntelligence `json:"intelligence,omitempty"`
 }
 
-func renderDoctorJSON(out io.Writer, reports []doctorReport) error {
-	failed := countFailed(reports)
+func renderDoctorJSON(out io.Writer, diagnosis doctorDiagnosis, view doctorView) error {
+	failed := countFailed(diagnosis.Reports)
 	document := doctorJSON{
 		OK:       failed == 0,
 		Failed:   failed,
-		Warnings: countWarnings(reports),
+		Warnings: countWarnings(diagnosis.Reports),
 	}
-	for _, group := range groupReports(reportsWithRecommendations(reports)) {
+	for _, group := range groupReports(reportsWithRecommendations(diagnosis.Reports)) {
 		section := doctorJSONSection{Name: string(group.Section)}
 		for _, report := range group.Reports {
 			section.Checks = append(section.Checks, doctorJSONCheck{
@@ -882,6 +1386,17 @@ func renderDoctorJSON(out io.Writer, reports []doctorReport) error {
 			})
 		}
 		document.Sections = append(document.Sections, section)
+	}
+	if view.Tools {
+		tools := diagnosis.Tools
+		if tools == nil {
+			tools = []doctorTool{}
+		}
+		document.Tools = &tools
+	}
+	if view.Intelligence {
+		intelligence := diagnosis.Intelligence
+		document.Intelligence = &intelligence
 	}
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")

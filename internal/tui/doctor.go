@@ -9,13 +9,25 @@ import (
 //
 // The presentation is shared so /doctor cannot say one thing in the full-screen
 // UI and another in the plain REPL. Sections are printed once, rows stay
-// aligned, and recommendations are excluded from the failure tally.
+// aligned, and recommendations or drill-down rows are excluded from the
+// failure tally.
 func RenderDoctorLines(lines []DoctorLine) string {
 	var sb strings.Builder
 	failed, total := 0, 0
 	section := ""
 	for _, line := range lines {
-		if !line.Recommendation {
+		if line.Hint {
+			sb.WriteString("  hint: " + line.Detail + "\n")
+			continue
+		}
+		if line.Raw {
+			sb.WriteString(line.Detail)
+			if !strings.HasSuffix(line.Detail, "\n") {
+				sb.WriteString("\n")
+			}
+			continue
+		}
+		if !line.Informational {
 			total++
 			if line.Status == "ERROR" {
 				failed++
@@ -32,7 +44,7 @@ func RenderDoctorLines(lines []DoctorLine) string {
 		if status == "" {
 			status = "OK"
 		}
-		fmt.Fprintf(&sb, "%-8s %-14s %s\n", status, line.Name, line.Detail)
+		fmt.Fprintf(&sb, "  %-16s %-14s %s\n", status, line.Name, line.Detail)
 	}
 	if failed > 0 {
 		fmt.Fprintf(&sb, "%d of %d checks failed", failed, total)

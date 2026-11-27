@@ -21,6 +21,29 @@ import (
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 )
 
+// ToolGroup is the functional group a tool belongs to. It is diagnostic
+// metadata: the doctor renders groups from the tools themselves, so a new tool
+// cannot silently disappear from the tool breakdown.
+type ToolGroup string
+
+// Functional tool groups.
+const (
+	ToolGroupFileOperations        ToolGroup = "File Operations"
+	ToolGroupSearchDiscovery       ToolGroup = "Search & Discovery"
+	ToolGroupCodeIntelligence      ToolGroup = "Code Intelligence"
+	ToolGroupExecutionVerification ToolGroup = "Execution & Verification"
+	ToolGroupWorkflowNetwork       ToolGroup = "Workflow & Network"
+)
+
+// ExternalCapabilityReporter marks a tool composed from explicit external
+// configuration and reports any build-time configuration failure. The doctor
+// counts configured external capabilities from this interface, not from a
+// tool-name list.
+type ExternalCapabilityReporter interface {
+	ExternalCapability() bool
+	ConfigError() string
+}
+
 // Base carries the fields every tool needs.
 //
 // Tools embed it and override the methods that differ. This is preferred over
@@ -40,6 +63,9 @@ type Base struct {
 	// classes is the declared action surface. Empty means derive it from the
 	// approval tier.
 	classes []agent.ActionClass
+	// group is the diagnostic functional group. Empty means derive it from the
+	// action classes.
+	group ToolGroup
 	// language is the source language the tool needs, or "".
 	language string
 	// languages is the multi-language set, when the tool supports more than
@@ -88,6 +114,56 @@ func (b Base) ActionClasses() []agent.ActionClass {
 // SetActionClasses declares the action surface a tool exposes.
 func (b *Base) SetActionClasses(classes ...agent.ActionClass) {
 	b.classes = append([]agent.ActionClass(nil), classes...)
+}
+
+// Group reports the diagnostic functional group.
+//
+// An undeclared group is derived from the live action classes, never from the
+// tool name: a new read-only explorer lands in Search & Discovery without an
+// edit here, and a tool that changes behaviour moves with it.
+func (b Base) Group() ToolGroup {
+	if b.group != "" {
+		return b.group
+	}
+	classes := b.ActionClasses()
+	if len(classes) == 0 {
+		switch b.approval.Tier {
+		case agent.TierWrite:
+			classes = []agent.ActionClass{agent.ActionMutate}
+		case agent.TierExec:
+			classes = []agent.ActionClass{agent.ActionExecute}
+		default:
+			classes = []agent.ActionClass{agent.ActionObserve}
+		}
+	}
+	has := func(want agent.ActionClass) bool {
+		for _, class := range classes {
+			if class == want {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case has(agent.ActionExternal) || has(agent.ActionConfigured):
+		return ToolGroupWorkflowNetwork
+	case has(agent.ActionDelegate) || has(agent.ActionPlan):
+		return ToolGroupWorkflowNetwork
+	case has(agent.ActionExecute) || has(agent.ActionBackground):
+		return ToolGroupExecutionVerification
+	case has(agent.ActionMutate):
+		return ToolGroupFileOperations
+	case has(agent.ActionStructure) || has(agent.ActionRelationship):
+		return ToolGroupCodeIntelligence
+	default:
+		return ToolGroupSearchDiscovery
+	}
+}
+
+// SetGroup overrides the derived functional group for tools whose runtime
+// classes do not name their diagnostic home.
+func (b *Base) SetGroup(group ToolGroup) {
+	b.group = group
 }
 
 // RequiredLanguage implements agent.LanguageReporter.

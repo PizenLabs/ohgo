@@ -404,7 +404,7 @@ func TestDoctorLinesUseTheActiveModel(t *testing.T) {
 	h := newHarness(registry, nil, nil, nil, &agent.UsageLog{}, &settings, t.TempDir(), model)
 
 	var modelLine, credentialLine string
-	for _, line := range h.DoctorLines() {
+	for _, line := range h.DoctorLines(nil) {
 		switch line.Name {
 		case "model":
 			modelLine = line.Detail

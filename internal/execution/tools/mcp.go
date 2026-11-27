@@ -138,6 +138,12 @@ func (t *MCPListTool) SecurityCapability() security.Capability {
 	return security.CapabilityExternalMCPRead
 }
 
+// ExternalCapability implements ExternalCapabilityReporter.
+func (t *MCPListTool) ExternalCapability() bool { return true }
+
+// ConfigError reports the build-time MCP configuration failure, if any.
+func (t *MCPListTool) ConfigError() string { return t.ConfigErr }
+
 // Execute implements agent.Tool.
 func (t *MCPListTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	started := time.Now()
@@ -411,6 +417,12 @@ func (t *MCPReadTool) SecurityCapability() security.Capability {
 	return security.CapabilityExternalMCPRead
 }
 
+// ExternalCapability implements ExternalCapabilityReporter.
+func (t *MCPReadTool) ExternalCapability() bool { return true }
+
+// ConfigError reports the build-time MCP configuration failure, if any.
+func (t *MCPReadTool) ConfigError() string { return t.ConfigErr }
+
 // Execute implements agent.Tool.
 func (t *MCPReadTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	started := time.Now()
@@ -587,6 +599,12 @@ func NewMCPCallTool(manager MCPManager) *MCPCallTool {
 func (t *MCPCallTool) SecurityCapability() security.Capability {
 	return security.CapabilityExternalMCPMutate
 }
+
+// ExternalCapability implements ExternalCapabilityReporter.
+func (t *MCPCallTool) ExternalCapability() bool { return true }
+
+// ConfigError reports the build-time MCP configuration failure, if any.
+func (t *MCPCallTool) ConfigError() string { return t.ConfigErr }
 
 // SecurityCapabilityFor implements agent.InvocationCapabilityNamer.
 //

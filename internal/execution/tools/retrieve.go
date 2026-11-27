@@ -98,6 +98,7 @@ func NewRetrieveTool(source *StructuralSource, cacheDir string) *RetrieveTool {
 		agent.Approval{Tier: agent.TierRead, Reason: "rank repository files by relevance"},
 	)
 	tool.SetActionClasses(agent.ActionObserve, agent.ActionStructure)
+	tool.SetGroup(ToolGroupSearchDiscovery)
 	return tool
 }
 

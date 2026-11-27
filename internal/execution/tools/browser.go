@@ -196,6 +196,12 @@ func (t *BrowserTool) SecurityCapability() security.Capability {
 	return security.CapabilityExternalBrowserRead
 }
 
+// ExternalCapability implements ExternalCapabilityReporter.
+func (t *BrowserTool) ExternalCapability() bool { return true }
+
+// ConfigError reports a build-time browser configuration failure, if any.
+func (t *BrowserTool) ConfigError() string { return "" }
+
 // CloseSessions releases idle connections. It does not affect authority.
 func (t *BrowserTool) CloseSessions() {
 	t.mu.Lock()

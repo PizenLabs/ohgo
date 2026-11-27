@@ -2238,7 +2238,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return nil
 
 	case "doctor":
-		p.runDoctor()
+		p.runDoctor(command.Args)
 		return nil
 
 	case "mcp":

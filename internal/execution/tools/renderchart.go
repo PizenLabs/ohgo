@@ -86,6 +86,7 @@ func NewRenderChartTool(provider ChartProvider) *RenderChartTool {
 		agent.Approval{Tier: agent.TierRead, Reason: "render a chart from runtime telemetry"},
 	)
 	tool.SetActionClasses(agent.ActionObserve)
+	tool.SetGroup(ToolGroupWorkflowNetwork)
 	return tool
 }
 

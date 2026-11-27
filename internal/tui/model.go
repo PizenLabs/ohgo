@@ -5172,7 +5172,7 @@ var Commands = []CommandSpec{
 	{Name: "info", Usage: "info", Description: "show documentation and changelog", Category: CommandGroupControl},
 	{Name: "about", Usage: "about", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "docs", Usage: "docs", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
-	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
+	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor [--tools|--intelligence|--verbose|--json]", Description: "diagnose setup; drill into tools, intelligence, or full detail", Category: CommandGroupControl},
 	{Name: "mcp", Usage: "mcp", Description: "manage MCP servers and capabilities", Category: CommandGroupControl, Subcommands: []CommandSubcommand{
 		{Usage: "list", Description: "show configured MCP servers and cached status"},
 		{Usage: "inspect <server>", Description: "inspect one MCP server"},
@@ -6007,14 +6007,18 @@ type DoctorLine struct {
 	Section string
 	// Name is the check, e.g. "credentials".
 	Name string
-	// Status is OK, FALLBACK, OPTIONAL, WARN, or ERROR.
+	// Status is OK, FALLBACK, OPTIONAL, WARN, ERROR, or a drill-down label.
 	Status string
 	// Detail is the outcome or fix. It never carries secret bytes: sources
 	// are named ("environment (X)"), values never printed.
 	Detail string
-	// Recommendation marks an install suggestion rather than a check. The
-	// failure tally excludes them.
-	Recommendation bool
+	// Informational marks a recommendation or drill-down row. The failure
+	// tally excludes it.
+	Informational bool
+	// Hint prints a plain footer hint rather than a table row.
+	Hint bool
+	// Raw prints Detail verbatim, used for --json in the notice surfaces.
+	Raw bool
 }
 
 // ProbeFinished records a background connection probe. Probes run off the

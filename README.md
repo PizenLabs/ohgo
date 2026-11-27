@@ -335,6 +335,8 @@ ohgo docs --dir ./ohgo-docs                          # man pages + markdown
 ```sh
 ohgo init          # writes ~/.ohgo/settings.json (never overwrites without --force)
 ohgo doctor        # grouped OK/FALLBACK/OPTIONAL/WARN/ERROR checks; fixes named
+ohgo doctor --tools          # every registered tool: group, safety, backend, purpose
+ohgo doctor --intelligence   # adapters, language→LSP paths, unsupported extensions
 ohgo               # interactive session (full-screen UI on a TTY)
 ```
 
@@ -349,6 +351,19 @@ ohgo                              # interactive session
 
 A missing credential is the most common first-run failure; `ohgo doctor`
 reports which source won without ever printing the secret.
+
+### Doctor drill-downs
+
+The default report stays compact and prints a footer pointing at its targeted
+views. `ohgo doctor --tools` lists every registered tool with its functional
+group, approval safety (`read-only`, `mutating`, `shell`), active binding
+(`grep` names the resolved `rg` path or `native`; external tools name their
+capability), and a one-line purpose from the tool's own metadata.
+`ohgo doctor --intelligence` (alias `--lsp`) lists compiled structural
+adapters, maps each workspace language to its resolved language-server binary
+and readiness, and reports source extensions this build cannot parse. Both
+views compose with `--json`, and the same options work as `/doctor --tools`
+or `/doctor --intelligence` in either interface.
 
 ## Usage
 
@@ -405,7 +420,8 @@ ohgo version
 /connect /disconnect [provider]        provider credentials
 /status /usage /chart [dataset.json]   workspace, cost, charts, docs
 /update                                 install the latest release
-/doctor /diff [target]                  setup diagnosis, diff inspector
+/doctor [--tools|--intelligence|--verbose|--json]  setup diagnosis and drill-downs
+/diff [target]                          diff inspector
 /mcp [list|inspect|refresh]             MCP servers and capabilities
 /undo /redo                             revert or restore the last agent edit
 /copy [-a|--all|-c|--context]          copy the latest answer or its context

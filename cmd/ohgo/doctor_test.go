@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
@@ -97,12 +99,15 @@ func TestDoctorJSONIsGroupedAndDeterministic(t *testing.T) {
 			Remediations: []doctorRemediation{{Name: "gopls", Detail: "go install golang.org/x/tools/gopls@latest"}}},
 	}
 
+	diagnosis := doctorDiagnosis{Reports: reports}
+	view := doctorView{JSON: true}
+
 	var first bytes.Buffer
-	if err := renderDoctorJSON(&first, reports); err != nil {
+	if err := renderDoctorJSON(&first, diagnosis, view); err != nil {
 		t.Fatalf("renderDoctorJSON: %v", err)
 	}
 	var second bytes.Buffer
-	if err := renderDoctorJSON(&second, reports); err != nil {
+	if err := renderDoctorJSON(&second, diagnosis, view); err != nil {
 		t.Fatalf("renderDoctorJSON again: %v", err)
 	}
 	if first.String() != second.String() {
@@ -260,4 +265,284 @@ func TestWorkspaceLanguagesUseStructuralScope(t *testing.T) {
 	if _, ok := byLanguage[ast.LanguageJavaScript]; ok {
 		t.Fatalf("node_modules leaked into the inventory: %+v", languages)
 	}
+}
+
+// The tools drill-down must be a projection of the live registry, not a
+// hand-maintained list: every registered tool appears, and its group, safety,
+// backend, and purpose come from the tool's own metadata.
+func TestDoctorToolDetailReflectsLiveRegistry(t *testing.T) {
+	root := t.TempDir()
+	source := tools.NewStructuralSource(root)
+	live := []agent.Tool{
+		tools.NewReadTool(root),
+		tools.NewWriteTool(root),
+		tools.NewGrepTool(root),
+		tools.NewBashTool(root),
+		tools.NewSymbolsToolWithSource(source),
+		tools.NewSearchTool(nil),
+		tools.NewMCPListTool(nil),
+		tools.NewTodoTool(),
+	}
+	details := collectToolDetails(live)
+	if len(details) != len(live) {
+		t.Fatalf("details = %d, want %d live tools", len(details), len(live))
+	}
+	byName := make(map[string]doctorTool, len(details))
+	for _, detail := range details {
+		byName[detail.Name] = detail
+		if strings.TrimSpace(detail.Purpose) == "" || strings.Contains(detail.Purpose, "\n") {
+			t.Errorf("tool %q purpose = %q, want one non-empty line", detail.Name, detail.Purpose)
+		}
+		if len([]rune(detail.Purpose)) > 113 {
+			t.Errorf("tool %q purpose is not compact: %q", detail.Name, detail.Purpose)
+		}
+	}
+	for _, tool := range live {
+		if _, ok := byName[tool.Name()]; !ok {
+			t.Errorf("registered tool %q missing from --tools detail", tool.Name())
+		}
+	}
+
+	checks := []struct {
+		name, group, safety, source, backend string
+	}{
+		{"read", string(tools.ToolGroupFileOperations), "read-only", "built-in", "built-in"},
+		{"write", string(tools.ToolGroupFileOperations), "mutating", "built-in", "built-in"},
+		{"grep", string(tools.ToolGroupSearchDiscovery), "read-only", "built-in", ""},
+		{"bash", string(tools.ToolGroupExecutionVerification), "shell, mutating", "built-in", "built-in"},
+		{"symbols", string(tools.ToolGroupCodeIntelligence), "read-only", "built-in", "built-in"},
+		{"search", string(tools.ToolGroupWorkflowNetwork), "read-only", "external", "external.search"},
+		{"mcp_list", string(tools.ToolGroupWorkflowNetwork), "read-only", "mcp", "external.mcp.read"},
+		{"todo", string(tools.ToolGroupWorkflowNetwork), "read-only", "built-in", "built-in"},
+	}
+	for _, check := range checks {
+		got, ok := byName[check.name]
+		if !ok {
+			t.Errorf("missing detail for %q", check.name)
+			continue
+		}
+		if got.Group != check.group {
+			t.Errorf("%s group = %q, want %q", check.name, got.Group, check.group)
+		}
+		if got.Safety != check.safety {
+			t.Errorf("%s safety = %q, want %q", check.name, got.Safety, check.safety)
+		}
+		if got.Source != check.source {
+			t.Errorf("%s source = %q, want %q", check.name, got.Source, check.source)
+		}
+		if check.backend != "" && got.Backend != check.backend {
+			t.Errorf("%s backend = %q, want %q", check.name, got.Backend, check.backend)
+		}
+	}
+	grep := byName["grep"]
+	if grep.Backend != "native" && !strings.HasPrefix(grep.Backend, "rg (") {
+		t.Errorf("grep backend = %q, want native or the resolved rg path", grep.Backend)
+	}
+}
+
+// --json exposes the same structured detail arrays only when requested.
+func TestDoctorJSONIncludesRequestedDrillDowns(t *testing.T) {
+	diagnosis := doctorDiagnosis{
+		Reports: []doctorReport{{
+			Section: doctorSectionIntelligence, Name: "tools",
+			Status: doctorStatusOK, Detail: "1 tools registered",
+		}},
+		Tools: []doctorTool{{
+			Name: "grep", Group: string(tools.ToolGroupSearchDiscovery),
+			Safety: "read-only", Backend: "native", Source: "built-in",
+			Purpose: "Search file contents.",
+		}},
+		Intelligence: doctorIntelligence{
+			Adapters: []doctorAdapterDetail{{
+				Name: "go", Languages: []string{"go"},
+				Extensions: []string{".go"}, Capabilities: []string{"symbols"},
+			}},
+			Languages: []doctorLanguageMapping{{
+				Language: "go", Files: 2, Structural: "adapter",
+				Server: "gopls", Path: "/bin/gopls", Status: "ready",
+			}},
+			Unsupported: []doctorUnsupportedExtension{{Extension: ".kt", Files: 1}},
+		},
+	}
+
+	for _, view := range []doctorView{
+		{JSON: true, Tools: true},
+		{JSON: true, Intelligence: true},
+		{JSON: true, Tools: true, Intelligence: true},
+	} {
+		var buffer bytes.Buffer
+		if err := renderDoctorJSON(&buffer, diagnosis, view); err != nil {
+			t.Fatalf("renderDoctorJSON(%+v): %v", view, err)
+		}
+		var document doctorJSON
+		if err := json.Unmarshal(buffer.Bytes(), &document); err != nil {
+			t.Fatalf("decode JSON: %v", err)
+		}
+		if view.Tools {
+			if document.Tools == nil || len(*document.Tools) != 1 {
+				t.Fatalf("tools = %+v, want the requested array", document.Tools)
+			}
+			if got := (*document.Tools)[0]; got.Group == "" || got.Safety == "" || got.Purpose == "" {
+				t.Fatalf("tool detail = %+v, want the structured fields", got)
+			}
+		} else if document.Tools != nil {
+			t.Fatalf("tools appeared without --tools: %+v", document.Tools)
+		}
+		if view.Intelligence {
+			if document.Intelligence == nil || len(document.Intelligence.Adapters) != 1 ||
+				len(document.Intelligence.Languages) != 1 || len(document.Intelligence.Unsupported) != 1 {
+				t.Fatalf("intelligence = %+v, want the requested detail", document.Intelligence)
+			}
+		} else if document.Intelligence != nil {
+			t.Fatalf("intelligence appeared without --intelligence: %+v", document.Intelligence)
+		}
+		if document.Tools == nil && document.Intelligence == nil {
+			t.Fatal("neither requested drill-down appeared")
+		}
+	}
+}
+
+// Intelligence maps detected languages to the binary that will serve them and
+// reports unsupported extensions without inventing a server for a language the
+// workspace does not contain.
+func TestDoctorIntelligenceMapsWorkspaceLanguages(t *testing.T) {
+	inventory := doctorWorkspaceInventory{
+		Languages: []ast.LanguageCoverage{
+			{Language: ast.LanguageGo, Files: 3, Supported: true},
+			{Language: ast.LanguageTypeScript, Files: 2},
+			{Language: ast.LanguageTSX, Files: 1},
+		},
+		Unsupported: []ast.UnsupportedLanguage{
+			{Extension: ".tsx", Files: 1},
+			{Extension: ".ts", Files: 2},
+		},
+	}
+	host := doctorHost{
+		GOOS: "linux",
+		Lookup: fakeLookPath(map[string]string{
+			"gopls": "/bin/gopls", "jdtls": "/bin/jdtls",
+		}),
+	}
+	detail := collectIntelligence(host, inventory, nil)
+	if len(detail.Adapters) == 0 {
+		t.Fatal("intelligence omitted every structural adapter")
+	}
+	var goAdapter *doctorAdapterDetail
+	for index := range detail.Adapters {
+		if detail.Adapters[index].Name == "go" {
+			goAdapter = &detail.Adapters[index]
+		}
+	}
+	if goAdapter == nil || !contains(goAdapter.Extensions, ".go") {
+		t.Fatalf("go adapter = %+v, want the .go extension", goAdapter)
+	}
+
+	byLanguage := map[string]doctorLanguageMapping{}
+	for _, mapping := range detail.Languages {
+		byLanguage[mapping.Language] = mapping
+	}
+	if got := byLanguage["go"]; got.Status != "ready" || got.Server != "gopls" || got.Path != "/bin/gopls" {
+		t.Fatalf("go mapping = %+v, want gopls ready at /bin/gopls", got)
+	}
+	if got := byLanguage["typescript"]; got.Status != "missing" ||
+		got.Server != "typescript-language-server" || got.Files != 3 {
+		t.Fatalf("typescript mapping = %+v, want the missing preferred server", got)
+	}
+	for _, mapping := range detail.Languages {
+		if mapping.Server == "jdtls" {
+			t.Fatalf("unrelated jdtls mapped to workspace language: %+v", mapping)
+		}
+	}
+	if len(detail.Unsupported) != 2 ||
+		detail.Unsupported[0].Extension != ".ts" || detail.Unsupported[1].Extension != ".tsx" {
+		t.Fatalf("unsupported = %+v, want stable extension order", detail.Unsupported)
+	}
+}
+
+// The text drill-downs are readable without --verbose and the footer points at
+// the targeted selectors only in the compact default view.
+func TestDoctorDrillDownTextAndHint(t *testing.T) {
+	var toolsOut strings.Builder
+	renderDoctorToolDetails(&toolsOut, []doctorTool{{
+		Name: "grep", Group: string(tools.ToolGroupSearchDiscovery),
+		Safety: "read-only", Source: "built-in",
+		Backend: "rg (/opt/homebrew/bin/rg)", Purpose: "Search file contents.",
+	}})
+	for _, want := range []string{"Registered Tools (1)", "Search & Discovery", "grep", "read-only", "rg (/opt/homebrew/bin/rg)", "Search file contents."} {
+		if !strings.Contains(toolsOut.String(), want) {
+			t.Errorf("tools detail omitted %q:\n%s", want, toolsOut.String())
+		}
+	}
+
+	var intelligenceOut strings.Builder
+	renderDoctorIntelligenceDetails(&intelligenceOut, doctorIntelligence{
+		Adapters: []doctorAdapterDetail{{
+			Name: "go", Languages: []string{"go"},
+			Extensions: []string{".go"}, Capabilities: []string{"symbols"},
+		}},
+		Languages: []doctorLanguageMapping{{
+			Language: "go", Files: 2, Structural: "adapter",
+			Server: "gopls", Path: "/bin/gopls", Status: "ready",
+		}},
+		Unsupported: []doctorUnsupportedExtension{{Extension: ".kt", Files: 1}},
+	})
+	for _, want := range []string{"Code Intelligence Detail", "Structural Adapters (1)", "go", "Workspace Languages (1)", "gopls", "ready", "Unsupported Extensions (1)", ".kt"} {
+		if !strings.Contains(intelligenceOut.String(), want) {
+			t.Errorf("intelligence detail omitted %q:\n%s", want, intelligenceOut.String())
+		}
+	}
+
+	var hint strings.Builder
+	renderDoctorHint(&hint)
+	for _, want := range []string{"hint:", "--tools", "--intelligence", "--verbose"} {
+		if !strings.Contains(hint.String(), want) {
+			t.Errorf("hint omitted %q:\n%s", want, hint.String())
+		}
+	}
+	if !(doctorView{}).compact() {
+		t.Fatal("the default view is not compact")
+	}
+	for _, view := range []doctorView{{Tools: true}, {Intelligence: true}, {Verbose: true}, {JSON: true}} {
+		if view.compact() {
+			t.Fatalf("view %+v reported compact", view)
+		}
+	}
+}
+
+func TestParseDoctorViewArgs(t *testing.T) {
+	view, err := parseDoctorViewArgs([]string{"--tools", "--lsp", "--verbose", "--json"})
+	if err != nil {
+		t.Fatalf("parseDoctorViewArgs: %v", err)
+	}
+	if !view.Tools || !view.Intelligence || !view.Verbose || !view.JSON {
+		t.Fatalf("view = %+v, want every selector", view)
+	}
+	if _, err := parseDoctorViewArgs([]string{"--nope"}); err == nil {
+		t.Fatal("unknown option parsed successfully")
+	}
+
+	cmd := doctorCmd()
+	for _, flag := range []string{"tools", "intelligence", "lsp", "verbose", "json"} {
+		if cmd.Flags().Lookup(flag) == nil {
+			t.Fatalf("doctor is missing --%s", flag)
+		}
+	}
+	for flag, value := range map[string]string{"tools": "true", "lsp": "true", "verbose": "true", "json": "true"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set --%s: %v", flag, err)
+		}
+	}
+	cliView := doctorViewFromCmd(cmd)
+	if !cliView.Tools || !cliView.Intelligence || !cliView.Verbose || !cliView.JSON {
+		t.Fatalf("CLI view = %+v, want every selector", cliView)
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

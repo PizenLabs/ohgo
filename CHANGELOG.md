@@ -7,6 +7,17 @@ immutable.
 
 ### Added
 
+- `ohgo doctor --tools` renders a grouped breakdown of every registered tool,
+  sourced from the live registry: functional group, approval safety
+  (`read-only`, `mutating`, `shell`), active binding (`grep` → `rg (path)` or
+  `native`; external/MCP capability), and a one-line purpose condensed from
+  the tool's own description. `ohgo doctor --intelligence` (alias `--lsp`)
+  shows compiled structural adapters, workspace language-to-LSP mappings with
+  resolved binary paths and readiness, and unsupported source extensions.
+  Both drill-downs compose with `--json` and are available through
+  `/doctor --tools` and `/doctor --intelligence`. The compact default view
+  prints a footer pointing at the targeted flags.
+
 - `/effort [level|off|auto]` shows and changes the thinking effort for the
   workspace role the session is running under. Bare `/effort` opens a fixed
   choice card naming that role's live model and authoritative ladder; the

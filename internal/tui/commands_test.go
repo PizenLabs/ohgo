@@ -361,11 +361,14 @@ func TestUsageInspectorWithoutLedger(t *testing.T) {
 
 func TestDoctorPrintsRows(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	p.SetDoctorFunc(func() []DoctorLine {
+	p.SetDoctorFunc(func(args []string) []DoctorLine {
+		if len(args) != 0 {
+			t.Fatalf("args = %v, want none", args)
+		}
 		return []DoctorLine{
 			{Section: "Workspace & Storage", Name: "config", Status: "OK", Detail: "loaded"},
 			{Section: "Model & Provider", Name: "credentials", Status: "ERROR", Detail: "set X"},
-			{Section: "Recommendations", Name: "gopls", Status: "OPTIONAL", Detail: "go install gopls", Recommendation: true},
+			{Section: "Recommendations", Name: "gopls", Status: "OPTIONAL", Detail: "go install gopls", Informational: true},
 		}
 	})
 	Command{Name: "doctor"}.runOn(p)
@@ -379,6 +382,44 @@ func TestDoctorPrintsRows(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("doctor = %q, want %q", text, want)
 		}
+	}
+}
+
+// Drill-down rows and the footer hint must not inflate the check tally, and
+// the raw JSON form must survive unchanged in the notice surface.
+func TestDoctorRendersDrillDownsAndHint(t *testing.T) {
+	text := RenderDoctorLines([]DoctorLine{
+		{Section: "Checks", Name: "config", Status: "OK", Detail: "loaded"},
+		{Section: "Tools · File Operations", Name: "read", Status: "read-only", Detail: "built-in · Read a file.", Informational: true},
+		{Hint: true, Informational: true, Detail: "--tools shows tool bindings"},
+	})
+	for _, want := range []string{"Tools · File Operations", "read-only", "hint: --tools shows tool bindings"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("rendered doctor = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "checks failed") {
+		t.Errorf("informational rows inflated the tally: %q", text)
+	}
+
+	raw := RenderDoctorLines([]DoctorLine{{Raw: true, Detail: `{"ok":true}`}})
+	if raw != `{"ok":true}` {
+		t.Errorf("raw row = %q, want the exact JSON", raw)
+	}
+}
+
+// The slash command must forward its option words to the shared doctor, not
+// silently drop them at the UI boundary.
+func TestDoctorForwardsDrillDownArgs(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	var got []string
+	p.SetDoctorFunc(func(args []string) []DoctorLine {
+		got = append([]string(nil), args...)
+		return nil
+	})
+	Command{Name: "doctor", Args: []string{"--tools", "--intelligence"}}.runOn(p)
+	if strings.Join(got, " ") != "--tools --intelligence" {
+		t.Fatalf("doctor args = %v, want the option words", got)
 	}
 }
 
