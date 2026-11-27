@@ -157,6 +157,14 @@ func (l *Loop) answerReviewReason(turns []Turn) string {
 		}
 		return plan + "; " + reason
 	}
+	if issues := l.answerPlanConformance(turns); len(issues) > 0 {
+		conformance := "the final answer left the accepted plan's claim strength: " +
+			boundRepair(issues[0].Detail, 120) + "; " + boundRepair(issues[0].Action, 120)
+		if reason == "" {
+			return conformance
+		}
+		return reason + "; " + conformance
+	}
 	return reason
 }
 
@@ -178,13 +186,40 @@ func (l *Loop) planReviewReason() string {
 		len(items), boundRepair(strings.Join(items, "; "), 240))
 }
 
-// answerRepairs runs the installed claim-level planner, if any.
+// answerPlanLedgerReason renders the accepted plan ledger for the next
+// request. It is empty before a plan is accepted or when the host installed no
+// ledger directive.
+func (l *Loop) answerPlanLedgerReason() string {
+	if l == nil || !l.planAccepted {
+		return ""
+	}
+	return RenderAnswerPlanLedger(l.cfg.AnswerPlanLedgerRequest, l.acceptedPlan)
+}
+
+// answerRepairs runs the installed claim-level planner and the accepted-plan
+// conformance audit. The plan audit is deterministic and independent of the
+// host; it cannot be disabled by a host that supplied no AnswerRepairs hook.
 func (l *Loop) answerRepairs(turns []Turn) []contract.GroundingIssue {
-	if l == nil || l.cfg.AnswerRepairs == nil || len(turns) == 0 {
+	if l == nil || len(turns) == 0 {
 		return nil
 	}
-	answer := turns[len(turns)-1].Assistant.Text()
-	return l.cfg.AnswerRepairs(turns, answer)
+	var issues []contract.GroundingIssue
+	if l.cfg.AnswerRepairs != nil {
+		answer := turns[len(turns)-1].Assistant.Text()
+		issues = append(issues, l.cfg.AnswerRepairs(turns, answer)...)
+	}
+	issues = append(issues, l.answerPlanConformance(turns)...)
+	return issues
+}
+
+// answerPlanConformance projects the accepted plan against the final prose.
+// It only runs after a reviewed plan was accepted; a run without a plan keeps
+// the ordinary answer audit unchanged.
+func (l *Loop) answerPlanConformance(turns []Turn) []contract.GroundingIssue {
+	if l == nil || !l.planAccepted || len(turns) == 0 {
+		return nil
+	}
+	return ReviewAnswerPlanConformance(turns, turns[len(turns)-1].Assistant.Text(), l.acceptedPlan)
 }
 
 // answerPassesReview evaluates a candidate text without mutating the run's

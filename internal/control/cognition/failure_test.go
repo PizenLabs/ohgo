@@ -282,3 +282,39 @@ func readEvidenceForTest(id, path, body string) agent.ToolOutcome {
 		}},
 	}
 }
+
+// A refused answer plan is control feedback, not a failed capability. The
+// same plan call must be re-audited after new observations; otherwise the
+// failure ledger blocks it with stale issues and the run cannot converge.
+func TestAnswerPlanRefusalIsReauditableAfterObservations(t *testing.T) {
+	state := NewEvidenceState()
+	args := map[string]any{"claims": []any{"There are no Go test files."}}
+	outcome := agent.ToolOutcome{
+		CallID:   "plan-1",
+		ToolName: agent.AnswerPlanToolName,
+		Args:     args,
+		Result: agent.Result{
+			Text:         "answer plan refused: missing test inventory",
+			IsError:      true,
+			FailureClass: agent.ToolFailureAnswerPlan,
+			Details: agent.AnswerPlanResult{
+				Reviewed: true,
+				Accepted: false,
+			},
+		},
+	}
+	state.ObserveOutcome(outcome)
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID:   "read-1",
+		ToolName: "read",
+		Args:     map[string]any{"path": "go.mod"},
+		Result:   agent.Result{Text: "module example", Finished: true},
+	})
+	failures := state.FailureState()
+	if len(failures.Records) != 0 {
+		t.Fatalf("plan refusal entered the failure ledger: %+v", failures.Records)
+	}
+	if _, refused := failures.Refusals[agent.CallSignature(agent.AnswerPlanToolName, args)]; refused {
+		t.Fatal("an identical plan call was refused instead of re-audited")
+	}
+}

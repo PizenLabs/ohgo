@@ -2,6 +2,8 @@ package agent
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
@@ -61,6 +63,10 @@ type AnswerPlanResult struct {
 	Claims int
 	// Issues are the refused claims, bounded to the repair instruction limit.
 	Issues []contract.GroundingIssue
+	// Plan is the normalised declaration this result describes. An accepted
+	// plan is returned so the loop can carry its exact claims into the answer
+	// request; the model must compose from that ledger, not an earlier draft.
+	Plan AnswerPlan
 }
 
 // ParseAnswerPlan validates and normalises the tool arguments.
@@ -157,6 +163,214 @@ func ReviewAnswerPlan(intent contract.IntentContract, turns []Turn, plan AnswerP
 		claims = append(claims, issue)
 	}
 	return usableRepairs(claims)
+}
+
+// AnswerPlanLedgerText renders the accepted claims as a bounded ledger the
+// final answer must compose from. It is the one formatter for both the tool
+// receipt and the answer-request directive; a second rendering could let the
+// model see a different claim than the audit accepted.
+func AnswerPlanLedgerText(plan AnswerPlan) (claims, limitations string) {
+	var b strings.Builder
+	for index, claim := range plan.Claims {
+		if index > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("- ")
+		b.WriteString(boundRepair(claim, maxAnswerPlanClaimBytes))
+	}
+	claims = b.String()
+	b.Reset()
+	for index, limitation := range plan.Limitations {
+		if index > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("- ")
+		b.WriteString(boundRepair(limitation, maxAnswerPlanClaimBytes))
+	}
+	limitations = b.String()
+	if limitations == "" {
+		limitations = "- none declared"
+	}
+	return claims, limitations
+}
+
+// RenderAnswerPlanLedger fills a host-supplied ledger template. The template
+// is data from the prompt package, not a rule; the loop supplies only the
+// accepted claims it audited.
+func RenderAnswerPlanLedger(template string, plan AnswerPlan) string {
+	template = strings.TrimSpace(template)
+	if template == "" || len(plan.Claims) == 0 {
+		return ""
+	}
+	claims, limitations := AnswerPlanLedgerText(plan)
+	out := strings.ReplaceAll(template, "{{claims}}", claims)
+	return strings.ReplaceAll(out, "{{limitations}}", limitations)
+}
+
+// ReviewAnswerPlanConformance checks the final prose against the accepted
+// plan's documented claims. An accepted plan is a claim-strength contract, not
+// merely a gate the prose may leave behind. When the plan declared a claim as
+// documentation-attributed, the final answer may keep that attribution; it may
+// not strengthen the same subject into an unattributed world fact.
+func ReviewAnswerPlanConformance(turns []Turn, answer string, plan AnswerPlan) []contract.GroundingIssue {
+	if strings.TrimSpace(answer) == "" || len(plan.Claims) == 0 {
+		return nil
+	}
+	documented := map[string]string{} // term -> accepted claim
+	for _, claim := range plan.Claims {
+		if !hasAttribution(claim) {
+			continue
+		}
+		for _, term := range planDocumentedTerms(claim) {
+			if _, exists := documented[term]; !exists {
+				documented[term] = claim
+			}
+		}
+	}
+	if len(documented) == 0 {
+		return nil
+	}
+	var issues []contract.GroundingIssue
+	seen := map[string]bool{}
+	attributedSection := false
+	previousAttributed := false
+	for _, line := range strings.Split(answer, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if answerSectionHeading(trimmed) {
+			attributedSection = hasAttribution(trimmed)
+			previousAttributed = false
+			continue
+		}
+		lineAttributed := hasAttribution(trimmed)
+		for _, raw := range claimSentenceBoundary.Split(strings.TrimSpace(line), -1) {
+			clause := strings.TrimSpace(raw)
+			if clause == "" || answerUnitIsStructural(clause) || attributedSection || previousAttributed || hasAttribution(clause) {
+				continue
+			}
+			if !planClauseStrengthensClaim(clause) {
+				continue
+			}
+			term, accepted := planDocumentedTermIn(clause, documented)
+			if term == "" || seen[clause+"\x00"+term] {
+				continue
+			}
+			seen[clause+"\x00"+term] = true
+			issues = append(issues, contract.GroundingIssue{
+				Code:        "plan_claim_strengthened",
+				Detail:      fmt.Sprintf("the accepted plan recorded %q as a documentation claim; the final answer states it without attribution", term),
+				Claim:       clause,
+				Location:    clause,
+				Category:    "attribution",
+				Requirement: "the accepted plan's wording or an observed source",
+				Reference:   term,
+				Action:      "use the accepted plan's wording: " + boundRepair(accepted, 240),
+			})
+			if len(issues) >= MaxRepairInstructions {
+				return issues
+			}
+		}
+		previousAttributed = lineAttributed
+	}
+	return issues
+}
+
+// answerSectionHeading reports a line that starts a new prose section. Both a
+// Markdown heading and a bold-only label are section boundaries; treating the
+// bold label as ordinary prose would carry an attribution into the next
+// unrelated section.
+func answerSectionHeading(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "#") {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "**") && strings.HasSuffix(trimmed, "**")
+}
+
+// planDocumentedTerms extracts the significant lower-case terms and proper
+// names from one plan claim. ClaimTerms intentionally keeps only proper names
+// and metrics; a documentation claim such as "local SQLite storage" needs the
+// lower-case subject too.
+func planDocumentedTerms(claim string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(term string) {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if len(term) < 4 || genericClaimTerm(term) || seen[term] {
+			return
+		}
+		seen[term] = true
+		out = append(out, term)
+	}
+	for _, term := range ClaimTerms(claim) {
+		add(term)
+	}
+	for _, raw := range strings.Fields(claim) {
+		add(strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_"))
+	}
+	return out
+}
+
+// planDocumentedTermIn finds the accepted documented term in a clause. It
+// uses a word boundary so "storage" does not match "storefront" accidentally.
+func planDocumentedTermIn(clause string, documented map[string]string) (term, claim string) {
+	lower := strings.ToLower(clause)
+	candidates := make([]string, 0, len(documented))
+	for candidate := range documented {
+		candidates = append(candidates, candidate)
+	}
+	// Prefer the most specific term so the repair names "sqlite" rather than
+	// the weaker "local" when a clause contains both.
+	sort.Slice(candidates, func(i, j int) bool {
+		if len(candidates[i]) != len(candidates[j]) {
+			return len(candidates[i]) > len(candidates[j])
+		}
+		return candidates[i] < candidates[j]
+	})
+	for _, candidate := range candidates {
+		accepted := documented[candidate]
+		if len(candidate) == 0 {
+			continue
+		}
+		index := strings.Index(lower, candidate)
+		for index >= 0 {
+			before := index == 0 || !isTermRune(rune(lower[index-1]))
+			after := index+len(candidate) >= len(lower) || !isTermRune(rune(lower[index+len(candidate)]))
+			if before && after {
+				return candidate, accepted
+			}
+			next := strings.Index(lower[index+1:], candidate)
+			if next < 0 {
+				break
+			}
+			index += next + 1
+		}
+	}
+	return "", ""
+}
+
+// isTermRune reports whether r can continue a word. It is the boundary rule
+// for documentation terms, kept local to the plan audit so it cannot disagree
+// with the tokenizer used to build them.
+func isTermRune(r rune) bool {
+	return r == '_' || r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+}
+
+var planClauseStrengthPattern = regexp.MustCompile(`(?i)\b(?:` +
+	`everything|all|every|always|never|only|none|entirely|completely|solely|exclusively|` +
+	`stor(?:e|es|ed|ing)|persist(?:s|ed|ing)?|uses?|used|using|consists?\s+of|` +
+	`requires?|depends?\s+on|provides?|supports?` +
+	`)\b`)
+
+// planClauseStrengthensClaim reports a clause whose wording asserts a
+// documented subject as a world fact rather than reporting the source that
+// documents it. A negative clause is included: "there is no hosted service"
+// strengthens an accepted "the README says there is no hosted service" unless
+// the final clause keeps that attribution.
+func planClauseStrengthensClaim(clause string) bool {
+	return planClauseStrengthPattern.MatchString(clause) || len(negativeClaims(clause)) > 0
 }
 
 // AnswerPlanRefusal renders the bounded refusal the model sees when a plan

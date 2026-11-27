@@ -532,6 +532,13 @@ func negativeClaims(answer string) []negativeClaim {
 				runReportFollowsNegative(answer, match[1]) {
 				continue
 			}
+			// "The README states there is no hosted service" reports the
+			// documentation, not a world absence. The audit owns what the
+			// repository contains; a documentation-attributed absence is a
+			// provenance claim and is checked by the attribution audit.
+			if attributedNegativeClaim(answer, match[0], match[1]) {
+				continue
+			}
 			if claimIsEvidenceGap(answer, match[3]) {
 				// "No runtime or configuration evidence" is a statement about
 				// this run's observations, not a repository absence. Treating
@@ -579,6 +586,57 @@ func negativePredicateUncertain(answer string, end int) bool {
 		tail = tail[:cut]
 	}
 	return negativeUncertainPredicatePattern.MatchString(tail)
+}
+
+// attributedNegativeClaim reports whether the negative occurrence is a
+// statement about documentation rather than a claim that the subject is absent
+// from the repository. The attribution must share the clause with the
+// negative; a later contrast ("README says no X, so the project has no X") is
+// a world claim and must still be audited.
+func attributedNegativeClaim(answer string, start, end int) bool {
+	if start < 0 || end < start || end > len(answer) {
+		return false
+	}
+	lineStart := strings.LastIndex(answer[:start], "\n") + 1
+	linePrefix := answer[lineStart:start]
+	clauseStart := strings.LastIndexAny(linePrefix, ".;!?")
+	prefix := linePrefix[clauseStart+1:]
+	if hasAttribution(prefix) && !negativeAttributionContrast(prefix) {
+		return true
+	}
+	// A bullet under an attributed section ("**Per README**" followed by a
+	// list) inherits the section's provenance. Only the immediately preceding
+	// non-empty line is considered; an unrelated earlier attribution does not
+	// govern a later section.
+	if lineStart > 1 {
+		previousEnd := lineStart - 1
+		previousStart := strings.LastIndex(answer[:previousEnd], "\n") + 1
+		previous := strings.TrimSpace(answer[previousStart:previousEnd])
+		if previous != "" && hasAttribution(previous) && !negativeAttributionContrast(previous) {
+			return true
+		}
+	}
+	// "There is no hosted service, according to the README" attributes the
+	// same clause after the negative. Stop at a clause boundary so a later
+	// sentence's attribution cannot excuse this claim.
+	suffix := answer[end:]
+	if cut := strings.IndexAny(suffix, ".;!?\n"); cut >= 0 {
+		suffix = suffix[:cut]
+	}
+	return hasAttribution(suffix) && !negativeAttributionContrast(suffix)
+}
+
+// negativeAttributionContrast reports a conclusion joined to the attribution.
+// "The README says X and the project has no Y" cannot borrow README as the
+// evidence for Y.
+func negativeAttributionContrast(text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range []string{" but ", " however ", " yet ", " whereas ", " so ", " therefore ", " thus ", " hence ", " and the project ", " and the repository "} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // manifestDeclarationAbsence reports a negative about what a manifest

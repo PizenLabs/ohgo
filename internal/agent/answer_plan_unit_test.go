@@ -140,3 +140,46 @@ func TestRefusedAnswerPlanIsControlFeedbackNotAFailure(t *testing.T) {
 		t.Fatalf("a refused plan vetoed completion: %s", verdict.Reason)
 	}
 }
+
+// The accepted plan is a claim-strength contract, not a one-time gate. A
+// documented claim may not become an unattributed world claim in the prose.
+func TestReviewAnswerPlanConformanceCatchesStrengthenedClaim(t *testing.T) {
+	plan := AnswerPlan{Claims: []string{
+		"According to the README, storage is a local SQLite database with no hosted service, API key, or telemetry.",
+	}}
+	answer := "Everything is stored in a local SQLite database; the README states there is no hosted service, API key, or telemetry."
+	issues := ReviewAnswerPlanConformance(nil, answer, plan)
+	if len(issues) != 1 || issues[0].Code != "plan_claim_strengthened" {
+		t.Fatalf("issues = %+v, want one strengthened documented claim", issues)
+	}
+	if !strings.Contains(issues[0].Claim, "Everything is stored") {
+		t.Fatalf("issue named the wrong clause: %+v", issues[0])
+	}
+	if !strings.Contains(issues[0].Action, "According to the README") {
+		t.Fatalf("repair did not carry the accepted wording: %+v", issues[0])
+	}
+
+	acceptedWording := "According to the README, storage is a local SQLite database; the README states there is no hosted service, API key, or telemetry."
+	if issues := ReviewAnswerPlanConformance(nil, acceptedWording, plan); len(issues) != 0 {
+		t.Fatalf("the accepted wording was refused: %+v", issues)
+	}
+}
+
+// A plan with no documentation attribution cannot impose an attribution rule
+// on a source-observed claim, and a plan ledger renders exactly the accepted
+// claims it was given.
+func TestAnswerPlanLedgerRendersAcceptedClaims(t *testing.T) {
+	plan := AnswerPlan{
+		Claims:      []string{"The root Cargo.toml declares seven crates.", "The CLI is defined in crates/gry-cli/src/main.rs."},
+		Limitations: []string{"The internals were not read in this pass."},
+	}
+	got := RenderAnswerPlanLedger("Accepted:\n{{claims}}\nLimits:\n{{limitations}}", plan)
+	for _, want := range []string{"The root Cargo.toml declares seven crates.", "The CLI is defined", "The internals were not read", "Limits:"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ledger missing %q:\n%s", want, got)
+		}
+	}
+	if issues := ReviewAnswerPlanConformance(nil, "The root Cargo.toml declares seven crates.", plan); len(issues) != 0 {
+		t.Fatalf("a source-only plan imposed attribution: %+v", issues)
+	}
+}

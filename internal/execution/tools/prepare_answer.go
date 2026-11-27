@@ -73,7 +73,7 @@ func (t *PrepareAnswerTool) Execute(ctx agent.Context, args map[string]any) agen
 	if err != nil {
 		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing recorded.", err)
 	}
-	result := agent.AnswerPlanResult{Claims: len(plan.Claims)}
+	result := agent.AnswerPlanResult{Claims: len(plan.Claims), Plan: plan}
 	if ctx.AnswerPlanReview == nil {
 		// A host without the preflight seam still gets a truthful record; the
 		// plan must not claim it was audited.
@@ -94,8 +94,11 @@ func (t *PrepareAnswerTool) Execute(ctx agent.Context, args map[string]any) agen
 		}
 	}
 	result.Accepted = true
+	claims, limitations := agent.AnswerPlanLedgerText(plan)
 	return agent.Result{
-		Text:    "answer plan accepted: every declared claim is supported by the observed evidence. Write the complete final answer now; do not call another tool.",
+		Text: "answer plan accepted: every declared claim is supported by the observed evidence. " +
+			"Write the complete final answer from this accepted ledger; do not call another tool and do not add a stronger claim.\n\n" +
+			"Accepted claims:\n" + claims + "\n\nLimitations:\n" + limitations,
 		Details: result,
 	}
 }

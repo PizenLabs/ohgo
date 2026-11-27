@@ -243,6 +243,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		ProtocolRecoveryRequest:     parent.ProtocolRecoveryRequest,
 		ToolArgumentRecoveryRequest: parent.ToolArgumentRecoveryRequest,
 		OutputRecoveryRequest:       parent.OutputRecoveryRequest,
+		AnswerPlanLedgerRequest:     parent.AnswerPlanLedgerRequest,
 		RepairRequest:               parent.RepairRequest,
 		CorrectionToolCalls:         parent.CorrectionToolCalls,
 		StreamIdleTimeout:           parent.StreamIdleTimeout,

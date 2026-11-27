@@ -68,6 +68,19 @@ func TestAnswerPlanGateRunsBeforeProse(t *testing.T) {
 					t.Fatalf("evidence request tool choice = %q, want any", req.ToolChoice.Type)
 				}
 			}
+			if index == 3 {
+				found := false
+				for _, msg := range req.Messages {
+					if state, ok := msg.(ai.RuntimeStateMessage); ok &&
+						strings.Contains(state.Text, "Accepted plan ledger:") &&
+						strings.Contains(state.Text, "The project is a Go coding agent.") {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("answer request did not carry the accepted claim ledger: %+v", req.Messages)
+				}
+			}
 			return ai.NewCompletedStream(script[index]), nil
 		},
 		Tools: []agent.Tool{
@@ -87,6 +100,7 @@ func TestAnswerPlanGateRunsBeforeProse(t *testing.T) {
 		MaxTurns:                  8,
 		AnswerPlanRequest:         "Call prepare_answer before writing the answer.",
 		AnswerPlanEvidenceRequest: "Read the missing evidence.",
+		AnswerPlanLedgerRequest:   "Accepted plan ledger:\n{{claims}}",
 		CompletionReviewRequest:   "Runtime completion review: {{reason}}.",
 	})
 	if err != nil {
@@ -363,5 +377,90 @@ func TestAnswerPlanGateWithholdsProseBeforePlan(t *testing.T) {
 	}
 	if turns[2].Answer != agent.AnswerCommitted {
 		t.Fatalf("final disposition = %s, want committed", turns[2].Answer)
+	}
+}
+
+// A plan accepted as a documented claim cannot be strengthened in the final
+// prose. The accepted ledger is the composition contract; the correction must
+// name the accepted wording rather than silently publishing the stronger
+// sentence.
+func TestAcceptedPlanConstrainsFinalAnswerWording(t *testing.T) {
+	accepted := "According to the README, storage is a local SQLite database."
+	stronger := "Everything is stored in a local SQLite database."
+	script := []ai.AssistantMessage{
+		{
+			Content: []ai.ContentBlock{ai.ToolCall{
+				ID:   "plan-1",
+				Name: agent.AnswerPlanToolName,
+				Arguments: map[string]any{
+					"claims": []any{accepted},
+				},
+			}},
+			StopReason: ai.StopToolUse,
+		},
+		{
+			Content:    []ai.ContentBlock{ai.TextContent{Text: stronger}},
+			StopReason: ai.StopEndTurn,
+		},
+		{
+			Content:    []ai.ContentBlock{ai.TextContent{Text: accepted}},
+			StopReason: ai.StopEndTurn,
+		},
+	}
+	var requests atomic.Int64
+	var correction string
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+			index := int(requests.Add(1)) - 1
+			if index >= len(script) {
+				t.Fatalf("provider request %d exceeded the script", index+1)
+			}
+			if index == 2 {
+				for _, msg := range req.Messages {
+					if state, ok := msg.(ai.RuntimeStateMessage); ok &&
+						strings.Contains(state.Text, "accepted plan's wording") {
+						correction = state.Text
+					}
+				}
+			}
+			return ai.NewCompletedStream(script[index]), nil
+		},
+		Tools: []agent.Tool{exectools.NewPrepareAnswerTool()},
+		Project: func(agent.ProjectionRequest) agent.ProjectionResult {
+			return agent.ProjectionResult{Report: agent.ProjectionReport{AnswerEligible: true, Stage: "answer"}}
+		},
+		Authorize:                 allowRead{},
+		MaxTurns:                  8,
+		AnswerPlanRequest:         "Plan first.",
+		AnswerPlanEvidenceRequest: "Read the missing evidence.",
+		AnswerPlanLedgerRequest:   "Accepted plan ledger:\n{{claims}}",
+		CompletionReviewRequest:   "Completion review: {{reason}}",
+		RepairRequest:             "Repair:\n{{repairs}}\n\n{{reason}}",
+		CorrectionAnswerRequest:   "Write the final answer from the accepted plan.",
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	loop.SetAnswerPlanReview(func([]agent.Turn, agent.AnswerPlan) []contract.GroundingIssue { return nil })
+	loop.SetAnswerReview(func([]agent.Turn, string) string { return "" })
+
+	turns, err := loop.Run(context.Background(), []agent.Message{
+		agent.UserMessage{Text: "what is storage?"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if correction == "" {
+		t.Fatal("the correction request did not carry the strengthened-claim repair")
+	}
+	if !strings.Contains(correction, "According to the README") {
+		t.Fatalf("the correction did not carry the accepted ledger wording:\n%s", correction)
+	}
+	if len(turns) == 0 || turns[len(turns)-1].Answer != agent.AnswerCommitted {
+		t.Fatalf("final answer = %+v, want committed from the accepted wording", turns)
+	}
+	if got := turns[len(turns)-1].Assistant.Text(); got != accepted {
+		t.Fatalf("final answer = %q, want %q", got, accepted)
 	}
 }

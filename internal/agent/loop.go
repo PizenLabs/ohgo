@@ -314,6 +314,11 @@ type Config struct {
 	// request that asks for the plan. Empty still requires a plan when
 	// AnswerPlanReview is installed, but gives the model no instruction.
 	AnswerPlanRequest string
+	// AnswerPlanLedgerRequest is the directive carried after a plan is
+	// accepted. It receives {{claims}} and {{limitations}} rendered from the
+	// exact ledger the plan audit accepted. The final answer must compose from
+	// that ledger; a later draft cannot silently strengthen its claims.
+	AnswerPlanLedgerRequest string
 	// AnswerPlanEvidenceRequest is the directive carried on the evidence
 	// request that follows a refused plan. The plan tool is withheld on that
 	// request; the directive asks for the observations the refusal named.
@@ -652,6 +657,12 @@ type Loop struct {
 	// the next turn look already published.
 	responseMu sync.Mutex
 	response   ResponseAudit
+	// acceptedPlan is the pre-prose claim ledger for the current run. It is
+	// set only by a reviewed, accepted plan and is reset at Run start. The
+	// answer request and the final prose audit use this exact ledger rather
+	// than reconstructing the model's intent from the answer text.
+	acceptedPlan AnswerPlan
+	planAccepted bool
 }
 
 // SetUsageLog installs the ledger that receives per-request cache samples.
@@ -1254,6 +1265,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// claims. The evidence request withholds the plan tool.
 	planPassed := false
 	planAttempts := 0
+	l.acceptedPlan = AnswerPlan{}
+	l.planAccepted = false
 	var planGaps []contract.GroundingIssue
 	// planProseAttempts bounds how many text-only turns may be withheld for
 	// lacking the required plan. After the bound, the publication review
@@ -1804,6 +1817,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					}
 				}
 			}
+			if ledger := l.answerPlanLedgerReason(); ledger != "" {
+				runtimeBlocks = append(runtimeBlocks, ledger)
+			}
 			if removed > 0 {
 				report.Reason = joinReason(report.Reason,
 					fmt.Sprintf("projection proposed %d tool(s) outside the loop's tool set; ignored", removed))
@@ -2311,10 +2327,14 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if result.Accepted {
 				planPassed = true
 				planGaps = nil
+				l.acceptedPlan = result.Plan
+				l.planAccepted = true
 				continue
 			}
 			planPassed = false
 			planGaps = result.Issues
+			l.acceptedPlan = AnswerPlan{}
+			l.planAccepted = false
 		}
 		if len(planGaps) > 0 {
 			for _, outcome := range outcomes {
