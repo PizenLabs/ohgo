@@ -5172,7 +5172,7 @@ var Commands = []CommandSpec{
 	{Name: "info", Usage: "info", Description: "show documentation and changelog", Category: CommandGroupControl},
 	{Name: "about", Usage: "about", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "docs", Usage: "docs", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
-	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
+	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor [--tools|--intelligence|--verbose|--json]", Description: "diagnose setup; drill into tools, intelligence, or full detail", Category: CommandGroupControl},
 	{Name: "mcp", Usage: "mcp", Description: "manage MCP servers and capabilities", Category: CommandGroupControl, Subcommands: []CommandSubcommand{
 		{Usage: "list", Description: "show configured MCP servers and cached status"},
 		{Usage: "inspect <server>", Description: "inspect one MCP server"},
@@ -6002,13 +6002,23 @@ func (ConnectKeyFailed) eventKind() string { return "connect_key_failed" }
 
 // DoctorLine is one diagnostic row for the /doctor overlay output.
 type DoctorLine struct {
+	// Section groups the row, e.g. "Model & Provider". Empty keeps the row
+	// with the previous section.
+	Section string
 	// Name is the check, e.g. "credentials".
 	Name string
-	// OK reports the check passed.
-	OK bool
+	// Status is OK, FALLBACK, OPTIONAL, WARN, ERROR, or a drill-down label.
+	Status string
 	// Detail is the outcome or fix. It never carries secret bytes: sources
 	// are named ("environment (X)"), values never printed.
 	Detail string
+	// Informational marks a recommendation or drill-down row. The failure
+	// tally excludes it.
+	Informational bool
+	// Hint prints a plain footer hint rather than a table row.
+	Hint bool
+	// Raw prints Detail verbatim, used for --json in the notice surfaces.
+	Raw bool
 }
 
 // ProbeFinished records a background connection probe. Probes run off the

@@ -85,6 +85,12 @@ func (t *SearchTool) SecurityCapability() security.Capability {
 	return security.CapabilityExternalSearch
 }
 
+// ExternalCapability implements ExternalCapabilityReporter.
+func (t *SearchTool) ExternalCapability() bool { return true }
+
+// ConfigError reports the build-time provider configuration failure, if any.
+func (t *SearchTool) ConfigError() string { return t.ConfigErr }
+
 // Execute implements agent.Tool.
 func (t *SearchTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	started := time.Now()

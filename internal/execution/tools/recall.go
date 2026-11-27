@@ -36,6 +36,7 @@ func NewRecallTool(store *agent.RecallStore) *RecallTool {
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetGroup(ToolGroupWorkflowNetwork)
 	return tool
 }
 

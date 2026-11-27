@@ -1654,10 +1654,20 @@ returning the full text after scratch is removed.
 
 `ohgo init` is a pure-planned wizard (`planInit`) writing
 `~/.ohgo/settings.json`; it never overwrites without `--force`. `ohgo
-doctor` checks workdir, config, catalog, model resolution, credentials,
-session store, tool set — each failure naming its fix — as structured
-reports shared with the in-TUI doctor. `ohgo docs --dir` generates man
-pages + markdown from the live cobra tree.
+doctor` checks workdir, config, sessions, catalog, endpoints, model
+resolution, credentials, tool set, structural adapters, grep, semantic
+servers, and runtime, grouped by domain and classified `OK`, `FALLBACK`,
+`OPTIONAL`, `WARN`, or `ERROR`. Only `ERROR` sets a non-zero exit status;
+`--verbose` expands the compact counts and `--json` emits the same ordered
+report for machines. `--tools` projects the live tool registry (group, safety,
+active backend, purpose) and `--intelligence` (alias `--lsp`) maps workspace
+languages to structural adapters and resolved language-server binaries,
+including unsupported extensions. Both compose with `--json`, and the same
+option words reach the in-TUI/REPL doctor. Recommendations carry OS-specific
+install commands for missing optional accelerators, scoped to languages
+detected in the workdir. The structured reports are shared with the in-TUI
+doctor. `ohgo docs --dir` generates man pages + markdown from the live cobra
+tree.
 
 ## Terminal workspace (`tui`)
 

@@ -7,6 +7,17 @@ immutable.
 
 ### Added
 
+- `ohgo doctor --tools` renders a grouped breakdown of every registered tool,
+  sourced from the live registry: functional group, approval safety
+  (`read-only`, `mutating`, `shell`), active binding (`grep` → `rg (path)` or
+  `native`; external/MCP capability), and a one-line purpose condensed from
+  the tool's own description. `ohgo doctor --intelligence` (alias `--lsp`)
+  shows compiled structural adapters, workspace language-to-LSP mappings with
+  resolved binary paths and readiness, and unsupported source extensions.
+  Both drill-downs compose with `--json` and are available through
+  `/doctor --tools` and `/doctor --intelligence`. The compact default view
+  prints a footer pointing at the targeted flags.
+
 - `/effort [level|off|auto]` shows and changes the thinking effort for the
   workspace role the session is running under. Bare `/effort` opens a fixed
   choice card naming that role's live model and authoritative ladder; the
@@ -239,6 +250,17 @@ immutable.
 
 ### Changed
 
+- `ohgo doctor` now classifies each check as `OK`, `FALLBACK`, `OPTIONAL`,
+  `WARN`, or `ERROR`, groups the report by operational domain, and exits
+  non-zero only for `ERROR`. Default lines are compact; `--verbose` expands
+  adapter, server, and tool lists, and `--json` emits the same ordered
+  diagnosis for machines. Workspace-aware recommendations name the install
+  command for the host OS and available package manager, and only for
+  accelerators the workspace would use: `ripgrep` when content search is on
+  the native scanner, or a language server for a language detected in
+  `workdir`. Binary resolution checks `PATH` first, then standard Homebrew,
+  user-prefix, cargo, Go, and Windows install directories so a GUI or
+  IDE-spawned process sees the same tools as an interactive shell.
 - Lexical discovery and structural overview now share one repository-scope
   evaluator, including the nested-repository boundary. `grep`, `glob`, and a
   recursive `ls` report an exact pruned-path count plus a bounded sample with

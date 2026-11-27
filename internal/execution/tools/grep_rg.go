@@ -54,13 +54,23 @@ type ripgrepQuery struct {
 func (t *GrepTool) ripgrepPath() string {
 	look := t.LookPath
 	if look == nil {
-		look = exec.LookPath
+		look = LookPath
 	}
 	path, err := look("rg")
 	if err != nil || strings.TrimSpace(path) == "" {
 		return ""
 	}
 	return path
+}
+
+// SearchBackend reports the active content-search backend and its resolved
+// path. The doctor reads this instead of repeating the resolution rules, so a
+// customized GrepTool reports what it will actually run.
+func (t *GrepTool) SearchBackend() (string, string) {
+	if path := t.ripgrepPath(); path != "" {
+		return "rg", path
+	}
+	return "native", ""
 }
 
 // searchRipgrep searches every candidate through rg and returns grouped

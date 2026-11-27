@@ -25,7 +25,11 @@ func TestDoctorReportsAllChecks(t *testing.T) {
 	cmd := rootCmd()
 	reports := collectDoctorReports(cmd)
 
-	want := []string{"workdir", "config", "catalog", "structural", "grep", "semantic", "runtime", "model", "credentials", "endpoint", "sessions", "tools"}
+	want := []string{
+		"workdir", "config", "sessions",
+		"catalog", "endpoints", "model", "credentials", "endpoint",
+		"structural", "grep", "semantic", "runtime", "tools", "external",
+	}
 	if len(reports) != len(want) {
 		t.Fatalf("checks = %d, want %d", len(reports), len(want))
 	}
@@ -38,16 +42,35 @@ func TestDoctorReportsAllChecks(t *testing.T) {
 		if rep.Name == "endpoint" {
 			// A fake key against the real endpoint must fail closed with a
 			// classified rejection — which itself proves the probe ran.
-			if rep.OK {
-				t.Errorf("endpoint passed with a fake key: %s", rep.Detail)
+			if rep.Status != doctorStatusError {
+				t.Errorf("endpoint status = %q with a fake key: %s", rep.Status, rep.Detail)
 			}
 			if !strings.Contains(rep.Detail, "rejected") {
 				t.Errorf("endpoint = %q, want the auth classification", rep.Detail)
 			}
 			continue
 		}
-		if !rep.OK {
-			t.Errorf("check %q failed with a key set: %s", rep.Name, rep.Detail)
+		switch rep.Name {
+		case "structural":
+			if rep.Status != doctorStatusOK && rep.Status != doctorStatusFallback {
+				t.Errorf("optional check %q status = %q", rep.Name, rep.Status)
+			}
+		case "grep":
+			if rep.Status != doctorStatusOK && rep.Status != doctorStatusFallback {
+				t.Errorf("optional check %q status = %q", rep.Name, rep.Status)
+			}
+		case "semantic":
+			if rep.Status != doctorStatusOK && rep.Status != doctorStatusFallback && rep.Status != doctorStatusOptional {
+				t.Errorf("optional check %q status = %q", rep.Name, rep.Status)
+			}
+		case "runtime", "endpoints", "external":
+			if rep.Status != doctorStatusOptional && rep.Status != doctorStatusOK {
+				t.Errorf("optional check %q status = %q", rep.Name, rep.Status)
+			}
+		default:
+			if rep.Status != doctorStatusOK {
+				t.Errorf("check %q status = %q with a key set: %s", rep.Name, rep.Status, rep.Detail)
+			}
 		}
 		if strings.TrimSpace(rep.Detail) == "" {
 			t.Errorf("check %q has no detail; a diagnosis without a fix is a second error", rep.Name)
@@ -87,9 +110,9 @@ func TestDoctorNamesTheFixForAMissingKey(t *testing.T) {
 	var failed bool
 	for _, rep := range collectDoctorReports(cmd) {
 		if rep.Name == "credentials" {
-			failed = !rep.OK
-			if rep.OK {
-				t.Error("credentials passed with no key in the environment")
+			failed = rep.Status == doctorStatusError
+			if rep.Status != doctorStatusError {
+				t.Error("credentials did not block a run with no key in the environment")
 			}
 			if !strings.Contains(rep.Detail, "ANTHROPIC_API_KEY") {
 				t.Errorf("detail = %q, want it to name the variable to set", rep.Detail)
@@ -113,7 +136,7 @@ func TestDoctorFailsOnAnUnknownModel(t *testing.T) {
 	}
 	found := false
 	for _, rep := range collectDoctorReports(cmd) {
-		if rep.Name == "model" && !rep.OK {
+		if rep.Name == "model" && rep.Status == doctorStatusError {
 			found = true
 		}
 	}

@@ -56,6 +56,7 @@ func NewReadTool(root string) *ReadTool {
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetGroup(ToolGroupFileOperations)
 	return tool
 }
 

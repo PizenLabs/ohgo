@@ -90,6 +90,7 @@ func NewInvestigateTool(root string, engine *investigate.Engine, budget investig
 		agent.Approval{Tier: agent.TierRead, Reason: "coordinate read-only repository intelligence"},
 	)
 	tool.SetActionClasses(agent.ActionObserve, agent.ActionStructure, agent.ActionPlan)
+	tool.SetGroup(ToolGroupCodeIntelligence)
 	return tool
 }
 
