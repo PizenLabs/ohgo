@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 func newViewportState(blocks, width, height int) State {
@@ -99,31 +101,43 @@ func TestViewportLargeDocumentMaxScroll(t *testing.T) {
 	}
 }
 
-// The first View after a stream delta must already carry the new tail. The
-// retained projection is an optimisation, never a frame of latency: a dirty
-// hint consumed before the rows are painted would leave the previous frame's
-// content on screen until some unrelated event arrived.
-func TestRetainedViewportShowsEachDeltaInTheNextFrame(t *testing.T) {
+// The first View after a committed answer must already carry the new tail.
+// The retained projection is an optimisation, never a frame of latency: a
+// dirty hint consumed before the rows are painted would leave the previous
+// frame's content on screen until some unrelated event arrived.
+func TestRetainedViewportShowsCommittedAnswerInTheNextFrame(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	p.state.Apply(UserSubmitted{Text: "go"})
 
-	for i := 0; i < 80; i++ {
-		p.state.Apply(AssistantDelta{Text: fmt.Sprintf("streamed row %03d with enough words to wrap a little\n\n", i)})
+	var full strings.Builder
+	for i := range 80 {
+		chunk := fmt.Sprintf("streamed row %03d with enough words to wrap a little\n\n", i)
+		full.WriteString(chunk)
+		p.state.Apply(AssistantDelta{Text: chunk})
 	}
-	p.state.Apply(AssistantDelta{Text: "TAIL-ONE\n\n"})
-	first := ansi.Strip(p.View())
-	if !strings.Contains(first, "TAIL-ONE") {
-		t.Fatalf("first frame after the delta lost the new tail:\n%s", first)
+	const tailOne = "TAIL-ONE\n\n"
+	full.WriteString(tailOne)
+	p.state.Apply(AssistantDelta{Text: tailOne})
+	if buffered := ansi.Strip(p.View()); strings.Contains(buffered, "TAIL-ONE") {
+		t.Fatalf("buffered candidate painted before commit:\n%s", buffered)
 	}
 
+	p.state.Apply(AssistantReconcile{Text: full.String(), Answer: agent.AnswerCommitted})
+	first := ansi.Strip(p.View())
+	if !strings.Contains(first, "TAIL-ONE") {
+		t.Fatalf("first frame after the commit lost the new tail:\n%s", first)
+	}
+
+	p.state.Apply(UserSubmitted{Text: "next"})
 	p.state.Apply(AssistantDelta{Text: "TAIL-TWO"})
+	p.state.Apply(AssistantReconcile{Text: "TAIL-TWO", Answer: agent.AnswerCommitted})
 	second := ansi.Strip(p.View())
 	if !strings.Contains(second, "TAIL-TWO") {
-		t.Fatalf("second frame lost the newest delta:\n%s", second)
+		t.Fatalf("second frame lost the newest committed answer:\n%s", second)
 	}
 	if strings.Count(second, "TAIL-ONE") != 1 || strings.Count(second, "TAIL-TWO") != 1 {
-		t.Fatalf("frame repeated a streamed block instead of moving the window:\n%s", second)
+		t.Fatalf("frame repeated a committed block instead of moving the window:\n%s", second)
 	}
 }
 

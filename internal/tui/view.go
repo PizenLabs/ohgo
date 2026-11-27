@@ -2105,12 +2105,13 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 // AssistantText is the answer contract: a withdrawn candidate moves its text
 // out of that field, so copy, persistence, and answer projections cannot see
 // it. WithdrawnText is display-only history.
-func assistantDisplay(entry Entry) (text, label string) {
+func assistantDisplay(entry Entry, now time.Time) (text, label string) {
 	if entry.Runtime {
 		return entry.AssistantText, "runtime conclusion"
 	}
 	if entry.Discarded {
-		if strings.TrimSpace(entry.WithdrawnText) == "" {
+		visible := answerRevealedText(entry.WithdrawnText, entry.RevealAt, now)
+		if strings.TrimSpace(visible) == "" {
 			return "", ""
 		}
 		reason := strings.TrimSpace(entry.WithdrawnReason)
@@ -2118,9 +2119,9 @@ func assistantDisplay(entry Entry) (text, label string) {
 			// The control plane always names a terminal refusal. If an older
 			// or hand-built event carried none, the label states only what is
 			// known; the renderer does not invent a review finding.
-			return entry.WithdrawnText, "draft withdrawn"
+			return visible, "draft withdrawn"
 		}
-		return entry.WithdrawnText, "draft withdrawn · " + reason
+		return visible, "draft withdrawn · " + reason
 	}
 	if entry.Superseded {
 		// A superseded candidate is internal repair lineage, not transcript
@@ -2130,9 +2131,13 @@ func assistantDisplay(entry Entry) (text, label string) {
 		return "", ""
 	}
 	if entry.Provisional {
-		return entry.AssistantText, "draft · answer review pending"
+		// The candidate is buffered in the reducer so the publication
+		// decision can replace it, but it is not prose the user may read yet.
+		// The telemetry line carries the review status instead, so a refused
+		// candidate can never appear and vanish mid-read.
+		return "", ""
 	}
-	return entry.AssistantText, ""
+	return answerRevealedText(entry.AssistantText, entry.RevealAt, now), ""
 }
 
 func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, ctx entryRenderContext) {
@@ -2150,7 +2155,7 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 	case EntryAssistant:
 		// A whitespace-only block renders no rows, so it must not claim the
 		// gap that follows a tool run: the gap belongs to visible content.
-		text, label := assistantDisplay(entry)
+		text, label := assistantDisplay(entry, ctx.now)
 		if strings.TrimSpace(text) == "" {
 			return
 		}

@@ -1562,7 +1562,7 @@ func completionConditions(shape TaskShape, intent contract.IntentContract) []Com
 	var out []CompletionCondition
 	switch shape.Kind {
 	case contract.ObjectiveInformational:
-		out = append(out, CompletionCondition{Key: "answer_present", Description: "a non-empty answer was produced"})
+		out = append(out, CompletionCondition{Key: "answer_present", Description: "the response delivers the complete answer to the request from the observed evidence"})
 	case contract.ObjectiveExecution:
 		if shape.ExecutionMode == contract.ExecutionRuntime {
 			out = append(out, CompletionCondition{

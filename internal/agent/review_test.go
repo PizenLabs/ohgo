@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
@@ -28,6 +30,49 @@ func (t *reviewReadTool) Exclusive(map[string]any) bool { return false }
 func (t *reviewReadTool) Execute(Context, map[string]any) Result {
 	t.n.Add(1)
 	return Result{Text: t.text, Details: map[string]any{"path": "components/TerminalBlog.tsx"}}
+}
+
+// orderedRepairRead records which calls in a correction batch executed. It
+// closes twoRan after the second execution so a parked call can tell whether
+// the rest of the batch spent the allowance while it was waiting.
+type orderedRepairRead struct {
+	text   string
+	n      atomic.Int64
+	mu     sync.Mutex
+	paths  []string
+	once   sync.Once
+	twoRan chan struct{}
+}
+
+func (t *orderedRepairRead) Name() string        { return "read" }
+func (t *orderedRepairRead) Description() string { return "read fixture" }
+func (t *orderedRepairRead) Parameters() *jsonschema.Schema {
+	return jsonschema.MustCompile([]byte(`{"type":"object"}`))
+}
+func (t *orderedRepairRead) Approval() Approval            { return Approval{Tier: TierRead} }
+func (t *orderedRepairRead) Exclusive(map[string]any) bool { return false }
+func (t *orderedRepairRead) Execute(_ Context, args map[string]any) Result {
+	path, _ := args["path"].(string)
+	t.mu.Lock()
+	t.paths = append(t.paths, path)
+	ran := len(t.paths)
+	t.mu.Unlock()
+	t.n.Add(1)
+	if ran >= 2 {
+		t.once.Do(func() { close(t.twoRan) })
+	}
+	return Result{Text: t.text}
+}
+func (t *orderedRepairRead) countFor(path string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	count := 0
+	for _, got := range t.paths {
+		if got == path {
+			count++
+		}
+	}
+	return count
 }
 
 type reviewStream struct {
@@ -268,6 +313,60 @@ func TestCorrectionBudgetBoundsToolCalls(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the correction request did not carry the claim-level directive: %+v", stream.requests)
+	}
+}
+
+// A correction batch is one model action: the allowance must admit its calls
+// in the order the model emitted them. With concurrent dispatch the goroutine
+// that reaches the counter last can consume the final slot and push an earlier
+// call past the window, so the executed evidence depends on scheduling. Park
+// the first call before its admission while the rest of the batch runs; a
+// serialized correction window still admits it.
+func TestCorrectionBudgetAdmitsCallsInModelOrder(t *testing.T) {
+	intent := reviewIntent(contract.FacetTests)
+	var calls []ai.ContentBlock
+	for index := range 5 {
+		calls = append(calls, ai.ToolCall{
+			ID: fmt.Sprintf("call-%d", index), Name: "read",
+			Arguments: map[string]any{"path": fmt.Sprintf("src/%d.go", index)},
+		})
+	}
+	read := &orderedRepairRead{text: "source body", twoRan: make(chan struct{})}
+	stream := &reviewStream{responses: []ai.AssistantMessage{
+		reviewAnswer("This is a Next.js blog."),
+		{Content: calls, StopReason: ai.StopToolUse},
+		reviewAnswer("Tests: 4 associated test files."),
+	}}
+	loop := newReviewLoop(t, stream.fn(), read, intent, testReviewDirective)
+	loop.cfg.CorrectionToolCalls = 2
+	loop.cfg.Approve = func(call ai.ToolCall, _ Approval) (bool, string) {
+		if path, _ := call.Arguments["path"].(string); path != "src/0.go" {
+			return true, ""
+		}
+		// A concurrent batch can spend both slots while this call is parked
+		// before admission. A serialized window cannot start the others first,
+		// so the timer is the expected branch and the first call still runs.
+		timer := time.NewTimer(250 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-read.twoRan:
+		case <-timer.C:
+		}
+		return true, ""
+	}
+	loop.SetInformationalRepairs(intent)
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "report the tests"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := read.countFor("src/0.go"); got != 1 {
+		t.Fatalf("first correction call executed %d times, want model-order admission", got)
+	}
+	if got := read.n.Load(); got != 2 {
+		t.Fatalf("correction executed %d tool calls, want 2", got)
+	}
+	if len(turns) != 3 {
+		t.Fatalf("turns = %d, want answer, bounded correction, answer", len(turns))
 	}
 }
 

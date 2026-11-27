@@ -10,6 +10,10 @@
 > owns investigation closure and the response transaction. This report records
 > the defect and the evidence for the fix; it does not create a second
 > behavioural contract.
+> **Follow-up.** The provisional-preview presentation decision in §10/§13 was
+> later reversed: §12.7 now buffers candidate text and never paints it before
+> the publication decision. The completion-authority finding and its checks
+> remain valid; the preview discussion is historical.
 
 ## 1. Executive summary
 

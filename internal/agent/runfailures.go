@@ -92,6 +92,11 @@ const (
 	// call beyond its small per-repair allowance. Nothing ran; the model must
 	// answer from evidence it already has.
 	ToolFailureCorrectionBudget = "correction_budget_exhausted"
+	// ToolFailureAnswerPlan is the pre-prose claim audit refusing a plan.
+	// Nothing ran and nothing was observed; the model must gather the missing
+	// evidence or weaken the claim. It is a control decision, not a failed
+	// action, so completion must not treat it as pending failure.
+	ToolFailureAnswerPlan = "answer_plan_refused"
 	// ToolFailureCapabilityUnavailable is a proposal for a capability the task
 	// surface does not offer. Nothing ran. It is discovery feedback for the
 	// model, distinct from an execution failure, and the control plane blocks

@@ -185,7 +185,7 @@ func documentationOnlyTerms(documentation []string, observed, identity map[strin
 	var out []string
 	for _, text := range documentation {
 		for _, term := range documentationClaimTerms(text) {
-			if seen[term] || observed[term] || identity[term] || dependencyNamesTerm(term, dependencies) {
+			if seen[term] || provenanceTermObserved(term, observed) || identity[term] || dependencyNamesTerm(term, dependencies) {
 				continue
 			}
 			seen[term] = true
@@ -197,6 +197,25 @@ func documentationOnlyTerms(documentation []string, observed, identity map[strin
 	}
 	sort.Strings(out)
 	return out
+}
+
+// provenanceTermAliases collapses spelling variants of one technology name.
+// Source identifiers often use a short form ("Postgres") while documentation
+// uses the formal name ("PostgreSQL"); they are one dependency, and a source
+// observation of either is evidence of that stack term.
+var provenanceTermAliases = map[string]string{
+	"postgresql": "postgres",
+	"postgres":   "postgres",
+}
+
+func provenanceTermObserved(term string, observed map[string]bool) bool {
+	if observed[term] {
+		return true
+	}
+	if alias := provenanceTermAliases[term]; alias != "" {
+		return observed[alias]
+	}
+	return false
 }
 
 // dependencyNamesTerm reports a documented name corroborated by a dependency

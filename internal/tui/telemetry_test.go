@@ -212,6 +212,10 @@ func TestFadeEasesInWithoutColorJumps(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
 	s.Apply(AssistantDelta{Text: "fade target", At: at})
+	s.Apply(AssistantReconcile{Text: "fade target", Answer: agent.AnswerCommitted, At: at})
+	// The progressive reveal is covered by its own tests; this fixture pins
+	// the entrance fade of the fully settled block.
+	s.Entries[len(s.Entries)-1].RevealAt = time.Time{}
 	s.Apply(FrameTick{At: at})
 
 	entrance := Render(s)
@@ -279,6 +283,9 @@ func TestAssistantFinalLineFadesOnSettle(t *testing.T) {
 	s.Apply(AssistantDelta{Text: "streamed answer", At: at})
 	doneAt := at.Add(time.Second)
 	s.Apply(AssistantReconcile{Text: "streamed answer", Answer: agent.AnswerCommitted, At: doneAt})
+	// The reveal is covered by its own tests; this fixture checks the closing
+	// line fade of an already fully visible answer.
+	s.Entries[len(s.Entries)-1].RevealAt = time.Time{}
 	s.Apply(AssistantDone{At: doneAt})
 	s.Apply(FrameTick{At: doneAt})
 

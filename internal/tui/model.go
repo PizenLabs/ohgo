@@ -4,8 +4,8 @@
 // dependency: every transition is exercised by a test, and only the rendering
 // and the Bubble Tea wiring touch a real terminal. That split exists because
 // the original is 172k lines of differential rendering, and the part worth
-// preserving here is the *behaviour* — streaming previews, approval memory,
-// tool lifecycle — not the drawing code.
+// preserving here is the *behaviour* — buffered candidate review, approval
+// memory, tool lifecycle — not the drawing code.
 package tui
 
 import (
@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -71,17 +72,27 @@ type Entry struct {
 	// the same short entrance fade after AssistantDone, so the end of a
 	// streamed answer does not pop to full brightness. Zero means no fade.
 	FinalLineAt time.Time
+	// RevealAt is when a settled answer began revealing its buffered text.
+	// The publication decision still owns the full AssistantText or
+	// WithdrawnText; this field only bounds the rendered projection while the
+	// display catches up at a reading pace. Zero means show the full text.
+	RevealAt time.Time
+	// RevealGrown is how many logical newlines of the reveal have already been
+	// counted into Scroll. It keeps a detached viewport anchored while the
+	// answer grows instead of jumping by the full answer height at once.
+	RevealGrown int
 
 	// UserText is set when Kind is EntryUser.
 	UserText string
 	// AssistantText is set when Kind is EntryAssistant.
 	AssistantText string
 	// Provisional marks an assistant block whose text is still being
-	// streamed or is awaiting the runtime's answer decision. A provisional
-	// block is never handed to output-first scrollback: it may be withdrawn
-	// when the turn turns out to be tool narration or a rejected draft, and
-	// scrollback cannot be rewritten. The accept/discard transition clears
-	// it and, for an accepted answer, replaces the text with the exact
+	// streamed or is awaiting the runtime's answer decision. The text is
+	// buffered in the entry but never rendered, copied, persisted, or handed
+	// to output-first scrollback: it may be withdrawn when the turn turns out
+	// to be tool narration or a rejected draft, and unapproved prose must not
+	// appear and vanish mid-read. The accept/discard transition clears the
+	// marker and, for an accepted answer, replaces the text with the exact
 	// committed value.
 	Provisional bool
 	// Runtime marks an assistant block authored by the runtime rather than
@@ -91,7 +102,7 @@ type Entry struct {
 	// visibly labelled as a runtime conclusion and never enters the model's
 	// conversation.
 	Runtime bool
-	// Discarded marks a provisional assistant block the runtime withdrew.
+	// Discarded marks a buffered assistant candidate the runtime withdrew.
 	// The entry remains as a tombstone so entry indexes (and the output-first
 	// painter's progress) stay stable. A rejected answer keeps its text in
 	// WithdrawnText for display only; AssistantText stays empty so no copy,
@@ -1099,7 +1110,7 @@ func (s *State) Apply(event Event) {
 		}
 		for i := len(s.Entries) - 1; i >= 0; i-- {
 			if s.Entries[i].Kind == EntryAssistant {
-				s.assistantText = s.Entries[i].AssistantText != ""
+				s.assistantText = s.Entries[i].AssistantText != "" && !s.Entries[i].Provisional
 				break
 			}
 		}
@@ -1131,6 +1142,7 @@ func (s *State) Apply(event Event) {
 			}
 		}
 		s.advancePresentation(at)
+		s.advanceAnswerReveal(at)
 		s.noteTelemetryStatus(at)
 
 	case UserSubmitted:
@@ -1199,13 +1211,15 @@ func (s *State) Apply(event Event) {
 		s.closeReasoning(e.At)
 		s.appendAssistant(e.Text, e.At)
 		s.OutputTokens = s.currentOutputTokens()
-		s.growScroll(strings.Count(e.Text, "\n"))
+		// The candidate is buffered, not painted; its line count must not
+		// move a viewport the reader is using for the tool trace. The
+		// committed text grows the scroll on reconcile.
 		s.noteTelemetryStatus(e.At)
 
 	case AssistantReconcile:
 		// The stream closed. The runtime either accepted the text as a
 		// publishable answer or withdrew it as tool narration / a rejected
-		// draft. The exact text replaces the provisional accumulation, so a
+		// draft. The exact text replaces the buffered accumulation, so a
 		// dropped delta or a finalized rewrite cannot leave a partial block
 		// or a duplicated tail.
 		if e.Seq != 0 && e.Seq != s.TurnSeq {
@@ -1220,10 +1234,10 @@ func (s *State) Apply(event Event) {
 		// answer. This is a lifecycle transition, not a renderer guess.
 		s.reconcileReasoning(e.At)
 		if e.Answer != agent.AnswerCommitted {
-			// Only the response transaction's committed answer may replace a
-			// preview as an answer. A terminal refusal keeps its text for
-			// display. A superseded candidate is an internal repair step: it
-			// is withdrawn from the transcript while its lineage stays
+			// Only the response transaction's committed answer may settle the
+			// buffered candidate as an answer. A terminal refusal keeps its
+			// text for display. A superseded candidate is an internal repair
+			// step: it is withdrawn from the transcript while its lineage stays
 			// audit-only. Narration is not a candidate and is withdrawn too.
 			if e.Answer == agent.AnswerSuperseded {
 				s.supersedeCandidate(e.Text, e.At)
@@ -1242,7 +1256,12 @@ func (s *State) Apply(event Event) {
 		}
 		s.settleAssistant(e.Text, e.At)
 		s.OutputTokens = s.currentOutputTokens()
-		s.growScroll(strings.Count(e.Text, "\n"))
+		if e.At.IsZero() {
+			// No reveal clock: the full text is visible in this frame, so a
+			// detached viewport must account for all of it now. A settled
+			// answer with a clock grows Scroll as the reveal becomes visible.
+			s.growScroll(strings.Count(e.Text, "\n"))
+		}
 		s.noteTelemetryStatus(e.At)
 
 	case ConclusionPublished:
@@ -1258,8 +1277,8 @@ func (s *State) Apply(event Event) {
 		}
 		s.ProviderWait = nil
 		// The conclusion closes the turn's reasoning and answer boundary. It
-		// is a new block, never an extension of a provisional answer: a
-		// publication decision has already settled that preview.
+		// is a new block, never an extension of a buffered candidate: a
+		// publication decision has already settled that candidate.
 		s.reconcileReasoning(e.At)
 		s.closedAssistant = true
 		s.pushEntry(Entry{
@@ -1282,7 +1301,7 @@ func (s *State) Apply(event Event) {
 		// trace must not survive as an orphaned spinner.
 		s.convergeTransientActivities(e.At)
 		// No reconcile arrived, so no publication decision classified this
-		// preview. It is withdrawn rather than promoted to an answer.
+		// candidate. It is discarded rather than promoted to an answer.
 		s.discardProvisionalAssistants(e.At, "")
 		if open := s.openAssistant(); open >= 0 {
 			// A turn boundary is final: no reconcile is coming, so the
@@ -3061,6 +3080,112 @@ func (s *State) growScroll(lines int) {
 	}
 }
 
+// The answer is buffered until the publication decision, then revealed at a
+// reading pace. A fixed upper duration keeps a long analysis responsive; the
+// lower bound prevents a two-word answer from showing one rune for seconds.
+const (
+	answerRevealRunesPerSecond = 1200
+	answerRevealMinDuration    = 100 * time.Millisecond
+	answerRevealMaxDuration    = 3 * time.Second
+)
+
+// answerRevealedText returns the prefix of a settled answer the display may
+// show at now. It reveals complete words, never a partial rune, and returns the
+// full text when no reveal is active or the clock has not been set (for
+// exports, resumed history, and pure-state tests).
+func answerRevealedText(text string, started, now time.Time) string {
+	if started.IsZero() || now.IsZero() {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return ""
+	}
+	if !now.After(started) {
+		return ""
+	}
+	duration := time.Duration(len(runes)) * time.Second / answerRevealRunesPerSecond
+	if duration < answerRevealMinDuration {
+		duration = answerRevealMinDuration
+	}
+	if duration > answerRevealMaxDuration {
+		duration = answerRevealMaxDuration
+	}
+	elapsed := now.Sub(started)
+	if elapsed >= duration {
+		return text
+	}
+	visible := int(float64(len(runes)) * elapsed.Seconds() / duration.Seconds())
+	if visible < 1 {
+		visible = 1
+	}
+	if visible >= len(runes) {
+		return text
+	}
+	for visible > 0 && !unicode.IsSpace(runes[visible-1]) {
+		visible--
+	}
+	if visible == 0 {
+		// A single very long token still has to start revealing.
+		visible = 1
+	}
+	return string(runes[:visible])
+}
+
+// advanceAnswerReveal grows a detached viewport as the settled answer becomes
+// visible. Following viewports stay at the live edge; a reveal that has
+// finished clears its clock so the entry can seal into ordinary history.
+func (s *State) advanceAnswerReveal(at time.Time) {
+	if at.IsZero() {
+		return
+	}
+	for i := range s.Entries {
+		entry := &s.Entries[i]
+		if entry.Kind != EntryAssistant || entry.RevealAt.IsZero() {
+			continue
+		}
+		full := entry.AssistantText
+		if entry.Discarded {
+			full = entry.WithdrawnText
+		}
+		if strings.TrimSpace(full) == "" {
+			entry.RevealAt = time.Time{}
+			entry.RevealGrown = 0
+			continue
+		}
+		visible := answerRevealedText(full, entry.RevealAt, at)
+		if grown := strings.Count(visible, "\n"); grown > entry.RevealGrown {
+			s.growScroll(grown - entry.RevealGrown)
+			entry.RevealGrown = grown
+		}
+		if visible == full {
+			entry.RevealAt = time.Time{}
+			entry.RevealGrown = 0
+			// The retained layout keeps the last block it rendered. Completion
+			// clears the animation clock, so without this final bump the
+			// transcript would freeze on the last partial prefix.
+			s.bumpEntry(i)
+		}
+	}
+}
+
+// entryRevealPending reports whether the entry still has display text to
+// reveal at now. It is shared by the layout animation pruning and the reveal
+// itself so "the animation is over" and "the text is complete" cannot drift.
+func entryRevealPending(entry Entry, now time.Time) bool {
+	if entry.Kind != EntryAssistant || entry.RevealAt.IsZero() {
+		return false
+	}
+	full := entry.AssistantText
+	if entry.Discarded {
+		full = entry.WithdrawnText
+	}
+	if strings.TrimSpace(full) == "" {
+		return false
+	}
+	return answerRevealedText(full, entry.RevealAt, now) != full
+}
+
 // pushEntry appends a block and gives it a stable identity.
 func (s *State) pushEntry(entry Entry) {
 	s.Entries = append(s.Entries, entry)
@@ -3162,6 +3287,13 @@ func (s *State) advancePresentation(at time.Time) {
 // phase (fade or dwell) at now.
 func entryPresentationLive(entry Entry, now time.Time) bool {
 	if entryFading(entry, now) {
+		return true
+	}
+	// A settled answer still revealing its display prefix changes every
+	// frame. Treating it as animated keeps the retained layout dirty until
+	// entryRevealPending reports the full text is visible; otherwise the
+	// layout freezes after the entrance fade and never shows the rest.
+	if entryRevealPending(entry, now) {
 		return true
 	}
 	switch entry.Kind {
@@ -3319,7 +3451,7 @@ func (s *State) replaceEntries(entries []Entry) {
 	}
 	for i := len(s.Entries) - 1; i >= 0; i-- {
 		if s.Entries[i].Kind == EntryAssistant {
-			s.assistantText = s.Entries[i].AssistantText != ""
+			s.assistantText = s.Entries[i].AssistantText != "" && !s.Entries[i].Provisional
 			break
 		}
 	}
@@ -3630,7 +3762,10 @@ func (s *State) appendAssistant(text string, at time.Time) {
 	}
 	if index := s.openAssistant(); index >= 0 && s.Entries[index].Provisional {
 		s.Entries[index].AssistantText += text
-		s.assistantText = true
+		// The text is buffered, not visible: assistantText is the visibility
+		// flag the runtime and layout read, so it must stay false until the
+		// publication decision commits the entry.
+		s.assistantText = false
 		s.bumpEntry(index)
 		return
 	}
@@ -3646,17 +3781,17 @@ func (s *State) appendAssistant(text string, at time.Time) {
 		AppearedAt:    at,
 		Provisional:   true,
 	})
-	s.assistantText = true
+	s.assistantText = false
 	s.assignIdentity(len(s.Entries) - 1)
 	s.closedAssistant = false
 }
 
-// discardProvisionalAssistants withdraws every preview still waiting for a
-// decision at a turn boundary. An unclassified preview is not an answer: no
-// response transaction committed it. A terminal refusal is settled earlier by
-// the AssistantReconcile that carries the runtime's reason; this fallback
-// exists so an aborted or interrupted turn cannot leave its partial text
-// looking like a completed answer.
+// discardProvisionalAssistants discards every buffered candidate still waiting
+// for a decision at a turn boundary. An unclassified candidate is not an
+// answer: no response transaction committed it. A terminal refusal is settled
+// earlier by the AssistantReconcile that carries the runtime's reason; this
+// fallback exists so an aborted or interrupted turn cannot leave its partial
+// text looking like a completed answer.
 func (s *State) discardProvisionalAssistants(at time.Time, reason string) {
 	for s.lastProvisionalAssistant() >= 0 {
 		s.discardProvisionalAssistant(at, reason)
@@ -3677,10 +3812,10 @@ func (s *State) lastProvisionalAssistant() int {
 	return -1
 }
 
-// settleAssistant replaces the provisional stream with the exact committed
-// answer. An empty accepted text withdraws an empty provisional block; text
-// with no provisional block (a non-streaming transport) opens one, so every
-// transport has the same transcript representation.
+// settleAssistant replaces the buffered candidate with the exact committed
+// answer. An empty accepted text discards an empty buffered block; text with
+// no buffered block (a non-streaming transport) opens one, so every transport
+// has the same transcript representation.
 func (s *State) settleAssistant(text string, at time.Time) {
 	index := s.lastProvisionalAssistant()
 	if strings.TrimSpace(text) == "" {
@@ -3694,23 +3829,31 @@ func (s *State) settleAssistant(text string, at time.Time) {
 			Kind:          EntryAssistant,
 			AssistantText: text,
 			AppearedAt:    at,
+			RevealAt:      at,
 		})
 		index = len(s.Entries) - 1
 		s.assignIdentity(index)
 		s.assistantText = true
 		s.closedAssistant = false
 		s.resolveCandidates(index)
+		s.markAnimated(index)
 		return
 	}
 	entry := &s.Entries[index]
 	entry.AssistantText = text
 	entry.Provisional = false
+	if !at.IsZero() && entry.RevealAt.IsZero() {
+		entry.RevealAt = at
+		entry.RevealGrown = 0
+	}
 	s.assistantText = true
 	s.bumpEntry(index)
+	s.markAnimated(index)
 	s.resolveCandidates(index)
 }
 
-// supersedeCandidate withdraws a preview that a bounded correction replaced.
+// supersedeCandidate discards a buffered candidate that a bounded correction
+// replaced.
 //
 // A superseded candidate is an internal repair step, not a transcript
 // artifact. The entry becomes an audit-only tombstone: AssistantText moves out
@@ -3721,8 +3864,8 @@ func (s *State) settleAssistant(text string, at time.Time) {
 // renumbering the document.
 //
 // A non-streaming transport never displayed the candidate, so there is nothing
-// to withdraw and no artifact is invented. Empty text with a preview uses the
-// text the user actually saw.
+// to discard and no artifact is invented. Empty text with a buffer uses the
+// text the user never saw.
 func (s *State) supersedeCandidate(text string, at time.Time) {
 	index := s.lastProvisionalAssistant()
 	if index < 0 {
@@ -3768,7 +3911,8 @@ func (s *State) resolveCandidates(index int) {
 func (s *State) refreshAssistantText() {
 	s.assistantText = false
 	for i := len(s.Entries) - 1; i >= 0; i-- {
-		if s.Entries[i].Kind == EntryAssistant && strings.TrimSpace(s.Entries[i].AssistantText) != "" {
+		if s.Entries[i].Kind == EntryAssistant && !s.Entries[i].Provisional &&
+			strings.TrimSpace(s.Entries[i].AssistantText) != "" {
 			s.assistantText = true
 			break
 		}
@@ -3809,6 +3953,7 @@ func (s *State) appendWithheldAssistant(text, reason string, at time.Time) {
 		WithdrawnText:   text,
 		WithdrawnReason: reason,
 		AppearedAt:      at,
+		RevealAt:        at,
 	})
 	s.assignIdentity(len(s.Entries) - 1)
 }
@@ -3829,6 +3974,10 @@ func (s *State) discardProvisionalAssistant(at time.Time, withdrawn string) {
 	if reason := strings.TrimSpace(withdrawn); reason != "" {
 		entry.WithdrawnText = entry.AssistantText
 		entry.WithdrawnReason = reason
+		if !at.IsZero() {
+			entry.RevealAt = at
+			entry.RevealGrown = 0
+		}
 	}
 	entry.AssistantText = ""
 	entry.Provisional = false
@@ -3836,6 +3985,9 @@ func (s *State) discardProvisionalAssistant(at time.Time, withdrawn string) {
 	entry.FinalLineAt = time.Time{}
 	s.refreshAssistantText()
 	s.bumpEntry(index)
+	if !entry.RevealAt.IsZero() {
+		s.markAnimated(index)
+	}
 	if !at.IsZero() {
 		s.closeReasoning(at)
 	}
@@ -3934,12 +4086,13 @@ func (s *State) shellIndex(seq int) int {
 	return -1
 }
 
-// AssistantText returns the concatenated assistant text, for tests and for the
-// non-interactive renderer.
+// AssistantText returns the concatenated committed assistant text, for tests
+// and for the non-interactive renderer. A provisional candidate is buffered
+// internally and is never part of the answer projection.
 func (s *State) AssistantText() string {
 	var sb strings.Builder
 	for _, entry := range s.Entries {
-		if entry.Kind == EntryAssistant {
+		if entry.Kind == EntryAssistant && !entry.Provisional {
 			sb.WriteString(entry.AssistantText)
 		}
 	}
@@ -4011,20 +4164,20 @@ type AssistantDelta struct {
 
 func (AssistantDelta) eventKind() string { return "assistant_delta" }
 
-// AssistantReconcile settles the provisional text of one turn with the exact
-// value the runtime committed, or withdraws it under the runtime's own
+// AssistantReconcile settles the buffered candidate of one turn with the exact
+// value the runtime committed, or discards it under the runtime's own
 // classification.
 //
-// Deltas are a progressive preview, not the authoritative text: a delta can
-// be dropped under backpressure, and the answer finalizer can rewrite the
+// Deltas are a progressive buffer, not the authoritative text: a delta can be
+// dropped under backpressure, and the answer finalizer can rewrite the
 // committed answer. Text is the whole final value, so the reducer replaces
 // rather than appends. Answer is the control plane's disposition; the renderer
 // never infers it from event order, empty text, or stream completion.
 //
-// Only AnswerCommitted settles the preview as an answer. AnswerRejected keeps
-// the preview as one labelled display-only draft; when no preview streamed
-// (a completed-transport response), Text opens that draft so the refusal is
-// still accountable. Every other disposition withdraws the preview outright.
+// Only AnswerCommitted settles the buffer as an answer. AnswerRejected keeps
+// the buffer as one labelled display-only draft; when no candidate streamed (a
+// completed-transport response), Text opens that draft so the refusal is still
+// accountable. Every other disposition discards the buffer outright.
 //
 // A disposition is also the Thought boundary. Applying it reconciles every open
 // reasoning trace before the answer is projected, so a final answer can never
@@ -4863,6 +5016,14 @@ func IsExternalTool(name string) bool {
 // so the semantic value stays recoverable.
 func toolSummaryBody(name string, args map[string]any, full bool) string {
 	switch name {
+	case "prepare_answer":
+		if claims, ok := args["claims"].([]any); ok && len(claims) > 0 {
+			return fmt.Sprintf("prepare_answer %d claim(s)", len(claims))
+		}
+		if claims, ok := args["claims"].([]string); ok && len(claims) > 0 {
+			return fmt.Sprintf("prepare_answer %d claim(s)", len(claims))
+		}
+		return "prepare_answer"
 	case "search":
 		if query, ok := args["query"].(string); ok && query != "" {
 			return fmt.Sprintf("search %s", oneLine(query))

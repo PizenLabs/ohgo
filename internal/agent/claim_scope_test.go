@@ -158,6 +158,20 @@ func claimStructureTests(testFiles int, scopeComplete bool) ToolOutcome {
 	}
 }
 
+// An absence the answer itself reports as unproven is an honest limitation,
+// not a repository-wide conclusion. The observed positive test inventory must
+// not turn that sentence into a claim that tests are absent elsewhere.
+func TestUnprovenAbsenceIsNotANegativeClaim(t *testing.T) {
+	answer := "Go tests are present in backend/internal/order/ (confirmed via structure inventory); I did not run them and did not perform a complete repo-wide test inventory, so absence of tests elsewhere is unproven."
+	turns := []Turn{{Results: []ToolOutcome{claimStructureTests(5, true)}}}
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("unproven absence produced claims: %+v", claims)
+	}
+	if codes := evidenceCodes(t, turns, answer); codes["unsupported_negative_conclusion"] {
+		t.Fatalf("unproven absence was reviewed as a negative conclusion: %v", codes)
+	}
+}
+
 // A stale snapshot is not a current absence proof, even when its four
 // completeness axes were complete when it was taken.
 func TestStaleTestInventoryDoesNotProveAbsence(t *testing.T) {

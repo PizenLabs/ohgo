@@ -94,6 +94,98 @@ func TestUnapprovedAnswerIsNotCommitted(t *testing.T) {
 	}
 }
 
+// A correction can spend its tool allowance and still need the answer. The
+// earlier candidate was withheld, so the final request must say so; otherwise
+// the model treats its own draft as delivered and returns a confirmation.
+func TestSpentCorrectionRequiresTheCompleteAnswer(t *testing.T) {
+	const rich = "The repository has a Go backend. The repository has a React frontend. The project uses UNSUPPORTED."
+	const terse = "The investigation is complete. The analysis above summarizes the project."
+	const full = "The repository has a Go backend. The repository has a React frontend."
+	intent := contract.IntentContract{
+		Objective: "analyze this project",
+		Kind:      contract.ObjectiveInformational,
+		Grounding: &contract.IntentGrounding{},
+	}
+	script := []ai.AssistantMessage{
+		{Content: []ai.ContentBlock{ai.TextContent{Text: rich}}, StopReason: ai.StopEndTurn},
+		{Content: []ai.ContentBlock{ai.ToolCall{
+			ID: "call-1", Name: "read", Arguments: map[string]any{"path": "README.md"},
+		}}, StopReason: ai.StopToolUse},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: terse}}, StopReason: ai.StopEndTurn},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: full}}, StopReason: ai.StopEndTurn},
+	}
+	var requests []ai.Request
+	loop, err := agent.New(agent.Config{
+		Model:                   ai.Model{ID: "m", Provider: "p"},
+		MaxTurns:                8,
+		Tools:                   []agent.Tool{evidenceReadTool{}},
+		CorrectionToolCalls:     1,
+		CorrectionAnswerRequest: "The earlier candidate was withheld; write the complete final answer, not a confirmation.",
+		CompletionReviewRequest: "Repair the answer: {{reason}}",
+		RepairRequest:           "Repair these claims:\n{{repairs}}\n\n{{preserved}}\n\nReason: {{reason}}",
+		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+			requests = append(requests, req)
+			if len(requests) > len(script) {
+				t.Fatalf("provider request %d exceeded the script", len(requests))
+			}
+			return ai.NewCompletedStream(script[len(requests)-1]), nil
+		},
+		AnswerReview: func(turns []agent.Turn, answer string) string {
+			if strings.Contains(answer, "UNSUPPORTED") {
+				return "the answer presents an unsupported term as an observed fact"
+			}
+			return agent.ReviewInformationalAnswer(intent, turns, answer)
+		},
+		AnswerRepairs: func(_ []agent.Turn, answer string) []contract.GroundingIssue {
+			if !strings.Contains(answer, "UNSUPPORTED") && !strings.Contains(answer, "analysis above") {
+				return nil
+			}
+			return []contract.GroundingIssue{{
+				Code: "unsupported_claim", Claim: "unlocated finding",
+				Location: "a sentence the draft does not contain",
+				Category: "attribution", Requirement: "a source observation or an attribution",
+				Detail: "the answer presents an unsupported term as an observed fact",
+				Action: "verify the term or remove the claim",
+			}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	turns, runErr := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: "analyze this project"}})
+	if runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+	if len(turns) != 4 {
+		t.Fatalf("turns = %d, want the draft, the repair, the confirmation, and the complete answer", len(turns))
+	}
+	if turns[0].Answer != agent.AnswerSuperseded {
+		t.Fatalf("first draft = %s, want SUPERSEDED", turns[0].Answer)
+	}
+	if turns[2].Answer != agent.AnswerSuperseded {
+		t.Fatalf("completion confirmation = %s, want SUPERSEDED", turns[2].Answer)
+	}
+	if turns[3].Answer != agent.AnswerCommitted {
+		t.Fatalf("final answer = %s, want COMMITTED", turns[3].Answer)
+	}
+	if got := turns[3].Assistant.Text(); got != full {
+		t.Fatalf("committed answer = %q, want the complete answer", got)
+	}
+	if len(requests) != 4 {
+		t.Fatalf("provider requests = %d, want 4", len(requests))
+	}
+	state := ""
+	for index := len(requests[3].Messages) - 1; index >= 0; index-- {
+		if runtime, ok := requests[3].Messages[index].(ai.RuntimeStateMessage); ok {
+			state = runtime.Text
+			break
+		}
+	}
+	if !strings.Contains(state, "The earlier candidate was withheld") {
+		t.Fatalf("the spent correction did not tell the model its draft was withheld:\n%s", state)
+	}
+}
+
 // The corrected answer is reviewed again. A model that repeats the rejected
 // claim cannot get it published by spending the one correction window.
 func TestCorrectedAnswerIsReviewedBeforeCommit(t *testing.T) {

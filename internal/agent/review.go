@@ -32,6 +32,9 @@ func ReviewInformationalAnswer(intent contract.IntentContract, turns []Turn, ans
 		// correction window on the answer the user actually asked for.
 		return "the previous message only announces a further action; state the answer from the evidence already observed"
 	}
+	if reason := answerReferencesWithheldDraft(turns, answer); reason != "" {
+		return reason
+	}
 	assessment := AssessGrounding(intent, turns, answer)
 	if assessment.Pass() {
 		return ""
@@ -40,6 +43,58 @@ func ReviewInformationalAnswer(intent contract.IntentContract, turns []Turn, ans
 		return reason
 	}
 	return "the answer does not satisfy the request's evidence contract"
+}
+
+// withheldDraftReviewReason is the one review boundary for an answer that
+// treats a superseded candidate as delivered. The loop recognizes it so the
+// correction is admitted as a new lifecycle failure even when the answer's
+// factual claims are the same ones the first review already named.
+const withheldDraftReviewReason = "the previous candidate answer was withheld and was not delivered; write the complete answer from the evidence, not a confirmation of an earlier analysis"
+
+// answerReferencesWithheldDraft reports a short answer that treats a
+// superseded candidate as delivered. The model keeps the draft in its live
+// context so it can repair the named claims; that draft was never shown to the
+// user. A final answer that points at "the analysis above" would publish a
+// reference to content the user cannot see, so it is a review boundary rather
+// than an answer. A committed answer in the same run makes the reference
+// legitimate, and a long answer is presumed to carry its own substance.
+func answerReferencesWithheldDraft(turns []Turn, answer string) string {
+	text := strings.TrimSpace(answer)
+	if len(turns) == 0 || text == "" || len(text) > 1200 {
+		return ""
+	}
+	withheld := false
+	for _, turn := range turns[:len(turns)-1] {
+		switch turn.Answer {
+		case AnswerSuperseded:
+			withheld = true
+		case AnswerCommitted:
+			return ""
+		}
+	}
+	if !withheld {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range []string{
+		"the analysis above",
+		"the analysis provided above",
+		"the summary above",
+		"as summarized above",
+		"as described above",
+		"the previous analysis",
+		"my previous answer",
+		"the previous answer",
+		"i already produced",
+		"i already gave",
+		"i already provided",
+		"i already answered",
+	} {
+		if strings.Contains(lower, marker) {
+			return withheldDraftReviewReason
+		}
+	}
+	return ""
 }
 
 // ReviewInformationalRepairs returns the claim-level repairs for a rejected
@@ -535,15 +590,35 @@ func (l *Loop) SetInformationalReviews(intent contract.IntentContract, provenanc
 	l.cfg.AnswerRepairs = func(turns []Turn, answer string) []contract.GroundingIssue {
 		return ReviewInformationalRepairsWithProvenance(intent, turns, answer, summary())
 	}
+	l.cfg.AnswerPlanReview = nil
+	if intent.Kind == contract.ObjectiveInformational {
+		// A mutation or execution answer is judged by target and verification
+		// evidence, not by a prose claim preflight. Installing the plan audit
+		// there would spend a turn on a control tool with nothing to decide.
+		l.cfg.AnswerPlanReview = func(turns []Turn, plan AnswerPlan) []contract.GroundingIssue {
+			return ReviewAnswerPlan(intent, turns, plan, summary())
+		}
+	}
 }
 
-// ClearInformationalReviews removes both answer callbacks.
+// ClearInformationalReviews removes the answer callbacks.
 func (l *Loop) ClearInformationalReviews() {
 	if l == nil {
 		return
 	}
 	l.cfg.AnswerReview = nil
 	l.cfg.AnswerRepairs = nil
+	l.cfg.AnswerPlanReview = nil
+}
+
+// SetAnswerPlanReview installs only the pre-prose plan audit. Hosts normally
+// use SetInformationalReviews; this seam exists for a host with its own answer
+// review that still wants the evidence preflight.
+func (l *Loop) SetAnswerPlanReview(review func(turns []Turn, plan AnswerPlan) []contract.GroundingIssue) {
+	if l == nil {
+		return
+	}
+	l.cfg.AnswerPlanReview = review
 }
 
 // evidenceGap reads the host's current frontier verdict. It is empty when no

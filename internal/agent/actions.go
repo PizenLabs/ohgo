@@ -89,6 +89,47 @@ func isPlanTool(tool Tool) bool {
 	return tool != nil && HasActionClass(tool, ActionPlan)
 }
 
+// toolNamed returns the capability with the given wire name, or nil.
+func toolNamed(tools []Tool, name string) Tool {
+	for _, tool := range tools {
+		if tool != nil && tool.Name() == name {
+			return tool
+		}
+	}
+	return nil
+}
+
+// withoutPlanTools returns the capabilities that can produce evidence. A
+// refused plan must not be replaced by the plan tool or by task-plan
+// bookkeeping; both are control observations, not observations of the subject.
+func withoutPlanTools(tools []Tool) []Tool {
+	out := make([]Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil && tool.Name() != AnswerPlanToolName && !isPlanTool(tool) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+// planEvidenceOutcome reports whether a successful tool outcome observed the
+// subject rather than merely listing it or updating control state. A directory
+// listing, a task-plan update, and the plan itself cannot support or refute a
+// claim; allowing them to pay the debt would re-open the plan surface with the
+// same unsupported claims.
+func planEvidenceOutcome(outcome ToolOutcome) bool {
+	if outcome.Result.IsError || outcome.ToolName == AnswerPlanToolName {
+		return false
+	}
+	switch outcome.ToolName {
+	case "read", "grep", "glob", "structure", "investigate",
+		"symbols", "refs", "graph", "search", "retrieve", "web_fetch", "verify":
+		return true
+	default:
+		return false
+	}
+}
+
 // OpenPlanTools returns the plan-owning tools that still have open items.
 //
 // The answer boundary keeps these tools and withdraws the rest: a reconciled

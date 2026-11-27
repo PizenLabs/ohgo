@@ -10,19 +10,23 @@ import (
 
 func TestApplyStreamsAssistantTextIntoOneEntry(t *testing.T) {
 	// Deltas must coalesce rather than create one entry per token, or the
-	// transcript becomes a stack of fragments the model never wrote.
+	// transcript becomes a stack of fragments the model never wrote. The
+	// coalesced text stays buffered until the publication decision.
 	state := New()
 	state.Apply(AssistantDelta{Text: "Hello"})
 	state.Apply(AssistantDelta{Text: ", "})
 	state.Apply(AssistantDelta{Text: "world"})
 
-	if got := state.AssistantText(); got != "Hello, world" {
-		t.Errorf("assistant text = %q, want %q", got, "Hello, world")
+	if got := state.AssistantText(); got != "" {
+		t.Errorf("uncommitted assistant text = %q, want empty", got)
 	}
 	assistant := 0
 	for _, entry := range state.Entries {
 		if entry.Kind == EntryAssistant {
 			assistant++
+			if got := entry.AssistantText; got != "Hello, world" {
+				t.Errorf("buffered text = %q, want %q", got, "Hello, world")
+			}
 		}
 	}
 	if assistant != 1 {
@@ -32,15 +36,15 @@ func TestApplyStreamsAssistantTextIntoOneEntry(t *testing.T) {
 
 func TestApplySplitsAssistantTextAcrossTurns(t *testing.T) {
 	// A second turn must not append to the first: the transcript would read as
-	// one continuous answer.
+	// one continuous answer. A second candidate is buffered until it commits.
 	state := New()
 	state.Apply(AssistantDelta{Text: "first"})
 	state.Apply(AssistantReconcile{Text: "first", Answer: agent.AnswerCommitted})
 	state.Apply(AssistantDone{})
 	state.Apply(AssistantDelta{Text: "second"})
 
-	if got := state.AssistantText(); got != "firstsecond" {
-		t.Errorf("text = %q, want the two turns concatenated for display", got)
+	if got := state.AssistantText(); got != "first" {
+		t.Errorf("text = %q, want only the committed first turn", got)
 	}
 	entries := 0
 	for _, entry := range state.Entries {
@@ -50,6 +54,10 @@ func TestApplySplitsAssistantTextAcrossTurns(t *testing.T) {
 	}
 	if entries != 2 {
 		t.Errorf("assistant entries = %d, want 2", entries)
+	}
+	state.Apply(AssistantReconcile{Text: "second", Answer: agent.AnswerCommitted})
+	if got := state.AssistantText(); got != "firstsecond" {
+		t.Errorf("text = %q, want the two committed turns concatenated", got)
 	}
 }
 
@@ -417,8 +425,16 @@ func TestClearedEmptiesTheTranscript(t *testing.T) {
 	}
 
 	// A turn after the clear must start a new assistant entry rather than
-	// appending to the one that was dropped.
+	// appending to the one that was dropped. The new candidate is buffered
+	// until it is committed.
 	state.Apply(AssistantDelta{Text: "fresh"})
+	if got := state.AssistantText(); got != "" {
+		t.Errorf("text = %q, want no committed output before reconcile", got)
+	}
+	if len(state.Entries) != 1 || state.Entries[0].AssistantText != "fresh" {
+		t.Errorf("entries = %+v, want one buffered post-clear candidate", state.Entries)
+	}
+	state.Apply(AssistantReconcile{Text: "fresh", Answer: agent.AnswerCommitted})
 	if got := state.AssistantText(); got != "fresh" {
 		t.Errorf("text = %q, want only the post-clear output", got)
 	}
@@ -509,10 +525,10 @@ func TestAssistantReconcileKeepsRejectedAnswerAsWithdrawnDraft(t *testing.T) {
 	}
 
 	// The corrected answer is a new block; the withdrawn text never leaks into
-	// the answer projection.
+	// the answer projection. The new candidate stays buffered until commit.
 	state.Apply(AssistantDelta{Text: "This project is a Go service."})
-	if got := state.AssistantText(); got != "This project is a Go service." {
-		t.Fatalf("new candidate AssistantText = %q", got)
+	if got := state.AssistantText(); got != "" {
+		t.Fatalf("uncommitted candidate AssistantText = %q, want empty", got)
 	}
 	state.Apply(AssistantReconcile{Text: "This project is a Go service.", Answer: agent.AnswerCommitted})
 	if got := state.AssistantText(); got != "This project is a Go service." {
@@ -520,19 +536,26 @@ func TestAssistantReconcileKeepsRejectedAnswerAsWithdrawnDraft(t *testing.T) {
 	}
 }
 
-// A provisional block is visibly a draft before the review decides. Without the
-// label it is indistinguishable from a committed answer that later disappears.
-func TestProvisionalAnswerCarriesDraftLabel(t *testing.T) {
+// A provisional block holds its text in state but paints nothing. The
+// telemetry line carries the review status, so unapproved prose never appears
+// and vanishes in the transcript.
+func TestProvisionalAnswerIsBufferedWithoutTranscriptLabel(t *testing.T) {
 	state := New()
 	state.Apply(AssistantDelta{Text: "candidate answer"})
 	entry := state.Entries[len(state.Entries)-1]
 	if !entry.Provisional {
 		t.Fatal("streamed answer is not provisional")
 	}
+	if got := state.AssistantText(); got != "" {
+		t.Fatalf("buffered candidate entered the answer projection: %q", got)
+	}
 	var rendered strings.Builder
 	renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
-	if !strings.Contains(rendered.String(), "draft · answer review pending") {
-		t.Fatalf("provisional answer has no draft label:\n%s", rendered.String())
+	if strings.TrimSpace(rendered.String()) != "" {
+		t.Fatalf("buffered candidate painted transcript rows:\n%s", rendered.String())
+	}
+	if status := liveStatusLine(state, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}); !strings.Contains(status, "verifying evidence…") {
+		t.Fatalf("candidate review status missing from the telemetry line: %q", status)
 	}
 	state.Apply(AssistantReconcile{Text: "candidate answer", Answer: agent.AnswerCommitted})
 	entry = state.Entries[len(state.Entries)-1]
@@ -541,8 +564,8 @@ func TestProvisionalAnswerCarriesDraftLabel(t *testing.T) {
 	}
 	rendered.Reset()
 	renderEntryContent(&rendered, entry, PaletteFor(""), Layout{Width: 80, ContentWidth: 80}, entryRenderContext{})
-	if strings.Contains(rendered.String(), "draft ·") {
-		t.Fatalf("committed answer kept the draft label:\n%s", rendered.String())
+	if !strings.Contains(rendered.String(), "candidate answer") {
+		t.Fatalf("committed answer is not visible:\n%s", rendered.String())
 	}
 }
 

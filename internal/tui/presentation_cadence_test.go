@@ -207,8 +207,12 @@ func TestLiveToolStreamUsesOneLeadingGap(t *testing.T) {
 	if len(tool) > 0 && tool[len(tool)-1] == "" {
 		t.Fatalf("live tool block wrote its own separator: %#v", tool)
 	}
+	if buffered := liveEntryLines(s, len(s.Entries)-1, s.Entries[len(s.Entries)-1], pal, layout); len(buffered) != 0 {
+		t.Fatalf("buffered candidate painted live rows: %#v", buffered)
+	}
+	s.Apply(AssistantReconcile{Text: "The project is a Go service.", Answer: agent.AnswerCommitted})
 	answer := liveEntryLines(s, len(s.Entries)-1, s.Entries[len(s.Entries)-1], pal, layout)
 	if len(answer) == 0 || answer[0] != "" {
-		t.Fatalf("live answer did not carry the action-run gap: %#v", answer)
+		t.Fatalf("committed live answer did not carry the action-run gap: %#v", answer)
 	}
 }

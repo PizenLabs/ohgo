@@ -666,6 +666,28 @@ func TestDomainHeadingIsNotAProvenanceClaim(t *testing.T) {
 	}
 }
 
+// The source uses the short spelling "Postgres" while the README uses the
+// formal "PostgreSQL". They name one dependency; a source read of either must
+// clear the documentation-only term.
+func TestPostgresSpellingVariantIsObserved(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "The platform uses PostgreSQL."),
+		readEvidenceForTest("read-2", "backend/internal/product/repository/repository.go",
+			"package repository\n\nimport (\n\t\"gorm.io/driver/postgres\"\n)\n"),
+	)
+	summary := state.Provenance(shape)
+	if !summary.RequireAttribution {
+		t.Fatalf("provenance = %+v, want a broad account requiring attribution", summary)
+	}
+	for _, term := range summary.DocumentationTerms {
+		if term == "postgresql" {
+			t.Fatalf("a source-observed spelling variant remained documentation-only: %v", summary.DocumentationTerms)
+		}
+	}
+}
+
 // Documentation stays documentation after the persisted evidence ledger is
 // reloaded. The ledger is written to progress.json at every checkpoint, so a
 // field missing from its wire form would let a resumed answer present a README

@@ -1017,6 +1017,28 @@ func TestSufficiencyBlocksMutationTheShapeDidNotPermit(t *testing.T) {
 	}
 }
 
+// The state line is a completion requirement, not a completion verdict. A
+// model that reads "Completion: a non-empty answer was produced" can conclude
+// its withheld draft was already delivered and answer with a confirmation.
+func TestRenderStateFramesCompletionAsARequirement(t *testing.T) {
+	intent := contract.IntentContract{
+		Objective: "analyze this project",
+		Kind:      contract.ObjectiveInformational,
+		Grounding: &contract.IntentGrounding{},
+	}
+	shape := BuildShape(intent, ShapeParams{Authority: "ask"})
+	evidence := NewEvidenceState()
+	execution := ExecutionState{ToolCalls: 1}
+	suff := EvaluateSufficiency(shape, evidence, execution, false)
+	text := RenderState(shape, evidence, execution, suff, CandidateSet{}, 0, 0)
+	if !strings.Contains(text, "Completion requires:") {
+		t.Fatalf("state does not frame completion as a requirement:\n%s", text)
+	}
+	if strings.Contains(text, "a non-empty answer was produced") {
+		t.Fatalf("state still claims an answer was produced:\n%s", text)
+	}
+}
+
 func TestRenderStateKeepsContractWhenEvidenceIsTruncated(t *testing.T) {
 	shape := BuildShape(readContract("Write README.md."), ShapeParams{Authority: "build"})
 	evidence := NewEvidenceState()

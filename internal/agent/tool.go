@@ -193,7 +193,8 @@ func (r Result) Rejected() bool {
 	case ToolFailureInvalidArgument, ToolFailureInvalidSelector,
 		ToolFailureUnknownTool, ToolFailureUnsupported,
 		ToolFailureAuthorization, ToolFailureCorrectionBudget,
-		ToolFailureCapabilityUnavailable, ToolFailureOutsideWorkspace:
+		ToolFailureAnswerPlan, ToolFailureCapabilityUnavailable,
+		ToolFailureOutsideWorkspace:
 		return true
 	}
 	return false
@@ -226,6 +227,12 @@ type Context struct {
 	// request did not ask for; the empty mode preserves the legacy unrestricted
 	// vocabulary for embedders that do not install a contract.
 	ConclusionMode contract.ConclusionMode
+	// AnswerPlanReview audits the claims of a pre-prose answer plan against
+	// the evidence already observed. The loop installs it only for the plan
+	// tool and only when the host authorized the preflight; nil means no
+	// review is installed, and the tool records the plan without moving the
+	// run's answer boundary.
+	AnswerPlanReview func(plan AnswerPlan) []contract.GroundingIssue
 	// OnProgress lets a long tool publish partial output.
 	OnProgress func(Result)
 	// Budget is the root-owned grant shared by this execution tree. It is

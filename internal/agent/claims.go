@@ -1090,7 +1090,7 @@ func claimIsBounded(sentence string) bool {
 		"could not observe", "couldn't observe", "not observed",
 		"no evidence", "would need", "worth verifying", "not evaluated",
 		"not inspected", "not checked", "not probed", "in the probes",
-		"in this pass", "in this scan", "does not show", "doesn't show",
+		"in this pass", "in this scan", "in this run", "does not show", "doesn't show",
 		"did not show", "didn't show", "does not establish",
 		"doesn't establish", "did not establish", "does not prove",
 		"doesn't prove", "did not prove", "not shown", "not proven",

@@ -111,6 +111,17 @@ Prefer the shortest answer that fully answers the question.`
 // the transcript.
 const AnswerRequest = `Runtime: no tool is available for this response. Provide the final answer to the user's request now, using the observations already gathered where they apply. Do not propose or describe another tool call. Keep the answer substantive. Name only a specific limitation that materially bounds it; do not add a generic coverage disclaimer.`
 
+// AnswerPlanRequest is the directive carried when the control plane has
+// reached its answer boundary but the pre-prose claim preflight has not
+// passed. It asks for claims, not prose: the runtime audits each one against
+// the observations and reopens the evidence surface when a read is missing.
+const AnswerPlanRequest = `Runtime answer boundary: the evidence phase is complete. Before writing the final answer, call prepare_answer with every factual claim the answer will make, one complete declarative sentence per entry, and list honest scope limits separately under limitations. The runtime audits those claims against the observations and returns any missing reads. If a previous plan was refused, do not resubmit a refused claim unchanged: support it with the missing observation or move it to limitations. Do not write the answer in this request; the answer request follows an accepted plan.`
+
+// AnswerPlanEvidenceRequest is the directive carried on the evidence request
+// after a refused plan. The plan tool is withheld on that request so the model
+// cannot repeat the same proposal; the refusal already names the missing reads.
+const AnswerPlanEvidenceRequest = `Runtime answer plan refused: prepare_answer named claims the observations do not support. Use the available evidence tools now to read the subjects the refusal named, or narrow the claim to what was actually observed. The plan tool is withheld until a successful observation is recorded. Do not repeat the plan or write the final answer in this request.`
+
 // ExecutionRecoveryRequest is the one bounded correction the loop appends when
 // the model announces an action but emits no tool call. It does not authorize
 // anything and does not restate the action: it asks for the model's own
@@ -142,7 +153,7 @@ const OutputRecoveryRequest = `Runtime recovery: your previous response produced
 // tool to acquire the missing observation; a generic disclaimer is not a
 // correction. It is runtime-authored, never persisted as a user turn, and never
 // shown in the transcript.
-const CompletionReviewRequest = `Runtime completion review: the previous answer cannot be accepted because {{reason}}. The action surface is open for this repair. First obtain the missing observation with the available tools; the runtime reopened them for this purpose. Keep every supported sentence and the answer's structure. Do not add a general disclaimer about coverage or uncertainty; a disclaimer does not resolve an unrelated claim. If the allowed tools cannot establish a named fact, qualify or remove only the sentence that carries it and say what specifically remains unverified.`
+const CompletionReviewRequest = `Runtime completion review: the previous answer cannot be accepted because {{reason}}. The previous candidate was withheld and has not been shown to the user; the corrected answer must be complete. The action surface is open for this repair. First obtain the missing observation with the available tools; the runtime reopened them for this purpose. Keep every supported sentence and the answer's structure. Do not add a general disclaimer about coverage or uncertainty; a disclaimer does not resolve an unrelated claim. If the allowed tools cannot establish a named fact, qualify or remove only the sentence that carries it and say what specifically remains unverified.`
 
 // ClaimRepairRequest is the bounded, claim-level correction. It is used in
 // place of CompletionReviewRequest when the review can name the rejected
@@ -150,7 +161,7 @@ const CompletionReviewRequest = `Runtime completion review: the previous answer 
 // answer, and stay inside the correction's small tool allowance. It is
 // runtime-authored, never persisted as a user turn, and never shown in the
 // transcript.
-const ClaimRepairRequest = `Runtime completion review: {{count}} claim(s) in the previous answer are not supported by the evidence observed so far. This is a repair turn, not a rewrite: keep every supported sentence, section, and structural detail exactly as it is. The action surface is open for this repair.
+const ClaimRepairRequest = `Runtime completion review: {{count}} claim(s) in the previous answer are not supported by the evidence observed so far. The previous candidate was withheld and has not been shown to the user; the repaired answer must be complete. This is a repair turn, not a rewrite: keep every supported sentence, section, and structural detail exactly as it is. The action surface is open for this repair.
 
 For each claim below, first obtain the missing observation its requirement/action names. Use the reopened surface only for those observations; the runtime enforces a small allowance and refuses a call past it. Read the exact coordinate the claim is about when the prior observation did not cover it; do not repeat an observation that already contains the required evidence.
 
@@ -163,6 +174,14 @@ Allowed repair actions: {{actions}}.
 {{repairs}}
 
 Audit reason: {{reason}}`
+
+// CorrectionAnswerRequest is the final-answer boundary after the correction
+// tool allowance is spent. The model still sees its earlier draft in the live
+// conversation so it can preserve supported claims, but that draft was
+// withheld and never delivered. Without this statement a model treats the
+// draft as a previous answer and returns a completion confirmation instead of
+// the full answer.
+const CorrectionAnswerRequest = `Runtime answer correction: your earlier candidate answer was withheld and was not shown to the user. It is an internal draft, not a delivered answer. The repair tool allowance is spent. Write the complete final answer now from the evidence already observed. Keep every supported section, finding, and structural detail; qualify or remove only the claims the review named. Do not write a completion confirmation, do not refer to "the analysis above" or to a previous answer, and do not assume the user has seen any draft.`
 
 // WorkspaceContract returns the semantic contract for a workspace, or "" for
 // an unknown name.

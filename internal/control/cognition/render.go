@@ -134,7 +134,7 @@ func renderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 		for _, condition := range shape.Completion {
 			conditions = append(conditions, condition.Description)
 		}
-		fmt.Fprintf(&contractLine, "Completion: %s\n", bound(strings.Join(conditions, "; "), 360))
+		fmt.Fprintf(&contractLine, "Completion requires: %s\n", bound(strings.Join(conditions, "; "), 360))
 	}
 	sections = append(sections, contractLine.String())
 
