@@ -195,8 +195,10 @@ Signals are structural, not role-based:
 - investigation or execution capability;
 - grounding breadth (actions/entities);
 - ambiguity and assumptions;
+- unresolved scope in a mutation objective;
+- required facets and runtime execution;
 - open task work (todos, hypotheses, questions);
-- long multi-clause objectives.
+- broad multi-clause objectives.
 
 Budget and context clamp demand down:
 
@@ -220,12 +222,12 @@ causes an invented value.
 
 ### 6. Reasoning is independent of role
 
-The selected reasoning setting is applied per turn at the composition boundary
-(`cmd/ohgo`) through the existing `agent.Loop.SetReasoning`. It is not changed by
-an automatic role handoff, because that would make effort a function of role.
-
-An explicit per-role effort or `--effort` remains a human override. Explicit
-`off` remains a disable.
+The reasoning policy is installed on `agent.Loop` and consulted before every
+provider request at the composition boundary (`cmd/ohgo`). It is not a function
+of role: an automatic role handoff keeps the work's demand and remaps it onto
+the new model's ladder. An explicit per-role effort or `--effort` remains a
+human override; a runtime `/effort auto` restores demand for that role.
+Explicit `off` remains a disable.
 
 ## Authority Model
 
@@ -283,7 +285,11 @@ valid native level or omission
 agent.Loop.SetReasoning before the turn
 ```
 
-The selected effort is applied once per turn. Role handoffs keep it.
+The selected effort is applied before every provider request. The policy reads
+the live remaining budget and measured context, so later calls can lower effort
+and newly recorded task state can raise it. A role handoff keeps the demand,
+then remaps it onto the new model's ladder; a raw level is never carried across
+models.
 
 ## Task Orchestration
 
@@ -340,8 +346,9 @@ second planner, router, or work queue.
 3. Thread the contract through TUI prediction, approval re-derivation, REPL,
    one-shot, and tests.
 4. Add `cognition` reasoning demand and native selection with unit tests.
-5. Apply AUTO reasoning per turn in the composition root; preserve it across
-   role handoffs; keep explicit effort as override.
+5. Apply AUTO reasoning per provider request in the composition root; preserve
+   demand across role handoffs and remap it onto the new model; keep explicit
+   effort as override.
 6. Stop transports inventing an empty effort.
 7. Update canonical documentation and this task file.
 
@@ -410,7 +417,8 @@ commands, and a prose-only verification claim.
   approval and explicit switch, subtask inheritance (live gate).
 - `cmd/ohgo`: widening from ASK is a handoff; FUZZ-origin mutation confirms;
   BUILD task keeps one identity across automatic phases; AUTO reasoning applied
-  per turn and preserved across a role switch; explicit effort overrides.
+  per provider request and remapped across a role switch; explicit effort
+  overrides.
 - `tui`: protected transition re-derivation uses the task contract; an ASK
   continuation still cannot execute.
 - `provider/ai`: empty effort sends no reasoning parameter.
@@ -461,9 +469,9 @@ a parallel subsystem.
   new objective is routed from the live role instead of inheriting another
   task's grant.
 - `cognition.AssessReasoningDemand`, `ClampReasoningDemand`, and
-  `ReasoningSetting` own demand and native mapping. The composition root applies
-  the result per turn; a role handoff preserves it. `provider/ai` no longer
-  invents `medium` when no effort is published.
+  `ReasoningSetting` own demand and native mapping. The composition root installs
+  a per-request policy; a role handoff preserves demand and remaps the level.
+  `provider/ai` no longer invents `medium` when no effort is published.
 - No new package, task store, policy engine, role router, permission surface, or
   orchestration loop was added.
 
@@ -485,7 +493,7 @@ budget + context clamp            cognition.ClampReasoningDemand
         ↓
 model's native ladder             cognition.ReasoningSetting
         ↓                         valid value or omission
-agent.Loop.SetReasoning           applied per turn, preserved across role moves
+agent.Loop.SetReasoningPolicy     applied per request; remapped on role/model moves
 ```
 
 ## Files Changed
@@ -547,8 +555,8 @@ New invariant tests:
   explicit overrides, omits unknown capability; a standalone FUZZ mutation asks
   while a BUILD-authorized task hands off automatically; a new objective does
   not inherit the open task's grant.
-- `tui`: the reasoning selector is applied before the turn and preserves manual
-  configuration when absent.
+- `tui`: the reasoning policy is installed for the run, publishes each selected
+  level, and preserves manual configuration when no selector is installed.
 - `provider/ai`: an unspecified effort is omitted on OpenAI and Anthropic; a
   known native level still travels.
 - `agent`: a transient status/timeout is retried without extra turn spend; a
@@ -771,8 +779,9 @@ go test ./cmd/ohgo -run TestAuto -count=3   pass
   itself is not the failure, but a blind retry cannot be distinguished from a
   deterministic incompatibility without an invented heuristic.
 - The reasoning demand is structural. A terse but architecturally broad request
-  can start at minimal demand and rise only as the task gains targets,
-  hypotheses, or verification requirements.
+  can still start at minimal demand, but unresolved-scope mutations, required
+  facets, runtime execution, and broad objectives now raise it before the first
+  request; later task evidence raises it again per request.
 - Legacy checkpoints (schema 1–3) derive an origin from the restored role
   because the original grant was never stored. It is documented as legacy
   provenance, never as an original origin.

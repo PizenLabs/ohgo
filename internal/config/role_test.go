@@ -181,3 +181,46 @@ func TestRoleNamesAreCanonicalAndValid(t *testing.T) {
 		t.Error("a non-role was accepted")
 	}
 }
+
+// Auto is a role mode, not a level. It clears any fixed level and must be
+// distinguishable from an empty effort, which inherits the global policy.
+func TestAssignAutoRoundTripsAsAMode(t *testing.T) {
+	settings := Default()
+	settings.Model = "anthropic/global"
+	settings.AssignRole("build", "openrouter/strong-code", "high")
+	settings.AssignAuto("build", "")
+
+	model, effort, source := settings.RoleModel("build")
+	if model != "openrouter/strong-code" || effort != "" || source != "role" {
+		t.Fatalf("build = %q effort=%q source=%q, want the preserved model with no level", model, effort, source)
+	}
+	if !settings.RoleAuto("build") {
+		t.Fatal("RoleAuto = false, want the assigned mode")
+	}
+	if profile := settings.Roles["build"]; !profile.Auto || profile.Effort != "" {
+		t.Fatalf("profile = %+v, want Auto with no fixed level", profile)
+	}
+
+	// An explicit level is the more specific claim and clears Auto.
+	settings.AssignRole("build", "", "low")
+	if settings.RoleAuto("build") {
+		t.Fatal("RoleAuto stayed true after an explicit level")
+	}
+	if profile := settings.Roles["build"]; profile.Auto || profile.Effort != "low" {
+		t.Fatalf("profile = %+v, want explicit low", profile)
+	}
+}
+
+// A hand-edited profile that carries both Auto and a level must not hide the
+// level: the explicit claim wins.
+func TestRoleAutoIgnoresAConflictingLevel(t *testing.T) {
+	settings := Settings{Roles: map[string]Profile{
+		"build": {Model: "openai/x", Effort: "high", Auto: true},
+	}}
+	if settings.RoleAuto("build") {
+		t.Fatal("RoleAuto accepted a profile with a fixed level")
+	}
+	if _, effort, _ := settings.RoleModel("build"); effort != "high" {
+		t.Fatalf("effort = %q, want the explicit high level", effort)
+	}
+}

@@ -422,14 +422,18 @@ BUILD permanently expensive.
 
 `cognition.AssessReasoningDemand` derives one of three internal levels —
 `MINIMAL`, `MODERATE`, `HIGH` — from the completion contract and task state:
-multiple targets, a named verification, a staged objective, investigation
-capability, grounding breadth, material ambiguity, long multi-clause objectives,
-and open todos/hypotheses/questions. These levels are **not** provider values.
+multiple targets or deliverables, named verification, a staged objective,
+investigation capability, grounding breadth, material ambiguity, a terse
+mutation whose scope is unresolved, a broad multi-clause objective, required
+facets, runtime execution, and open todos/hypotheses/questions. These levels
+are **not** provider values.
 
-`cognition.ClampReasoningDemand` then lowers the level to what the run can
+`cognition.ClampReasoningDemand` lowers the level to what the request can
 afford: one remaining turn or model call is minimal; three or fewer cap high at
 moderate; a context near its window drops one level, and 90% or more drops to
-minimal. A high demand never implies unlimited reasoning.
+minimal. The clamp reads the live budget and measured request shape **before
+every provider request**, not once per user turn. A high demand never implies
+unlimited reasoning.
 
 `cognition.ReasoningSetting` maps the demand onto the model's own facts:
 
@@ -442,17 +446,37 @@ HIGH + published ladder             highest rung
 empty/unknown ladder                omit; never invent a level
 ```
 
-The mapping is deterministic and uses only the catalog facts already carried on
+The mapping is deterministic and uses only the catalog facts carried on
 `ai.Model` (`ReasoningEfforts`, `ReasoningDisable`, `ReasoningMandatory`). The
-composition root applies the result with `Loop.SetReasoning` before the first
-provider request. An automatic BUILD ↔ FUZZ handoff **preserves** the setting:
-changing the role must not silently change how deeply the model thinks. An
-explicit `--effort`, a per-role effort, or an enabled global reasoning policy is
-a human override and disables AUTO for that role.
+composition root installs a `Loop` reasoning policy. The loop calls it before
+each provider request with the remaining turns, model calls, context window,
+and measured context. A run that starts with many calls can lower effort for
+its last call, and a role handoff or newly recorded task state is seen by
+the next request.
+
+Effort precedence is per role:
+
+1. an explicit role level or `off`;
+2. the role's persisted `Auto` mode;
+3. an invocation `--effort`/`--reasoning` flag;
+4. the global reasoning policy;
+5. otherwise demand.
+
+An invocation flag yields to a runtime `/effort auto` for the active role for
+the rest of the session, because the later human action is the more specific
+decision. `/effort` validates an explicit level against the model the role
+will call. `/effort off` disables thinking for that role; `/effort auto`
+persists a role mode rather than clearing to an ambiguous empty value, so a
+different role's profile or a new session cannot silently turn demand off.
+An automatic BUILD ↔ FUZZ handoff keeps the demand policy, not a raw level:
+the next request remaps the same work onto the new model's ladder, so a level
+that only the old model published is never sent.
 
 A transport must omit an empty effort rather than manufacture `medium`. A model
 whose reasoning is mandatory is never reported as disabled; omitting the
-configuration is the truthful representation.
+configuration is the truthful representation. The header renders a native
+endpoint level (for example `standard`) instead of hiding it behind a fixed
+bundled vocabulary.
 
 ### Capability preflight
 
@@ -1590,7 +1614,10 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
-discovery), `/compact` (state-first manual compaction with a concise outcome),
+discovery), `/effort` (the active workspace role's level or Auto mode, shown as
+a fixed choice card in the TUI and a report in the REPL, validated against that
+role's live model), `/compact` (state-first manual compaction with a concise
+outcome),
 `/sessions`/`/resume`, `/jobs`, `/usage`,
 `/status`, `/update` (the same `update.Service` authority as `ohgo update`),
 `/doctor`, `/connect` (a Provider Manager modal browses the

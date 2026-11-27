@@ -99,6 +99,20 @@ var planeFocusOrder = []PlaneFocus{
 // empty string: "off" is a deliberate decision, distinct from "unset".
 const EffortOff = "off"
 
+// EffortAuto is the picker value that selects demand-driven effort for a role.
+// The persisted profile stores Auto as a mode, not as an effort string.
+const EffortAuto = "auto"
+
+// Effort mode names the authority currently selecting a role's effort. They
+// are presentation values: the runtime owns the decision and reports it.
+const (
+	EffortModeAuto       = "auto"
+	EffortModeExplicit   = "explicit"
+	EffortModeOff        = "off"
+	EffortModeInvocation = "invocation"
+	EffortModeGlobal     = "global"
+)
+
 // AllProviders is the synthetic provider row that disables provider filtering,
 // so a user can search the whole roster without first choosing a provider. It
 // is honest: it is labelled as a scope, not a provider.
@@ -121,6 +135,13 @@ type RoleAssignment struct {
 	Name string
 	// Effort is the effective thinking effort, or "" when none is set.
 	Effort string
+	// Auto reports that the role's effort is selected from the work's demand
+	// rather than a fixed level or the global policy.
+	Auto bool
+	// EffortMode names the authority currently selecting effort: "auto",
+	// "explicit", "off", "invocation", or "global". It is presentation data
+	// for the /effort card and report; the runtime owns the decision.
+	EffortMode string
 	// Source names which configuration layer won: "role", "workspace",
 	// "default", or "builtin". It is shown so the layering is never hidden.
 	Source string

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"sync"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -37,9 +36,9 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 	// publishAuthority republishes the chrome that describes the live role. A
 	// workspace move rebinds the session's model and effort: the header follows
 	// the newly effective role rather than naming a model the loop no longer
-	// calls. Under AUTO the effort belongs to the work, not the role, so the
-	// last selected level survives the move; only an explicit per-role effort
-	// replaces it.
+	// calls. Under Auto the demand policy remains in charge and the next
+	// provider request maps the work onto the new role's model; the old raw
+	// level is not carried because it may not exist on the new ladder.
 	publishAuthority := func(ws workspace.Workspace) {
 		style := ws.Style()
 		program.PublishWorkspace(tui.WorkspaceUpdated{
@@ -48,27 +47,7 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 			HasWorkspace:    true,
 		})
 		program.PublishModel(held.model.Ref())
-		program.PublishEffort(func() string {
-			role := held.sessionRole()
-			if role == "" {
-				role = strings.ToLower(ws.String())
-			}
-			if held.autoReasoning {
-				if explicit := held.roleEffortFor(role); explicit != "" {
-					enabled, level := held.reasoningFor(explicit)
-					if !enabled {
-						return ""
-					}
-					return level
-				}
-				return held.lastReasoningEffort
-			}
-			enabled, level := held.reasoningFor(held.roleEffortFor(role))
-			if !enabled {
-				return ""
-			}
-			return level
-		}())
+		program.PublishEffort(held.currentEffort())
 	}
 	switchTo := func(name, reason, workspaceState string, automatic bool) error {
 		from := held.activeWorkspace()

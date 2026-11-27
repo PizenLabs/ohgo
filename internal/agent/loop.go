@@ -302,6 +302,10 @@ type Config struct {
 	Reasoning bool
 	// ReasoningEffort is the effort level forwarded to the provider.
 	ReasoningEffort string
+	// ReasoningPolicy, when non-nil, selects reasoning for every provider
+	// request. It overrides Reasoning and ReasoningEffort for that request
+	// without changing the configured defaults. Nil uses them unchanged.
+	ReasoningPolicy ReasoningPolicy
 	// ToolChoice constrains tool use.
 	ToolChoice ai.ToolChoice
 	// SessionID is forwarded to providers that support session caching.
@@ -1751,6 +1755,14 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if err := ctx.Err(); err != nil {
 			return turns, err
 		}
+		// The policy sees the budget before this request is charged, so a
+		// remaining count of one means this is the last call the run can make.
+		// It also sees the measured request shape, including the tool and task
+		// surface the provider will bill, not just the conversation.
+		reasoningEnabled, reasoningEffort := l.cfg.Reasoning, l.cfg.ReasoningEffort
+		if l.cfg.ReasoningPolicy != nil {
+			reasoningEnabled, reasoningEffort = l.cfg.ReasoningPolicy(l.RequestFacts(requestMessages))
+		}
 		// A model call is admitted only after every local preparation step has
 		// succeeded. Turn and model-call are charged together, atomically: a
 		// refused model call must not silently spend a turn, and a child that
@@ -1770,8 +1782,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			Tools:           specs,
 			ToolChoice:      toolChoice,
 			MaxTokens:       completionBudget,
-			Reasoning:       l.cfg.Reasoning,
-			ReasoningEffort: l.cfg.ReasoningEffort,
+			Reasoning:       reasoningEnabled,
+			ReasoningEffort: reasoningEffort,
 			SessionID:       l.cfg.SessionID,
 		})
 		if err != nil {

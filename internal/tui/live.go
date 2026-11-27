@@ -901,6 +901,14 @@ func livePickerLines(s State, pal *Palette, layout Layout) []string {
 			return renderNewSessionPickerCard(picker, pal, layout, width, height)
 		})
 	}
+	// The effort chooser is a fixed decision card in the full-screen surface
+	// too; rendering it as a generic list here would lose its title, summary,
+	// and footer contract.
+	if picker.Kind == PickerEfforts {
+		return liveModalCardLinesWidth(s, pal, layout, choicePickerWidth, func(width, height int) string {
+			return renderEffortPickerCard(picker, pal, layout, width, height, effortPickerSummary(s))
+		})
+	}
 	width := displayWidth(s, layout)
 	head := pal.Title.Render(TruncateToWidth(pickerHeader(picker), width))
 	search := renderPickerSearch(picker, pal, width)

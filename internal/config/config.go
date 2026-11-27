@@ -66,11 +66,17 @@ type Profile struct {
 	// Model is the "provider/id" reference bound to the role. Empty means the
 	// role inherits the next layer (legacy workspace override, then global).
 	Model string `json:"model,omitempty"`
-	// Effort is the thinking effort level for the role. Empty means the
-	// global ReasoningEffort applies. It is only meaningful when the bound
-	// model actually exposes that effort; it is stored verbatim and validated
-	// against catalog metadata at the seam that owns that knowledge.
+	// Effort is the thinking effort level for the role. Empty with Auto
+	// false means the global ReasoningEffort applies. It is only meaningful
+	// when the bound model actually exposes that effort; it is stored
+	// verbatim and validated against catalog metadata at the seam that owns
+	// that knowledge.
 	Effort string `json:"effort,omitempty"`
+	// Auto selects the thinking effort from the work's demand instead of a
+	// fixed level. It is a role mode, not an effort name: Auto and Effort are
+	// mutually exclusive, and an explicit level clears Auto. This is distinct
+	// from an empty Effort, which inherits the global policy.
+	Auto bool `json:"auto,omitempty"`
 }
 
 // UserDefaults is the machine-global human-defaults layer.
@@ -678,13 +684,50 @@ func (s *Settings) AssignRole(role, model, effort string) {
 		profile.Model = trimmed
 	}
 	profile.Effort = strings.TrimSpace(effort)
+	profile.Auto = false
 	s.Roles[key] = profile
 }
 
-// SetRoleModel binds a role to a model while preserving its configured effort.
+// AssignAuto records a role's model (when supplied) and marks the role as
+// demand-driven. An explicit level and Auto are mutually exclusive, so the
+// stored effort is cleared.
+func (s *Settings) AssignAuto(role, model string) {
+	key := strings.ToLower(strings.TrimSpace(role))
+	if key == "" {
+		return
+	}
+	if s.Roles == nil {
+		s.Roles = map[string]Profile{}
+	}
+	profile := s.Roles[key]
+	if trimmed := strings.TrimSpace(model); trimmed != "" {
+		profile.Model = trimmed
+	}
+	profile.Effort = ""
+	profile.Auto = true
+	s.Roles[key] = profile
+}
+
+// RoleAuto reports whether the role is explicitly demand-driven.
+//
+// An inconsistent profile that carries both Auto and a fixed effort is read
+// as explicit: the level is the more specific claim and must not be hidden by
+// a stale mode bit.
+func (s Settings) RoleAuto(role string) bool {
+	key := strings.ToLower(strings.TrimSpace(role))
+	if key == "" {
+		return false
+	}
+	profile, found := s.Roles[key]
+	return found && profile.Auto && strings.TrimSpace(profile.Effort) == ""
+}
+
+// SetRoleModel binds a role to a model while preserving its configured effort
+// and Auto mode.
 //
 // It is the switch-a-model path (the plain REPL's /model): changing which model
-// answers must not silently clear a thinking effort the user chose.
+// answers must not silently clear a thinking effort or a demand mode the user
+// chose.
 func (s *Settings) SetRoleModel(role, model string) {
 	key := strings.ToLower(strings.TrimSpace(role))
 	trimmed := strings.TrimSpace(model)

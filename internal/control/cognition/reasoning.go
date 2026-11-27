@@ -103,6 +103,23 @@ func AssessReasoningDemand(in ReasoningInput) ReasoningDemand {
 		if intent.ConditionalMutation {
 			signals++
 		}
+		// A mutation with no verifiable target or behavioural check is
+		// ambiguous about scope. When it is more than a terse one-liner, the
+		// model has to resolve what to change before it can act; that is
+		// deliberation the demand estimate should fund.
+		if intent.Kind == contract.ObjectiveMutation && intent.Ambiguous &&
+			len(strings.Fields(intent.Objective)) >= 5 {
+			signals++
+		}
+		if len(intent.RequiredFacets) >= 2 {
+			signals++
+		}
+		if intent.ExecutionMode == contract.ExecutionRuntime {
+			signals++
+		}
+		if len(intent.Verification) >= 2 {
+			signals++
+		}
 		if grounding := intent.Grounding; grounding != nil {
 			if len(grounding.Actions) >= 3 || len(grounding.Entities) >= 4 {
 				signals++
@@ -118,7 +135,11 @@ func AssessReasoningDemand(in ReasoningInput) ReasoningDemand {
 				signals++
 			}
 		}
-		if len(strings.Fields(intent.Objective)) >= 40 {
+		// Eight words is the point where the objective usually carries more
+		// than one clause or deliverable. The old forty-word threshold was
+		// almost unreachable from real extraction, leaving broad requests at
+		// the lowest rung.
+		if len(strings.Fields(intent.Objective)) >= 8 {
 			signals++
 		}
 	}

@@ -884,3 +884,37 @@ func TestCommandLineCountForNamedPath(t *testing.T) {
 		t.Fatal("another file's measurement satisfied the count")
 	}
 }
+
+// A capability list names CLI surfaces. The item "test-impact selection/
+// publishing" is a label, not a runtime-behavior sentence about the earlier
+// "search" capability. The source observation for the CLI must be able to
+// support the label without being filtered by an unrelated earlier component.
+func TestCapabilityListBehaviorLabelUsesSourceObservation(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimRead("crates/gry-cli/src/main.rs",
+			"fn run_test_impact() { test_impact::publish(); }", 1561),
+	}}}
+	answer := "Capabilities (observed in CLI command surface)\n" +
+		"Indexing (full/incremental/async/watch), status/projects, search (symbol + source text with graph context), trace (callers/callees/paths), snippets, file outlines, schema, read-only Cypher queries, architecture summaries, coverage, change impact, bounded task context (3 profiles: context/scout/auditor), lifecycle hooks, ADR management, runtime trace ingestion, snapshot comparison, test-impact selection/publishing, config, MCP client install/uninstall (18 supported harnesses), skill install, update, doctor."
+	verdict := claimVerdict(turns, answer)
+	if !verdict.Complete() {
+		t.Fatalf("a capability list was reviewed: %s", verdict.Reason)
+	}
+}
+
+// The label handling must not turn a capability label into an unverified
+// freebie: without a source observation carrying the behavior, the claim still
+// reviews.
+func TestCapabilityLabelWithoutObservationStillReviews(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimRead("crates/gry-cli/src/main.rs", "fn main() {}", 1),
+	}}}
+	verdict := claimVerdict(turns,
+		"Capabilities: search, test-impact selection/publishing, config.")
+	if verdict.Complete() {
+		t.Fatal("a capability label without source evidence completed")
+	}
+	if !strings.Contains(strings.ToLower(verdict.Reason), "publishing") {
+		t.Fatalf("reason = %q, want the unobserved behavior", verdict.Reason)
+	}
+}

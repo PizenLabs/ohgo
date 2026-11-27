@@ -5,34 +5,57 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
-// ReasoningSelector resolves the reasoning setting for one turn.
+// ReasoningSelector resolves the reasoning setting for one provider request.
 //
 // The policy belongs to the control plane and is supplied by the host; the
-// program only applies the returned value to the loop before the request.
-// Returning (false, "") omits reasoning configuration rather than inventing a
-// level. text is the user's request and request is the turn's assembled
-// messages, so a host can classify the work and measure the context it is about
-// to send.
-type ReasoningSelector func(intent workspace.IntentContract, text string, request []agent.Message) (bool, string)
+// program only applies the returned value to the request. Returning
+// (false, "") omits reasoning configuration rather than inventing a level.
+// text is the user's request; facts carries the measured request shape and the
+// run's remaining budget so the host can lower or raise effort between model
+// calls.
+type ReasoningSelector func(intent workspace.IntentContract, text string, facts agent.ReasoningFacts) (bool, string)
 
-// SetReasoningSelector installs the per-turn reasoning policy. Nil keeps the
-// role's configured reasoning exactly as before.
+// SetReasoningSelector installs the host reasoning policy. The program applies
+// it at the start of a run and again before every provider request. Nil keeps
+// the role's configured reasoning exactly as before.
 func (p *Program) SetReasoningSelector(selectReasoning ReasoningSelector) {
 	p.reasoningSelect = selectReasoning
 }
 
-// applyReasoning asks the host for this turn's reasoning setting and applies it
-// to the live loop. It is called after the task contract is resolved, so an
-// adopted objective and a persisted task both participate in the demand.
+// applyReasoning installs the host's per-request policy and applies its
+// turn-level result immediately. The policy is consulted again before every
+// provider request, so the initial value is only a starting point; the loop's
+// budget and context facts drive later changes.
 func (p *Program) applyReasoning(intent workspace.IntentContract, text string, request []agent.Message) {
 	if p.reasoningSelect == nil || p.loop == nil {
 		return
 	}
-	enabled, level := p.reasoningSelect(intent, text, request)
+	facts := p.loop.RequestFacts(request)
+	enabled, level := p.reasoningSelect(intent, text, facts)
 	p.loop.SetReasoning(enabled, level)
-	if enabled {
-		p.PublishEffort(level)
-		return
+	p.publishEffortSelection(enabled, level)
+	p.loop.SetReasoningPolicy(func(facts agent.ReasoningFacts) (bool, string) {
+		enabled, level := p.reasoningSelect(intent, text, facts)
+		p.publishEffortLive(enabled, level)
+		return enabled, level
+	})
+}
+
+// publishEffortSelection records the turn-level starting badge. The live
+// per-request path uses publishEffortLive because it runs on the request
+// goroutine.
+func (p *Program) publishEffortSelection(enabled bool, level string) {
+	if !enabled {
+		level = ""
 	}
-	p.PublishEffort("")
+	p.PublishEffort(level)
+}
+
+// publishEffortLive projects a per-request selection through the event channel.
+// It is safe from the request goroutine and never writes UI state directly.
+func (p *Program) publishEffortLive(enabled bool, level string) {
+	if !enabled {
+		level = ""
+	}
+	p.publish(ModelEffortUpdated{Effort: level})
 }

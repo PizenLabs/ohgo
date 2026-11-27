@@ -158,12 +158,19 @@ func runOnce(cmd *cobra.Command, text string) error {
 	// it, because reasoning is independent of role.
 	reasoningHost := &harness{
 		loop: loop, settings: &opts.settings, model: opts.model,
-		autoReasoning: opts.autoReasoning, workspace: opts.authority().Label(),
+		reasoningFlag: opts.reasoningFlag, effortFlag: opts.effortFlag,
+		workspace: opts.authority().Label(),
 	}
+	reasoningIntent := workspace.BuildIntentContract(text)
+	reasoningRequirement := workspace.AnalyzeRequest(text)
 	reasoningRequest := append(append([]agent.Message(nil), history...), agent.UserMessage{Text: text})
 	reasoningEnabled, reasoningLevel := reasoningHost.reasoningForWork(
-		workspace.BuildIntentContract(text), workspace.AnalyzeRequest(text), nil, reasoningRequest)
+		reasoningIntent, reasoningRequirement, nil, loop.RequestFacts(reasoningRequest))
 	loop.SetReasoning(reasoningEnabled, reasoningLevel)
+	loop.SetReasoningPolicy(func(facts agent.ReasoningFacts) (bool, string) {
+		return reasoningHost.reasoningForWork(reasoningIntent, reasoningRequirement, nil, facts)
+	})
+	defer loop.SetReasoningPolicy(nil)
 	// The one-shot path uses the same tool-boundary policy as the interactive
 	// hosts: a staged task can move between BUILD and FUZZ when the model's own
 	// action requires the other capability. The target role's model is
@@ -184,10 +191,12 @@ func runOnce(cmd *cobra.Command, text string) error {
 			opts.model = model
 			opts.maxTokens = resolveMaxTokens(opts.settings, model)
 			loop.SetModel(model)
+			reasoningHost.model = model
 		}
 		// The authority moved even when the target role's model could not be
 		// resolved. Record the authority actually in force with the model the
 		// loop still holds, so the durable snapshot never claims the old role.
+		reasoningHost.workspace = decision.Target.Label()
 		recordRunAuthority(store, sess, decision.Target, opts.model)
 		_, _ = fmt.Fprintf(out, "workspace %s -> %s: %s\n",
 			from.Label(), decision.Target.Label(), decision.Reason)
@@ -415,7 +424,8 @@ func runSession(cmd *cobra.Command, args []string) error {
 		held.mcp = opts.mcpRuntime
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
-		held.autoReasoning = opts.autoReasoning
+		held.reasoningFlag = opts.reasoningFlag
+		held.effortFlag = opts.effortFlag
 		held.gate = opts.gate
 		held.security = opts.security
 		held.projectID = opts.projectID
@@ -432,31 +442,13 @@ func runSession(cmd *cobra.Command, args []string) error {
 		// the global default) through the same reasoning mapping the loop
 		// uses, so the badge and the request agree. Disabled thinking
 		// reports "" and the badge hides.
-		program.SetEffortProvider(func() string {
-			role := held.sessionRole()
-			if role == "" {
-				role = strings.ToLower(opts.authority().String())
-			}
-			if held.autoReasoning {
-				if explicit := held.roleEffortFor(role); explicit != "" {
-					enabled, level := held.reasoningFor(explicit)
-					if !enabled {
-						return ""
-					}
-					return level
-				}
-				return held.lastReasoningEffort
-			}
-			enabled, level := held.reasoningFor(held.roleEffortFor(role))
-			if !enabled {
-				return ""
-			}
-			return level
-		})
-		// Reasoning is selected from the work at each turn boundary, after the
-		// task contract (and any approved objective) is resolved. The host owns
-		// the policy; the program only applies the setting to the loop.
-		program.SetReasoningSelector(func(intent workspace.IntentContract, text string, request []agent.Message) (bool, string) {
+		program.SetEffortProvider(held.currentEffort)
+		program.PublishEffort(held.currentEffort())
+		// Reasoning is selected from the work after the task contract (and any
+		// approved objective) is resolved. The host owns the policy; the
+		// program installs it on the loop for every provider request in the
+		// run, so budget, context, and newly recorded evidence stay current.
+		program.SetReasoningSelector(func(intent workspace.IntentContract, text string, facts agent.ReasoningFacts) (bool, string) {
 			var current *task.Task
 			if controller != nil {
 				if open, ok := controller.Current(); ok {
@@ -464,7 +456,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 					current = &opened
 				}
 			}
-			return held.reasoningForWork(intent, workspace.AnalyzeRequest(text), current, request)
+			return held.reasoningForWork(intent, workspace.AnalyzeRequest(text), current, facts)
 		})
 
 		// A resumed session replays its transcript, so the UI continues rather
@@ -526,6 +518,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 			Assign: func(update tui.RoleAssignment) (tui.RoleAssignment, []tui.RoleAssignment, error) {
 				return held.AssignRole(update)
 			},
+			SetEffort: func(role, effort string) (tui.RoleAssignment, []tui.RoleAssignment, error) {
+				return held.SetEffort(role, effort)
+			},
+			Effort:          held.EffortAssignment,
 			EffectiveWindow: func() int { return held.model.ContextWindow },
 			SaveKey: func(provider, key string) error {
 				return held.SavePlaneKey(provider, key)
@@ -689,7 +685,8 @@ func runSession(cmd *cobra.Command, args []string) error {
 	defer func() { _ = plain.rec.Close() }()
 	plain.usage.SetCost(opts.model.Cost)
 	plain.workspace = opts.authority().Label()
-	plain.autoReasoning = opts.autoReasoning
+	plain.reasoningFlag = opts.reasoningFlag
+	plain.effortFlag = opts.effortFlag
 	plain.gate = opts.gate
 	plain.security = opts.security
 	plain.projectID = opts.projectID
