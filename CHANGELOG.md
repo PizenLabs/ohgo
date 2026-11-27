@@ -320,6 +320,14 @@ immutable.
 
 ### Fixed
 
+- An informational task can no longer be completed by a withheld answer.
+  Completion, the durable task's `Answered` evidence, and a delegated child's
+  result read the turn's `AnswerDisposition` through `Turn.AnswerText`; a
+  narrated, superseded, or rejected candidate is not an answer even though its
+  raw prose remains on the turn for audit and repair. Before this rule a run
+  could be reported `COMPLETED` / `PROVEN` while the transcript showed only a
+  withdrawn draft, and a refused answer's bounded claim issues were lost at the
+  completion boundary.
 - A slash-separated capability label in a comma-separated list (`test-impact
   selection/publishing`) is no longer treated as a runtime predicate about an
   earlier component in the list. It still needs a source observation carrying

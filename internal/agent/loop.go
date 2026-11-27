@@ -137,6 +137,28 @@ type Turn struct {
 	Draft *AnswerDraft
 }
 
+// AnswerText returns the assistant prose this turn contributes to the run's
+// answer.
+//
+// The AnswerDisposition is the publication authority, so a consumer that needs
+// "the answer" must read it here rather than Assistant.Text(). A narrated,
+// superseded, or rejected candidate keeps its raw prose for audit and repair,
+// but it is not an answer even when the run stops before another candidate is
+// committed.
+//
+// AnswerUnclassified is the zero value: a host that constructs turns directly
+// (tests, subagent fixtures, a resumed legacy checkpoint) did not run the
+// publication gate, so there is no decision to override. A loop-produced turn
+// that can end a run is always classified before the run returns.
+func (t Turn) AnswerText() string {
+	switch t.Answer {
+	case AnswerUnclassified, AnswerCommitted:
+		return t.Assistant.Text()
+	default:
+		return ""
+	}
+}
+
 // ToolOutcome records what happened to one tool call.
 type ToolOutcome struct {
 	// CallID is the id of the tool call this outcome answers.

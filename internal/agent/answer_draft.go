@@ -143,6 +143,23 @@ func (d AnswerDraft) ClaimTexts() []string {
 	return out
 }
 
+// ReviewIssues returns every finding the review attached to this draft.
+//
+// It is the draft-level projection of the same findings the correction
+// directive names: claim findings first, then findings the audit could not
+// locate to one claim, then requested-deliverable gaps. A completion verdict
+// that refuses an unpublished candidate uses this list so the durable task
+// keeps the exact claims instead of only the review's prose boundary.
+func (d AnswerDraft) ReviewIssues() []contract.GroundingIssue {
+	out := make([]contract.GroundingIssue, 0, len(d.RepairIssues)+len(d.FacetIssues))
+	for _, claim := range d.Claims {
+		out = append(out, claim.Issues...)
+	}
+	out = append(out, d.RepairIssues...)
+	out = append(out, d.FacetIssues...)
+	return out
+}
+
 // answerUnit is a sentence-sized answer segment with the whitespace that
 // followed it. Keeping the separator makes removal exact: the surviving answer
 // is the original bytes minus the rejected segment, not a re-rendered prose

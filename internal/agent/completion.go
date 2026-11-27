@@ -397,6 +397,41 @@ func needsReviewIssues(issues []contract.GroundingIssue, format string, args ...
 	return Completion{State: CompletionNeedsReview, Reason: fmt.Sprintf(format, args...), Issues: issues}
 }
 
+// unpublishedAnswerReason states why a non-empty turn is not an answer.
+//
+// It names the publication decision, not the model's prose: a rejected
+// candidate may look complete, but the review refused it and no host could
+// present it. The rejected review is the control plane's own boundary and is
+// safe to show; a superseded candidate stays internal and is described only as
+// an uncommitted correction.
+func unpublishedAnswerReason(turn Turn) string {
+	switch turn.Answer {
+	case AnswerRejected:
+		if review := strings.TrimSpace(turn.AnswerReview); review != "" {
+			return "the answer was not published: " + review
+		}
+		return "the answer was not published: the publication review refused it"
+	case AnswerSuperseded:
+		return "the final candidate was replaced by an internal correction and was not committed"
+	case AnswerNarration:
+		return "the run ended with narration, not a committed answer"
+	default:
+		return "the run produced no committed answer"
+	}
+}
+
+// rejectedDraftIssues returns the claim findings of a terminal refusal.
+//
+// Completion still needs the exact claims for NEEDS_REVIEW; the review already
+// attached them to the draft, so re-auditing refused prose or reporting only a
+// prose reason would lose the machine-readable boundary the task records.
+func rejectedDraftIssues(turn Turn) []contract.GroundingIssue {
+	if turn.Answer != AnswerRejected || turn.Draft == nil {
+		return nil
+	}
+	return turn.Draft.ReviewIssues()
+}
+
 // pendingFailureVetoes reports whether an unrecovered tool failure still
 // invalidates the answer.
 //
@@ -560,6 +595,11 @@ func pendingFailureNames(failures map[string]int, classes map[string]string) str
 // and the evidence scan is shared. The additions are deterministic target
 // checks, verification-scope matching, and a bounded semantic assessment that
 // can only downgrade the result. Semantic uncertainty is always NEEDS_REVIEW.
+//
+// The answer input is the final turn's published text (Turn.AnswerText), not
+// every word the model emitted: a candidate the publication gate withheld may
+// still exist in the turn for audit and repair, but it cannot satisfy the
+// answer condition.
 func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if len(input.Turns) == 0 {
 		return needsReview("the run produced no completed turn")
@@ -576,6 +616,11 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if last.Assistant.ProtocolResidue {
 		return needsReview("the model emitted serialized tool syntax that could not be normalized")
 	}
+	// The answer is the turn's published prose, not every word the model
+	// emitted. A candidate the publication gate withheld keeps its raw text for
+	// audit and repair; treating that text as the answer here certified a
+	// completion for prose no host was allowed to show.
+	answer := last.AnswerText()
 
 	intent := input.Contract
 	if intent.Kind == "" {
@@ -617,12 +662,20 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		// known when wait observes it.
 		return needsReview("the request asked for execution but no successful execution was observed")
 	}
-	if effective.Kind == contract.ObjectiveInformational && strings.TrimSpace(last.Assistant.Text()) == "" {
-		// An empty answer is not an answer. The rule is deliberately only
-		// "visible text exists": judging relevance would require an LLM judge.
-		return needsReview("the request asked for an answer but the final assistant message was empty")
+	if effective.Kind == contract.ObjectiveInformational && strings.TrimSpace(answer) == "" {
+		// A genuinely empty message keeps its original empty-answer reason. A
+		// message that exists but was withheld is a publication decision, and
+		// the completion verdict must agree with what the host could show.
+		if strings.TrimSpace(last.Assistant.Text()) == "" {
+			return needsReview("the request asked for an answer but the final assistant message was empty")
+		}
+		reason := unpublishedAnswerReason(last)
+		if issues := rejectedDraftIssues(last); len(issues) > 0 {
+			return needsReviewIssues(issues, "%s", reason)
+		}
+		return needsReview("%s", reason)
 	}
-	if effective.Kind == contract.ObjectiveInformational && answerIsDeferredPlan(last.Assistant.Text()) {
+	if effective.Kind == contract.ObjectiveInformational && answerIsDeferredPlan(answer) {
 		// A plan is not a result. The model says "let me check…" because it
 		// intends to keep acting; on a closed surface that action is refused,
 		// so accepting the sentence would report a completion the user never
@@ -776,14 +829,14 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	// deterministic answer check can veto completion even when every
 	// structural target and verification passed: an unsupported global
 	// negative conclusion is not a completed objective.
-	grounding := AssessGrounding(effective, input.Turns, last.Assistant.Text())
+	grounding := AssessGrounding(effective, input.Turns, answer)
 	if !grounding.Pass() {
 		return needsReviewIssues(grounding.Issues, "intent grounding: %s", grounding.Reason())
 	}
-	if claims := AssessVerificationClaims(effective, input.Turns, last.Assistant.Text()); !claims.Pass() {
+	if claims := AssessVerificationClaims(effective, input.Turns, answer); !claims.Pass() {
 		return needsReviewIssues(claims.Issues, "verification claim: %s", claims.Reason())
 	}
-	provenance := AssessAnswerProvenance(effective, last.Assistant.Text(), input.Provenance)
+	provenance := AssessAnswerProvenance(effective, answer, input.Provenance)
 	if !provenance.Pass() {
 		return needsReviewIssues(provenance.Issues, "answer provenance: %s", provenance.Reason())
 	}
@@ -798,7 +851,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		// When the run's own glob or listing observed more files than the
 		// answer claims, the answer contradicts its evidence; completion must
 		// not claim a result the user can see is false.
-		if issue := inventoryClaimIssue(root, last.Assistant.Text(), input.Turns); issue != "" {
+		if issue := inventoryClaimIssue(root, answer, input.Turns); issue != "" {
 			return needsReview("%s", issue)
 		}
 	}

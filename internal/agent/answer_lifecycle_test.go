@@ -79,6 +79,19 @@ func TestUnapprovedAnswerIsNotCommitted(t *testing.T) {
 	if audit.Drafts != 1 || audit.Rejected != 1 {
 		t.Fatalf("draft audit = %+v, want one candidate, one rejection", audit)
 	}
+	// The completion authority must agree with the transcript: a refused
+	// candidate is not an answer, even though the turn retains its prose for
+	// the review. Before this rule the same run was reported COMPLETED.
+	verdict, reason, _ := agent.ClassifyRun(nil, agent.CompletionInput{
+		Turns:    turns,
+		Contract: contract.IntentContract{Objective: "analyze this project", Kind: contract.ObjectiveInformational},
+	}, false)
+	if verdict == agent.RunCompleted || verdict == agent.RunCompletedLimited {
+		t.Fatalf("a refused answer was reported complete: %s (%s)", verdict, reason)
+	}
+	if !strings.Contains(reason, "not published") {
+		t.Fatalf("completion reason = %q, want the publication boundary", reason)
+	}
 }
 
 // The corrected answer is reviewed again. A model that repeats the rejected

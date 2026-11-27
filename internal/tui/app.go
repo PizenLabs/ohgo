@@ -6845,7 +6845,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	case taskActionComplete, taskActionCompleteLimited:
 		answered := false
 		if len(turns) > 0 {
-			answered = strings.TrimSpace(turns[len(turns)-1].Assistant.Text()) != ""
+			// Answer evidence follows the publication decision, not raw model
+			// prose. A rejected or superseded candidate is not an answer the
+			// durable task may record, even if the turn still carries its text
+			// for audit.
+			answered = strings.TrimSpace(turns[len(turns)-1].AnswerText()) != ""
 		}
 		evidence := CompletionEvidence{Complete: true, Answered: answered}
 		if action == taskActionCompleteLimited {

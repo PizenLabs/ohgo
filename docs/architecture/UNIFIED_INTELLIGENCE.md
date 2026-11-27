@@ -546,6 +546,17 @@ is withdrawn, not promoted. A cancelled stream keeps its
 partial text as one display-only draft labelled with the interruption, never as
 an answer.
 
+Completion reads the same publication decision. `agent.EvaluateTaskCompletion`,
+the durable task's `Answered` evidence, and a delegated child's result use
+`Turn.AnswerText`: prose contributes to the answer only when the turn is
+committed (or is the unclassified zero value a host supplied without running
+the gate). For an informational objective, a run that ends on a narrated,
+superseded, or rejected candidate is `NEEDS_REVIEW` even though the raw prose
+remains on the turn for audit and repair. The two authorities therefore cannot disagree about whether an answer
+exists. A terminal refusal carries its draft's bounded claim issues into the
+review, so the durable task records what was refused rather than only a prose
+reason.
+
 The committed disposition is also the Thought boundary. Applying it reconciles
 every open reasoning trace before the answer becomes visible, so a frame can
 never show `Thought: ACTIVE` beside `Answer: FINAL`. Every run terminal path
