@@ -64,6 +64,7 @@ type statusKind string
 
 const (
 	statusKindDuration  statusKind = "duration"
+	statusKindReview    statusKind = "review"
 	statusKindInput     statusKind = "input"
 	statusKindOutput    statusKind = "output"
 	statusKindContext   statusKind = "context"
@@ -173,6 +174,12 @@ func projectStatusBarFor(state State, surface statusSurface) statusBarProjection
 
 	if label := turnElapsedLabel(state); label != "" {
 		add(newStatusItem(statusKindDuration, label, statusPriorityRuntime, statusToneNeutral))
+	}
+	if hasProvisionalAssistant(state) {
+		// The candidate's prose is buffered until the publication decision.
+		// The footer states what the runtime is doing instead of painting text
+		// that may be withdrawn.
+		add(newStatusItem(statusKindReview, "verifying evidence…", statusPriorityRuntime, statusToneNeutral))
 	}
 	if state.SessionIn > 0 {
 		add(newStatusItem(statusKindInput, "↑"+formatTokens(state.SessionIn), statusPriorityRuntime, statusToneNeutral))
