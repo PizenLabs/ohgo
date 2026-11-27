@@ -34,3 +34,28 @@ func TestDoctorReportsStructuralAdapters(t *testing.T) {
 		}
 	}
 }
+
+// Ripgrep is optional. Doctor must report which scanner is active and must not
+// mark a supported native fallback as a failed check.
+func TestDoctorReportsGrepBackend(t *testing.T) {
+	found := searchReport(fakeLookPath(map[string]string{"rg": "/usr/local/bin/rg"}))
+	if found.Name != "grep" || !found.OK {
+		t.Fatalf("found report = %+v", found)
+	}
+	if !strings.Contains(found.Detail, "/usr/local/bin/rg") {
+		t.Errorf("detail = %q, want the resolved path", found.Detail)
+	}
+	if !strings.Contains(strings.ToLower(found.Detail), "fallback") {
+		t.Errorf("detail = %q, want the fallback named", found.Detail)
+	}
+
+	missing := searchReport(fakeLookPath(nil))
+	if missing.Name != "grep" || !missing.OK {
+		t.Fatalf("missing report = %+v, want an optional check that stays OK", missing)
+	}
+	for _, want := range []string{"native scanner", "install ripgrep", "CGO"} {
+		if !strings.Contains(missing.Detail, want) {
+			t.Errorf("missing detail = %q, want %q", missing.Detail, want)
+		}
+	}
+}

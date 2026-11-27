@@ -61,3 +61,21 @@ func TestExcludedIncludesAncestorDirectories(t *testing.T) {
 		t.Error("an unrelated path was excluded")
 	}
 }
+
+// MatchExcluded names the ancestor rule that a walk would have pruned. A bare
+// boolean cannot tell a targeted-path skip from an empty result.
+func TestMatchExcludedNamesTheAncestorRule(t *testing.T) {
+	matcher := NewRules()
+	matcher.Append("", "assets/\n")
+
+	excluded, reason := matcher.MatchExcluded("assets/img/logo.png", false)
+	if !excluded {
+		t.Fatal("a file under an ignored directory was not excluded")
+	}
+	if reason != ".gitignore:1: assets/" {
+		t.Errorf("reason = %q, want the ignored ancestor's rule", reason)
+	}
+	if excluded, reason := matcher.MatchExcluded("src/assets.go", false); excluded || reason != "" {
+		t.Errorf("MatchExcluded(src/assets.go) = %v %q, want included with no reason", excluded, reason)
+	}
+}

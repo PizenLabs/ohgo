@@ -506,3 +506,36 @@ func TestStructureToolNamesTheSliceBehindTruncation(t *testing.T) {
 		t.Errorf("bounds = %+v, want only the cut slice files 10 of 14", bounds)
 	}
 }
+
+// A targeted structural query inside an ignored root returns no rows; the
+// answer must name the excluded root and rule instead of leaving the caller to
+// retry the same selector or conclude the source is absent.
+func TestStructureToolNamesTargetedExcludedPath(t *testing.T) {
+	root := structureFixture(t, map[string]string{
+		".gitignore":       "generated/\n",
+		"generated/gen.go": "package generated\n\nfunc Gen() {}\n",
+		"main.go":          "package main\n\nfunc main() {}\n",
+	})
+	tool := NewStructureTool(NewStructuralSource(root))
+	result := tool.Execute(testContext(), map[string]any{"view": "files", "path": "generated"})
+	if result.IsError {
+		t.Fatalf("an excluded target is a scoped result, not an execution failure: %s", result.Text)
+	}
+	for _, want := range []string{
+		"target_excluded: generated",
+		".gitignore:1: generated/",
+		"Read the file directly",
+	} {
+		if !strings.Contains(result.Text, want) {
+			t.Errorf("target exclusion notice missing %q:\n%s", want, result.Text)
+		}
+	}
+	details := structureDetails(t, result)
+	target, _ := details["target_excluded"].(map[string]any)
+	if target["path"] != "generated" || target["excluded_root"] != "generated" {
+		t.Fatalf("target_excluded = %#v, want the generated root", details["target_excluded"])
+	}
+	if rule, _ := target["rule"].(string); !strings.Contains(rule, ".gitignore:1: generated/") {
+		t.Errorf("target rule = %q, want the decisive .gitignore line", rule)
+	}
+}

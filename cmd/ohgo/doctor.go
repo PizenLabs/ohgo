@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -26,10 +27,12 @@ func doctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "Check the local setup",
 		Long: `Check the working directory, configuration, model catalog, credentials,
-session store, and tool set, and report what would stop a run.
+session store, tool set, and local search backend, and report what would stop a run.
 
 A missing API key for the default provider is the common failure: the fix is
-printed with the check, e.g. "export ANTHROPIC_API_KEY=...".`,
+printed with the check, e.g. "export ANTHROPIC_API_KEY=...". Ripgrep is
+optional: the grep check reports whether it is on PATH, and the native scanner
+remains available without it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctor(cmd)
 		},
@@ -119,6 +122,10 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 	// fact. Without it a portable and a multi-language install diagnose
 	// identically, and a user cannot tell why TypeScript symbols are absent.
 	reports = append(reports, structuralReport())
+	// Search is an optional acceleration, not a hard dependency. Report the
+	// backend so a slow search has a named cause and a missing rg is not
+	// mistaken for a broken tool set.
+	reports = append(reports, searchReport(nil))
 	reports = append(reports, semanticReport(cwd, nil), runtimeReport())
 
 	if warnings := registerEndpoints(registry, settings); len(warnings) > 0 {
@@ -239,6 +246,28 @@ func runtimeReport() doctorReport {
 	return doctorReport{
 		Name: "runtime", OK: true,
 		Detail: "DAP not composed; runtime evidence requires an authorized debug session (unavailable, not a structural failure)",
+	}
+}
+
+// searchReport names the content-search backend. Ripgrep is an optional
+// accelerator: the native scanner always works, so absence is OK rather than
+// a failed check. The detail names the fix because a user comparing machine
+// performance should not have to infer why one installation searches faster.
+func searchReport(lookPath lookPathFunc) doctorReport {
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	path, err := lookPath("rg")
+	if err != nil || strings.TrimSpace(path) == "" {
+		return doctorReport{
+			Name: "grep", OK: true,
+			Detail: "native scanner (ripgrep not found; install ripgrep for faster content search; CGO is not required)",
+		}
+	}
+	return doctorReport{
+		Name: "grep", OK: true,
+		Detail: fmt.Sprintf(
+			"ripgrep on PATH (%s); content search uses it with the native scanner as fallback", path),
 	}
 }
 

@@ -239,6 +239,16 @@ immutable.
 
 ### Changed
 
+- Lexical discovery and structural overview now share one repository-scope
+  evaluator, including the nested-repository boundary. `grep`, `glob`, and a
+  recursive `ls` report an exact pruned-path count plus a bounded sample with
+  the decisive `.gitignore` rule and the `gitignore: false` override; a
+  targeted ignored path is skipped with that explanation instead of returning
+  a silent empty result. `grep` uses
+  `ripgrep` as an optional fast path over the already-filtered candidate
+  list: exit code 1 is a no-match observation, exit code 2 surfaces stderr,
+  binary files are skipped, the existing output bounds still apply, and an
+  absent or unstartable binary falls back to the native scanner.
 - AUTO effort is now evaluated per provider request instead of once per user
   turn. The loop passes live remaining turns, model calls, context window, and
   measured context to the policy, so the last request in a run can lower

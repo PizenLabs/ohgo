@@ -88,7 +88,9 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"the indexed inventory and reports missing or unverifiable targets; "+
 			"it never treats a README claim as proof of implementation. "+
 			"Semantic activation is outside this tool: it uses AST facts, and "+
-			"language-server evidence is requested through investigate.",
+			"language-server evidence is requested through investigate. For "+
+			"exact or regex source text use grep; for path discovery use glob. "+
+			"Do not shell out to grep, rg, or find.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -182,8 +184,80 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		details = map[string]any{}
 	}
 	details["provider"] = "native"
+	if !result.IsError {
+		if pathArg, err := strArg(args, "path", ""); err == nil {
+			t.annotateExcludedTarget(&result, details, pathArg)
+		}
+	}
 	result.Details = details
 	return result
+}
+
+// annotateExcludedTarget names an explicitly requested path that the
+// repository scope excluded. The scope view already lists every excluded root,
+// but a files/impact query can return zero rows without repeating the reason;
+// this keeps the targeted answer honest and tells the caller which coordinate
+// to read directly instead of retrying the same selector.
+func (t *StructureTool) annotateExcludedTarget(result *agent.Result, details map[string]any, pathArg string) {
+	pathArg = strings.TrimSpace(pathArg)
+	if pathArg == "" {
+		return
+	}
+	pathArg = filepath.Clean(pathArg)
+	if filepath.IsAbs(pathArg) {
+		if relPath, err := filepath.Rel(t.Root, pathArg); err == nil {
+			pathArg = relPath
+		}
+	}
+	pathArg = filepath.ToSlash(pathArg)
+	if pathArg == "." || pathArg == "" {
+		return
+	}
+
+	if roots, ok := details["excluded_roots"].([]map[string]any); ok {
+		for _, root := range roots {
+			rootPath, _ := root["path"].(string)
+			if rootPath == "" {
+				continue
+			}
+			if pathArg != rootPath && !strings.HasPrefix(pathArg, rootPath+"/") {
+				continue
+			}
+			rule, _ := root["rule"].(string)
+			result.Text += excludedTargetNotice(pathArg, rootPath, rule)
+			result.Useless = false
+			details["target_excluded"] = map[string]any{
+				"path": pathArg, "excluded_root": rootPath, "rule": rule,
+			}
+			return
+		}
+	}
+	if files, ok := details["excluded_files"].([]map[string]any); ok {
+		for _, file := range files {
+			filePath, _ := file["path"].(string)
+			if filePath != pathArg {
+				continue
+			}
+			rule, _ := file["rule"].(string)
+			result.Text += excludedTargetNotice(pathArg, filePath, rule)
+			result.Useless = false
+			details["target_excluded"] = map[string]any{
+				"path": pathArg, "excluded_file": filePath, "rule": rule,
+			}
+			return
+		}
+	}
+}
+
+// excludedTargetNotice is the one-line correction shared by root and file
+// exclusions.
+func excludedTargetNotice(path, excluded, rule string) string {
+	notice := fmt.Sprintf(
+		"\n\ntarget_excluded: %s is excluded from the repository scope (%s)", path, excluded)
+	if rule != "" {
+		notice += " by " + rule
+	}
+	return notice + ". Read the file directly or target a path outside the rule."
 }
 
 func (t *StructureTool) execute(ctx agent.Context, args map[string]any) agent.Result {
