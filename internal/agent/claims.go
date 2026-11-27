@@ -497,6 +497,27 @@ func behaviorClaimIssue(sentence string, turns []Turn) *claimIssue {
 	// sentence may describe the container mapping or another clause, so they
 	// must not be attributed to the observed listener.
 	ports := claimedPorts(sentence[matchIndex[1]:])
+	if behaviorLabelAt(sentence, matchIndex) {
+		// A slash-separated token is a capability label, not a predicate:
+		// "test-impact selection/publishing" names one CLI surface. It still
+		// needs a source observation carrying the capability, but the label
+		// has no component subject to bind to.
+		if behaviorClaimObserved("", stem, ports, turns) {
+			return nil
+		}
+		detail := "the answer lists %q as a capability, but no source observation carries it; verify it or mark it unverified"
+		if len(ports) > 0 {
+			detail = "the answer lists %q at port %s as a capability, but no source observation names that port; verify it or mark it unverified"
+			return &claimIssue{
+				Code:   "unsupported_implementation_claim",
+				Detail: fmt.Sprintf(detail, boundedClaim(match), strings.Join(ports, ", ")),
+			}
+		}
+		return &claimIssue{
+			Code:   "unsupported_implementation_claim",
+			Detail: fmt.Sprintf(detail, boundedClaim(match)),
+		}
+	}
 	// The component before the behavior verb is the subject. A claim about
 	// cart is not supported by reading product, even when both contain the
 	// same behavior word.
@@ -516,6 +537,19 @@ func behaviorClaimIssue(sentence string, turns []Turn) *claimIssue {
 		Code:   "unsupported_implementation_claim",
 		Detail: fmt.Sprintf(detail, boundedClaim(match)),
 	}
+}
+
+// behaviorLabelAt reports a behavior word that is part of a slash-separated
+// capability label such as "selection/publishing" or "publish/subscribe". The
+// slash names a command surface; it does not make the word a runtime predicate.
+func behaviorLabelAt(sentence string, match []int) bool {
+	if len(match) < 2 {
+		return false
+	}
+	if match[0] > 0 && sentence[match[0]-1] == '/' {
+		return true
+	}
+	return match[1] < len(sentence) && sentence[match[1]] == '/'
 }
 
 // claimedPorts returns the concrete port literals a behavior sentence names.
