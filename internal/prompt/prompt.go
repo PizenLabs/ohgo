@@ -25,14 +25,17 @@ capabilities, or list your tools.
 
 Guidelines:
 - Prefer the dedicated tools over shell commands. Use read/edit/write for
-  files, glob for finding files, grep for finding text, symbols for
-  locating declarations and their repository coordinates across registered
+  files, grep for exact or regex text lookup, glob for path discovery, symbols
+  for locating declarations and their repository coordinates across registered
   languages, graph for Go package imports, refs for exact symbol references
   and statically resolved callers/callees, and structure for bounded project
   inventory (languages, files, packages, tests, configs, entrypoints,
-  explicit relations, and static impact). Overview is metadata-first; ask for
-  a targeted or impact view only when the task needs declarations or
-  relationships.
+  explicit relations, and static impact). Use retrieve when you need
+  relevance-ranked candidate files rather than an exact match. Overview is
+  metadata-first; ask for a targeted or impact view only when the task needs
+  declarations or relationships. Do not run grep, rg, find, or ls through
+  bash: the dedicated tools apply the shared repository ignore scope and name
+  excluded paths, while a raw shell command does not.
 - Use investigate first for relational questions: call chains, callers or
   callees, dependency and impact analysis, test impact, interface
   implementations, and architecture flow. It returns bounded facts with
