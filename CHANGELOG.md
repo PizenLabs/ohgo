@@ -12,8 +12,12 @@ immutable.
   answer will make, plus the scope limitations it will state. The plan runs the
   same deterministic claim audit as publication. A refused plan names the
   missing observation and reopens the evidence surface without the plan tool;
-  the model must record an observation before it can plan again. An accepted
-  plan unlocks the answer request. The gate is bounded
+  the model must record an observation before it can plan again, and the
+  re-audit is not suppressed as a stale capability failure. An accepted
+  plan unlocks the answer request. The accepted claims and limitations travel
+  into that request as the composition ledger, and the final prose is checked
+  against the ledger again, so a documented claim cannot silently become an
+  unattributed world claim after the plan passes. The gate is bounded
   (`agent.MaxAnswerPlanAttempts`) and cannot publish or complete anything.
 - The TUI buffers streamed candidate prose instead of painting it into the main
   transcript. While the publication decision is pending the telemetry line says
@@ -26,8 +30,11 @@ immutable.
 - Manifest-backed stack adoption is grounded by the declaration itself. "The
   backend uses Redis" now needs a manifest or import, while "uses Redis for
   caching" still requires an observed source operation. An absence the answer
-  itself reports as unproven is a limitation, not a repository-wide absence,
-  and PostgreSQL/Postgres spelling variants share one provenance term.
+  itself reports as unproven is a limitation, not a repository-wide absence;
+  the same holds for an absence explicitly attributed to documentation ("the
+  README states there is no hosted service"), while the unattributed world
+  claim remains subject to the inventory gate. PostgreSQL/Postgres spelling
+  variants share one provenance term.
 - Honest scope limits that name this run's inspected scope or evidence window
   are not reported as `unverified_negative_result`. A limitation such as "the
   internal source was not read in this pass" is a truthful boundary, not a

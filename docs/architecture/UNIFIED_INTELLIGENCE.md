@@ -558,11 +558,17 @@ declares the claims the final answer will make and, separately, the scope
 limitations it will state. The runtime runs the same deterministic claim audit
 used before publication. A refused plan names the missing observation and
 reopens the evidence surface without the plan tool; the tool returns only after
-the model records an observation, so it cannot repeat the same proposal. An
-accepted plan unlocks the answer request. The gate is bounded and advisory:
-after its attempts are spent, the ordinary publication review still decides.
-The plan is a control observation, never evidence, so its own claims cannot
-corroborate the answer.
+the model records an observation. A refused plan is control feedback, not a
+failed capability: after a new observation the same plan signature is
+re-audited against the updated evidence instead of being suppressed by the
+failure ledger. An accepted plan unlocks the answer request. The accepted
+claims and limitations are carried into every later request as the composition
+ledger: the final answer must use those claims at the strength and attribution
+the audit accepted. The final prose is checked against the ledger again, so a documented
+claim cannot be strengthened into an unattributed world claim after the plan
+passes. The gate is bounded: after its attempts are spent, the ordinary
+publication review still decides. The plan is a control observation, never
+evidence, so its own claims cannot corroborate the answer.
 
 The model's live context is not the host transcript. A superseded candidate
 remains in that context so the model can repair its supported claims, but it
