@@ -360,7 +360,11 @@ prove that cart-service uses a different port. A runtime observation without a
 port can support “connects” only when the observed process output carries that
 behavior. A dependency, topology, or documentation declaration is not enough.
 A transitive “is running the job” claim is behavior evidence, not the live
-process predicate.
+process predicate. A slash-separated token (“test-impact selection/publishing”,
+“publish/subscribe”) is a capability label, not a predicate. It still needs a
+source observation that carries the capability, but there is no component
+subject to bind; an earlier item in the same comma-separated list is not the
+label's subject.
 
 A runtime-state claim (“the service is running”, “is live”, “is healthy”) is
 different again: configuration declares that a service exists and source

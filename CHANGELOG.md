@@ -288,6 +288,11 @@ immutable.
 
 ### Fixed
 
+- A slash-separated capability label in a comma-separated list (`test-impact
+  selection/publishing`) is no longer treated as a runtime predicate about an
+  earlier component in the list. It still needs a source observation carrying
+  the capability, so an unverified label remains a review; a supported one no
+  longer withdraws an otherwise grounded survey.
 - `/effort auto` now actually re-enables demand. The previous runtime tracked a
   session-global "auto allowed" flag computed at launch; clearing a role level
   could therefore fall back to the global policy and disable thinking entirely,
