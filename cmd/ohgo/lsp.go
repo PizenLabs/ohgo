@@ -2,7 +2,6 @@ package main
 
 import (
 	"io/fs"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -43,6 +42,32 @@ func languageServerSpecsWithWalk(root string, lookPath lookPathFunc, walk projec
 	return resolveProjectRoots(root, languageServerCommands(lookPath), walk)
 }
 
+// languageServerDefinition is one known language server. The catalog below is
+// the single owner of the name-to-language mapping: discovery, diagnostics,
+// and install recommendations read it rather than maintaining parallel tables.
+type languageServerDefinition struct {
+	name      string
+	languages []string
+	command   []string
+}
+
+// languageServerDefinitions is ordered by preference within a language. The
+// first entry serving a missing language is the one doctor recommends.
+var languageServerDefinitions = []languageServerDefinition{
+	{name: "gopls", languages: []string{"go"}, command: []string{"gopls", "serve"}},
+	{name: "typescript-language-server",
+		languages: []string{"typescript", "typescriptreact", "javascript", "javascriptreact"},
+		command:   []string{"typescript-language-server", "--stdio"}},
+	{name: "pyright", languages: []string{"python"}, command: []string{"pyright-langserver", "--stdio"}},
+	{name: "pylsp", languages: []string{"python"}, command: []string{"pylsp"}},
+	{name: "rust-analyzer", languages: []string{"rust"}, command: []string{"rust-analyzer"}},
+	{name: "jdtls", languages: []string{"java"}, command: []string{"jdtls"}},
+	{name: "clangd", languages: []string{"c", "cpp"}, command: []string{"clangd"}},
+	{name: "ruby-lsp", languages: []string{"ruby"}, command: []string{"ruby-lsp"}},
+	{name: "csharp-ls", languages: []string{"csharp"}, command: []string{"csharp-ls"}},
+	{name: "kotlin-language-server", languages: []string{"kotlin"}, command: []string{"kotlin-language-server"}},
+}
+
 // languageServerCommands discovers the language servers available on PATH.
 //
 // Discovery is explicit and local: no server is started here, and a missing
@@ -52,38 +77,25 @@ func languageServerSpecsWithWalk(root string, lookPath lookPathFunc, walk projec
 // server is added here, not in an investigation call site.
 func languageServerCommands(lookPath lookPathFunc) []semantic.Spec {
 	if lookPath == nil {
-		lookPath = exec.LookPath
+		lookPath = tools.LookPath
 	}
 	var specs []semantic.Spec
-	add := func(name string, languages []string, command ...string) {
-		if len(command) == 0 {
-			return
+	for _, definition := range languageServerDefinitions {
+		if len(definition.command) == 0 {
+			continue
 		}
-		path, err := lookPath(command[0])
+		path, err := lookPath(definition.command[0])
 		if err != nil {
-			return
+			continue
 		}
+		command := append([]string(nil), definition.command...)
 		command[0] = path
 		specs = append(specs, semantic.Spec{
-			Name: name, Languages: languages, Command: command,
+			Name:      definition.name,
+			Languages: append([]string(nil), definition.languages...),
+			Command:   command,
 		})
 	}
-
-	// Go keeps the module root: gopls loads the module whose go.mod is at or
-	// below the workspace, and a monorepo root with no go.mod makes it answer
-	// nothing for a symbol that exists.
-	add("gopls", []string{"go"}, "gopls", "serve")
-	add("typescript-language-server",
-		[]string{"typescript", "typescriptreact", "javascript", "javascriptreact"},
-		"typescript-language-server", "--stdio")
-	add("pyright", []string{"python"}, "pyright-langserver", "--stdio")
-	add("pylsp", []string{"python"}, "pylsp")
-	add("rust-analyzer", []string{"rust"}, "rust-analyzer")
-	add("jdtls", []string{"java"}, "jdtls")
-	add("clangd", []string{"c", "cpp"}, "clangd")
-	add("ruby-lsp", []string{"ruby"}, "ruby-lsp")
-	add("csharp-ls", []string{"csharp"}, "csharp-ls")
-	add("kotlin-language-server", []string{"kotlin"}, "kotlin-language-server")
 	return specs
 }
 

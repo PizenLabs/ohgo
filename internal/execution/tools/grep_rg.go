@@ -54,7 +54,7 @@ type ripgrepQuery struct {
 func (t *GrepTool) ripgrepPath() string {
 	look := t.LookPath
 	if look == nil {
-		look = exec.LookPath
+		look = LookPath
 	}
 	path, err := look("rg")
 	if err != nil || strings.TrimSpace(path) == "" {

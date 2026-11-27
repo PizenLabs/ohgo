@@ -6002,13 +6002,19 @@ func (ConnectKeyFailed) eventKind() string { return "connect_key_failed" }
 
 // DoctorLine is one diagnostic row for the /doctor overlay output.
 type DoctorLine struct {
+	// Section groups the row, e.g. "Model & Provider". Empty keeps the row
+	// with the previous section.
+	Section string
 	// Name is the check, e.g. "credentials".
 	Name string
-	// OK reports the check passed.
-	OK bool
+	// Status is OK, FALLBACK, OPTIONAL, WARN, or ERROR.
+	Status string
 	// Detail is the outcome or fix. It never carries secret bytes: sources
 	// are named ("environment (X)"), values never printed.
 	Detail string
+	// Recommendation marks an install suggestion rather than a check. The
+	// failure tally excludes them.
+	Recommendation bool
 }
 
 // ProbeFinished records a background connection probe. Probes run off the

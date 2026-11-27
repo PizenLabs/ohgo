@@ -144,13 +144,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				_, _ = fmt.Fprintln(out, h.UsageReport())
 				continue
 			case "doctor":
-				for _, line := range h.DoctorLines() {
-					status := "ok"
-					if !line.OK {
-						status = "FAIL"
-					}
-					_, _ = fmt.Fprintf(out, "%-10s %-12s %s\n", status, line.Name, line.Detail)
-				}
+				_, _ = fmt.Fprintln(out, tui.RenderDoctorLines(h.DoctorLines()))
 				continue
 			case "mcp":
 				_, _ = fmt.Fprintln(out, replMCP(h, command.Args))

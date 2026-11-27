@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
 func fakeLookPath(found map[string]string) lookPathFunc {
@@ -179,23 +181,34 @@ func TestSemanticProviderComposesDiscoveredServers(t *testing.T) {
 }
 
 func TestSemanticReportNamesInstalledServers(t *testing.T) {
-	report := semanticReport(t.TempDir(), fakeLookPath(map[string]string{
-		"gopls": "/bin/gopls", "pyright-langserver": "/bin/pyright",
-	}))
-	if report.Name != "semantic" || !report.OK {
+	host := doctorHost{
+		GOOS: "darwin",
+		Lookup: fakeLookPath(map[string]string{
+			"gopls": "/bin/gopls", "pyright-langserver": "/bin/pyright",
+		}),
+	}
+	languages := []ast.LanguageCoverage{
+		{Language: ast.LanguageGo, Files: 12, Supported: true},
+		{Language: ast.LanguagePython, Files: 3, Supported: true},
+	}
+	report := semanticReport(host, languages, nil)
+	if report.Name != "semantic" || report.Status != doctorStatusOK {
 		t.Fatalf("report = %+v", report)
 	}
 	for _, want := range []string{"gopls", "pyright", "lazily"} {
-		if !strings.Contains(report.Detail, want) {
-			t.Fatalf("detail = %q, want %q", report.Detail, want)
+		if !strings.Contains(report.Verbose, want) {
+			t.Fatalf("verbose detail = %q, want %q", report.Verbose, want)
 		}
 	}
-	missing := semanticReport(t.TempDir(), fakeLookPath(nil))
-	if !strings.Contains(missing.Detail, "AST evidence remains available") {
-		t.Fatalf("missing-server detail = %q, want the AST fallback", missing.Detail)
+	missing := semanticReport(doctorHost{GOOS: "linux", Lookup: fakeLookPath(nil)}, languages, nil)
+	if !strings.Contains(missing.Verbose, "AST evidence remains available") {
+		t.Fatalf("missing-server detail = %q, want the AST fallback", missing.Verbose)
 	}
 	runtime := runtimeReport()
-	if runtime.Name != "runtime" || !strings.Contains(runtime.Detail, "DAP") {
+	if runtime.Name != "runtime" || runtime.Status != doctorStatusOptional {
 		t.Fatalf("runtime report = %+v", runtime)
+	}
+	if !strings.Contains(runtime.Verbose, "DAP") {
+		t.Fatalf("runtime detail = %q, want the DAP boundary", runtime.Verbose)
 	}
 }

@@ -98,21 +98,7 @@ func (p *Program) runDoctor() {
 		p.state.Apply(Notice{Text: "diagnostics are unavailable"})
 		return
 	}
-	var sb strings.Builder
-	failed, total := 0, 0
-	for _, line := range p.doctor() {
-		total++
-		status := "ok"
-		if !line.OK {
-			status = "FAIL"
-			failed++
-		}
-		fmt.Fprintf(&sb, "%-4s %-12s %s\n", status, line.Name, line.Detail)
-	}
-	if failed > 0 {
-		fmt.Fprintf(&sb, "%d of %d checks failed", failed, total)
-	}
-	p.state.Apply(Notice{Text: strings.TrimRight(sb.String(), "\n")})
+	p.state.Apply(Notice{Text: RenderDoctorLines(p.doctor())})
 }
 
 // retryLast re-sends the latest user prompt. While busy it queues like any

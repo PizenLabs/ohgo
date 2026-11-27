@@ -50,7 +50,8 @@ type GrepTool struct {
 	Timeout time.Duration
 	// Workers overrides the scan parallelism. Zero picks a default from GOMAXPROCS.
 	Workers int
-	// LookPath resolves the optional ripgrep binary. Nil uses exec.LookPath.
+	// LookPath resolves the optional ripgrep binary. Nil uses the shared
+	// PATH-plus-standard-directory resolver.
 	// A resolution failure selects the native scanner; it is not a call error.
 	LookPath func(string) (string, error)
 }

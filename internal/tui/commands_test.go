@@ -363,8 +363,9 @@ func TestDoctorPrintsRows(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.SetDoctorFunc(func() []DoctorLine {
 		return []DoctorLine{
-			{Name: "config", OK: true, Detail: "loaded"},
-			{Name: "credentials", OK: false, Detail: "set X"},
+			{Section: "Workspace & Storage", Name: "config", Status: "OK", Detail: "loaded"},
+			{Section: "Model & Provider", Name: "credentials", Status: "ERROR", Detail: "set X"},
+			{Section: "Recommendations", Name: "gopls", Status: "OPTIONAL", Detail: "go install gopls", Recommendation: true},
 		}
 	})
 	Command{Name: "doctor"}.runOn(p)
@@ -374,8 +375,10 @@ func TestDoctorPrintsRows(t *testing.T) {
 			text += entry.Notice
 		}
 	}
-	if !strings.Contains(text, "FAIL") || !strings.Contains(text, "1 of 2 checks failed") {
-		t.Errorf("doctor = %q, want rows plus the tally", text)
+	for _, want := range []string{"Workspace & Storage", "ERROR", "Recommendations", "1 of 2 checks failed"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("doctor = %q, want %q", text, want)
+		}
 	}
 }
 

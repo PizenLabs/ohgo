@@ -969,7 +969,21 @@ func (h *harness) DoctorLines() []tui.DoctorLine {
 	reports := collectReports(h.model.Ref(), registry)
 	out := make([]tui.DoctorLine, 0, len(reports))
 	for _, rep := range reports {
-		out = append(out, tui.DoctorLine{Name: rep.Name, OK: rep.OK, Detail: rep.Detail})
+		out = append(out, tui.DoctorLine{
+			Section: string(rep.Section),
+			Name:    rep.Name,
+			Status:  string(rep.Status),
+			Detail:  rep.Detail,
+		})
+	}
+	for _, remediation := range collectRecommendations(reports) {
+		out = append(out, tui.DoctorLine{
+			Section:        string(doctorSectionRecommendations),
+			Name:           remediation.Name,
+			Status:         string(doctorStatusOptional),
+			Detail:         remediation.Detail,
+			Recommendation: true,
+		})
 	}
 	return out
 }
