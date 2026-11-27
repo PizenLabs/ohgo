@@ -15,8 +15,11 @@ func TestUpdateCoalescesQueuedEventsIntoOneFrame(t *testing.T) {
 	first := <-p.events
 	p.Update(teaEvent{event: first})
 
-	if got := p.state.AssistantText(); got != "one two three" {
-		t.Fatalf("assistant text = %q, want the whole burst applied before the frame", got)
+	if got := p.state.AssistantText(); got != "" {
+		t.Fatalf("uncommitted burst entered the answer projection: %q", got)
+	}
+	if len(p.state.Entries) != 1 || p.state.Entries[0].AssistantText != "one two three" {
+		t.Fatalf("buffered burst = %+v, want the whole text in one entry", p.state.Entries)
 	}
 	if len(p.events) != 0 {
 		t.Fatalf("%d events still queued after the frame, want the burst folded", len(p.events))
