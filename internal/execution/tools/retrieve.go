@@ -59,7 +59,9 @@ func NewRetrieveTool(source *StructuralSource, cacheDir string) *RetrieveTool {
 			"score, matched terms, and whether the match was an exact identifier "+
 			"or a path match. Tests and documentation are opt-in. This is lexical "+
 			"relevance evidence, not proof of behaviour: no hit does not prove a "+
-			"concept is absent, and a high score does not prove implementation.",
+			"concept is absent, and a high score does not prove implementation. "+
+			"Use grep for exact or regex text lookup and symbols for exact "+
+			"declarations; do not shell out to grep or rg.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

@@ -47,7 +47,12 @@ func NewBashTool(root string) *BashTool {
 	tool := &BashTool{Root: root, jobs: NewBackgroundJobs()}
 	tool.Base = NewBase("bash",
 		"Run a shell command and return its combined output. Prefer dedicated "+
-			"tools over shell commands when one exists.",
+			"tools over shell commands when one exists: read/edit/write for "+
+			"files, grep for exact or regex content, glob for path discovery, "+
+			"ls for a directory listing, and symbols/structure/refs for "+
+			"declarations and relationships. Do not run grep, rg, find, or ls "+
+			"through this tool; the dedicated tools apply the shared repository "+
+			"scope and report excluded paths, while a raw shell command does not.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{

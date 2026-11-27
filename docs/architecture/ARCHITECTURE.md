@@ -98,6 +98,21 @@ published as `excluded_roots` with the decisive rule and shallow build markers,
 and the `scope` view explains them without recursively walking or parsing their
 contents.
 
+Lexical discovery shares the same `Scope` seam. `grep`, `glob`, and a recursive
+`ls` evaluate membership through `tools.ignoreScope`, including the nested
+repository boundary, so text search and file discovery cannot disagree with the
+structural snapshot about whether a path belongs to the workspace. The count
+of pruned paths is exact, and a bounded sample names each path with its
+decisive `.gitignore` rule and the `gitignore: false` override; a targeted path
+that the scope excludes is skipped with that explanation instead of returning a
+silent empty result. When
+`ripgrep` is on `PATH`, `grep` sends it the already-filtered candidate list and
+decodes its JSON event stream. Exit code 1 is a no-match observation, exit
+code 2 is a genuine failure carrying stderr, binary files are discarded, and
+the same per-file, file-window, line-length, timeout, and total-match bounds
+apply. An absent or unstartable `rg` selects the native parallel scanner; no
+search path requires CGO or a shell.
+
 Completeness has four independent axes: `scope` (every source-bearing path
 inspected or explicitly named as excluded, including file-level ignore rules),
 `inventory` (every in-scope path readable), `structural` (every supported source
@@ -1959,8 +1974,10 @@ CapabilityRequest → admission → root budget → bounded execution
 - Search prunes before it scans: built-in excludes (`.git`, `node_modules`,
   build caches) are pruned before any pattern or gitignore work.
 - `grep` has a literal fast path (plain byte scan) gated on every option
-  that affects the result; `glob` ranks by mtime with a deadline that
-  returns partial results rather than nothing.
+  that affects the result. When `ripgrep` is installed it performs the content
+  scan over the scope-filtered file list; the native scanner remains the
+  fallback and handles files beyond the 4 MiB window. `glob` ranks by mtime
+  with a deadline that returns partial results rather than nothing.
 - `bash` output streams through a throttled (150 ms) sink; the UI never
   pays per-line for a build emitting thousands of lines per second.
 - Token counting is heuristic (bytes/4, round up) behind a `Tokenizer`

@@ -164,6 +164,7 @@ func (t *LsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	}
 
 	var entries []lsEntry
+	exclusions := &scanExclusions{}
 	truncated := false
 	var visit func(dir string, level int)
 	visit = func(dir string, level int) {
@@ -179,10 +180,15 @@ func (t *LsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 			}
 			if depth > 0 {
 				if item.isDir && (isBuiltInExclude(item.name) || item.name == ".git") {
+					exclusions.addBuiltin()
 					continue
 				}
-				if ign != nil && ign.ignored(rel(t.Root, item.path), item.isDir) {
-					continue
+				if ign != nil {
+					relPath := rel(t.Root, item.path)
+					if ign.ignored(relPath, item.isDir) {
+						exclusions.addIgnored(relPath, ign.explain(relPath, item.isDir))
+						continue
+					}
 				}
 			}
 			relPath, relErr := filepath.Rel(target, item.path)
@@ -230,6 +236,11 @@ func (t *LsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 			text += fmt.Sprintf("\n\n[showing %d of more entries — raise \"limit\"]", len(entries))
 		}
 	}
+	if depth > 0 && useGitignore {
+		if note := exclusions.ignoredNote(); note != "" {
+			text += "\n\n[" + note + "]"
+		}
+	}
 
 	// The observed names are structured as well as rendered: the claim audit
 	// needs the inventory itself to tell "the answer says this is missing" from
@@ -246,15 +257,22 @@ func (t *LsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 		}
 		paths = append(paths, name)
 	}
+	details := map[string]any{
+		"path":      header,
+		"entries":   len(entries),
+		"depth":     depth,
+		"truncated": truncated,
+		"paths":     paths,
+		"ignored":   exclusions.ignored,
+		"excluded":  exclusions.builtin,
+		"gitignore": useGitignore && depth > 0,
+	}
+	if ignoredPaths := exclusions.ignoredDetails(); ignoredPaths != nil {
+		details["ignored_paths"] = ignoredPaths
+	}
 	return agent.Result{
-		Text: text,
-		Details: map[string]any{
-			"path":      header,
-			"entries":   len(entries),
-			"depth":     depth,
-			"truncated": truncated,
-			"paths":     paths,
-		},
+		Text:    text,
+		Details: details,
 	}
 }
 

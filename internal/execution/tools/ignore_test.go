@@ -18,7 +18,7 @@ func newTestIgnorer(contents string) *ignorer {
 
 // newTestIgnorerAt builds an ignorer whose rules are relative to base.
 func newTestIgnorerAt(base, contents string) *ignorer {
-	ig := &ignorer{matcher: ignore.NewRules()}
+	ig := &ignorer{enabled: true, matcher: ignore.NewRules()}
 	ig.matcher.Append(base, contents)
 	return ig
 }
@@ -339,5 +339,190 @@ func TestToolsFollowSymlinksWithinRoot(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "package a") {
 		t.Errorf("contents not read through the link: %s", result.Text)
+	}
+}
+
+// A search that prunes an ignored subtree must name the subtree and the rule.
+// A bare match count reads as a complete repository view and sends the model
+// probing a path that will never appear.
+func TestGrepNamesIgnoredPathAndRule(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":       "generated/\n",
+		"generated/gen.go": "needle\n",
+		"src/main.go":      "needle\n",
+	})
+
+	text, result := grepText(t, NewGrepTool(root), map[string]any{"pattern": "needle"})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if strings.Contains(text, "generated/gen.go") {
+		t.Fatalf("an ignored file was searched: %s", text)
+	}
+	for _, want := range []string{
+		"excluded by .gitignore",
+		".gitignore:1: generated/",
+		`"gitignore": false`,
+		"generated",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("exclusion notice missing %q: %s", want, text)
+		}
+	}
+	details, _ := result.Details.(map[string]any)
+	if got, _ := details["ignored"].(int); got != 1 {
+		t.Fatalf("ignored = %v, want 1; details = %#v", details["ignored"], details)
+	}
+	paths, _ := details["ignored_paths"].([]map[string]any)
+	if len(paths) != 1 || paths[0]["path"] != "generated" {
+		t.Fatalf("ignored_paths = %#v, want the generated directory", details["ignored_paths"])
+	}
+	if rule, _ := paths[0]["rule"].(string); !strings.Contains(rule, ".gitignore:1: generated/") {
+		t.Errorf("rule = %q, want the decisive .gitignore line", rule)
+	}
+	if result.Useless {
+		t.Error("an excluded-match result carries actionable metadata and is not useless")
+	}
+}
+
+// An explicitly targeted ignored directory is skipped with the rule and the
+// override. Searching it anyway (the old behaviour) disagreed with structure
+// and glob; silently returning nothing was worse.
+func TestGrepExplicitIgnoredScopeIsSkippedWithRule(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":       "generated/\n",
+		"generated/gen.go": "needle\n",
+	})
+	tool := NewGrepTool(root)
+
+	text, result := grepText(t, tool, map[string]any{"pattern": "needle", "path": "generated"})
+	if result.IsError {
+		t.Fatalf("an ignored target is a scoped skip, not an execution failure: %s", text)
+	}
+	for _, want := range []string{
+		"generated is excluded by .gitignore",
+		".gitignore:1: generated/",
+		"no file was searched",
+		`"gitignore": false`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("skip notice missing %q: %s", want, text)
+		}
+	}
+	details, _ := result.Details.(map[string]any)
+	if got, _ := details["files"].(int); got != 0 {
+		t.Errorf("files = %v, want 0", details["files"])
+	}
+
+	// The documented override still reaches the ignored file.
+	override, _ := grepText(t, tool, map[string]any{
+		"pattern": "needle", "path": "generated", "gitignore": false,
+	})
+	if !strings.Contains(override, "generated/gen.go") {
+		t.Fatalf("gitignore=false did not search the explicit target: %s", override)
+	}
+}
+
+// Globs report the same count, path, and rule as grep. A count alone cannot
+// tell the model whether the missing directory is generated output or a
+// source tree hidden by a stale unanchored rule.
+func TestGlobNamesIgnoredPathAndRule(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":       "generated/\n",
+		"generated/gen.go": "package generated\n",
+		"src/main.go":      "package main\n",
+	})
+
+	result := NewGlobTool(root).Execute(testContext(), map[string]any{"pattern": "**/*.go"})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Text)
+	}
+	if strings.Contains(result.Text, "generated/gen.go") {
+		t.Fatalf("an ignored file was returned: %s", result.Text)
+	}
+	for _, want := range []string{
+		"excluded by .gitignore",
+		".gitignore:1: generated/",
+		`"gitignore": false`,
+	} {
+		if !strings.Contains(result.Text, want) {
+			t.Errorf("exclusion notice missing %q: %s", want, result.Text)
+		}
+	}
+	details, _ := result.Details.(map[string]any)
+	if got, _ := details["ignored"].(int); got != 1 {
+		t.Fatalf("ignored = %v, want 1; details = %#v", details["ignored"], details)
+	}
+	paths, _ := details["ignored_paths"].([]map[string]any)
+	if len(paths) != 1 || paths[0]["path"] != "generated" {
+		t.Fatalf("ignored_paths = %#v, want the generated directory", details["ignored_paths"])
+	}
+}
+
+func TestGlobExplicitIgnoredScopeIsSkippedWithRule(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":       "generated/\n",
+		"generated/gen.go": "package generated\n",
+	})
+	tool := NewGlobTool(root)
+
+	result := tool.Execute(testContext(), map[string]any{"pattern": "**/*.go", "path": "generated"})
+	if result.IsError {
+		t.Fatalf("an ignored target is a scoped skip, not an execution failure: %s", result.Text)
+	}
+	for _, want := range []string{
+		"generated is excluded by .gitignore",
+		".gitignore:1: generated/",
+		"no path was scanned",
+		`"gitignore": false`,
+	} {
+		if !strings.Contains(result.Text, want) {
+			t.Errorf("skip notice missing %q: %s", want, result.Text)
+		}
+	}
+
+	override := tool.Execute(testContext(), map[string]any{
+		"pattern": "**/*.go", "path": "generated", "gitignore": false,
+	})
+	if override.IsError {
+		t.Fatalf("override: %s", override.Text)
+	}
+	if !strings.Contains(override.Text, "generated/gen.go") {
+		t.Fatalf("gitignore=false did not scan the explicit target: %s", override.Text)
+	}
+}
+
+// A recursive listing prunes the same trees and reports the same rule, so a
+// missing directory in the listing has a stated reason.
+func TestLsRecursiveNamesIgnoredPathAndRule(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":       "generated/\n",
+		"generated/gen.go": "package generated\n",
+		"src/main.go":      "package main\n",
+	})
+
+	result := NewLsTool(root).Execute(testContext(), map[string]any{"depth": float64(2)})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Text)
+	}
+	if strings.Contains(result.Text, "\ngenerated/") {
+		t.Fatalf("an ignored directory was listed: %s", result.Text)
+	}
+	for _, want := range []string{"excluded by .gitignore", ".gitignore:1: generated/"} {
+		if !strings.Contains(result.Text, want) {
+			t.Errorf("exclusion notice missing %q: %s", want, result.Text)
+		}
+	}
+	details, _ := result.Details.(map[string]any)
+	if got, _ := details["ignored"].(int); got != 1 {
+		t.Fatalf("ignored = %v, want 1; details = %#v", details["ignored"], details)
+	}
+	if paths, _ := details["ignored_paths"].([]map[string]any); len(paths) != 1 || paths[0]["path"] != "generated" {
+		t.Fatalf("ignored_paths = %#v, want the generated directory", details["ignored_paths"])
 	}
 }

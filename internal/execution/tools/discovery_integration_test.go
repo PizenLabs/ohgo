@@ -77,3 +77,43 @@ func TestDiscoveryAndStructuralScopeShareDependencyExclusions(t *testing.T) {
 		t.Fatalf("glob paths = %v, want only app/main.go", paths)
 	}
 }
+
+// A nested repository that the parent .gitignore names is included by the
+// structural snapshot. Lexical discovery must make the same decision: a parent
+// rule such as "backend/" is the normal way to keep a nested Git repository
+// out of the parent's index, not a rule that hides its source from search.
+func TestDiscoveryAndStructuralScopeShareNestedRepositoryBoundary(t *testing.T) {
+	root := structureFixture(t, map[string]string{
+		".gitignore":        "backend/\n",
+		"backend/.git/HEAD": "ref: refs/heads/main\n",
+		"backend/main.go":   "package backend\n\n// sharedNeedle\n",
+		"src/main.go":       "package src\n\n// sharedNeedle\n",
+	})
+	tool := NewStructureTool(NewStructuralSource(root))
+	files := tool.Execute(testContext(), map[string]any{"view": "files"})
+	if files.IsError {
+		t.Fatalf("files: %s", files.Text)
+	}
+	if !strings.Contains(files.Text, "backend/main.go") {
+		t.Fatalf("structural scope excluded the nested repository:\n%s", files.Text)
+	}
+
+	text, grepResult := grepText(t, NewGrepTool(root), map[string]any{"pattern": "sharedNeedle"})
+	if grepResult.IsError {
+		t.Fatalf("grep: %s", text)
+	}
+	if !strings.Contains(text, "backend/main.go") {
+		t.Fatalf("grep excluded the nested repository:\n%s", text)
+	}
+
+	paths := globPaths(t, NewGlobTool(root), map[string]any{"pattern": "**/*.go"})
+	found := false
+	for _, path := range paths {
+		if path == "backend/main.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("glob excluded the nested repository: %v", paths)
+	}
+}

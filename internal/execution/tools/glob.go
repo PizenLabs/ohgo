@@ -50,11 +50,14 @@ func NewGlobTool(root string) *GlobTool {
 		"Find files by glob pattern and return their paths sorted by "+
 			"modification time, newest first. Searches the working directory "+
 			"by default; pass a subdirectory to narrow the scan. \"**\" matches "+
-			"any depth and \"{ts,tsx}\" alternation is expanded. Results are "+
-			"inventory only: a path list never establishes implementation "+
-			"content or behavior. Read the source before making a source claim, "+
-			"and do not repeat the same pattern after it returned a complete "+
-			"result.",
+			"any depth and \"{ts,tsx}\" alternation is expanded. This is path "+
+			"discovery only: use grep for exact or regex content, symbols for "+
+			"declarations, and structure for project inventory. Do not shell "+
+			"out to find or fd. Results are inventory only: a path list never "+
+			"establishes implementation content or behavior. Read the source "+
+			"before making a source claim, and do not repeat the same pattern "+
+			"after it returned a complete result. Ignored subtrees are named "+
+			"with the rule that pruned them.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -169,7 +172,33 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	defer cancel()
 
 	ignorer := newIgnorer(t.Root, useGitignore)
-	matches, timedOut, ignored, excluded, scanErr := t.scan(scanCtx, scanRoot, pattern, hidden, ignorer)
+	if useGitignore {
+		// A requested path that the repository scope excludes is the silent
+		// empty result this tool must not produce. Name the rule and the
+		// override instead of scanning a tree that the rest of the tools call
+		// outside the workspace.
+		scopeRel := rel(t.Root, scanRoot)
+		if scopeRel != "." && scopeRel != "" {
+			if excluded, reason := ignorer.exclusion(scopeRel, true); excluded {
+				return agent.Result{
+					Text: fmt.Sprintf(
+						"%s is excluded by .gitignore (%s); no path was scanned. "+
+							"Pass \"gitignore\": false to scan it, or target a path outside the rule.",
+						scopeRel, reason),
+					Details: map[string]any{
+						"matches":       0,
+						"pattern":       pattern,
+						"path":          scopeRel,
+						"ignored":       1,
+						"ignored_paths": []map[string]any{{"path": scopeRel, "rule": reason}},
+						"gitignore":     true,
+					},
+					Useless: false,
+				}
+			}
+		}
+	}
+	matches, timedOut, exclusions, scanErr := t.scan(scanCtx, scanRoot, pattern, hidden, ignorer)
 	if scanErr != nil {
 		// The scan never entered the requested directory. Reporting "no files
 		// matched" here is a factual claim about the workspace that nothing
@@ -227,38 +256,37 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		// the one argument that can override it; only do so when a path was
 		// actually pruned, never as a generic disclaimer.
 		text := "No files matched."
-		if useGitignore && ignored > 0 {
-			noun := "paths were"
-			if ignored == 1 {
-				noun = "path was"
+		if useGitignore {
+			if note := exclusions.ignoredNote(); note != "" {
+				text += " " + note
 			}
-			text = fmt.Sprintf(
-				"No files matched. %d %s excluded by .gitignore; pass \"gitignore\": false to include ignored paths.",
-				ignored, noun)
+		}
+		details := map[string]any{
+			"matches":   0,
+			"pattern":   pattern,
+			"ignored":   exclusions.ignored,
+			"excluded":  exclusions.builtin,
+			"gitignore": useGitignore,
+		}
+		if paths := exclusions.ignoredDetails(); paths != nil {
+			details["ignored_paths"] = paths
 		}
 		return agent.Result{
-			Text: text,
-			Details: map[string]any{
-				"matches": 0, "pattern": pattern, "ignored": ignored,
-				"excluded": excluded, "gitignore": useGitignore,
-			},
-			Useless: true,
+			Text:    text,
+			Details: details,
+			Useless: exclusions.ignored == 0,
 		}
 	}
 
 	text := sb.String()
-	if useGitignore && ignored > 0 {
+	if useGitignore {
 		// A non-empty result still hides pruned subtrees. "44 matches" looks
 		// like a complete tree even when .gitignore excluded a whole service
 		// directory, and a model will conclude the missing tree does not
 		// exist. Name the exclusion whenever a rule actually pruned a path.
-		noun := "paths were"
-		if ignored == 1 {
-			noun = "path was"
+		if note := exclusions.ignoredNote(); note != "" {
+			text += "\n\n[" + note + "]"
 		}
-		text += fmt.Sprintf(
-			"\n\n[%d %s excluded by .gitignore; pass \"gitignore\": false to include ignored paths.]",
-			ignored, noun)
 	}
 	if truncated {
 		text += fmt.Sprintf("\n\n[showing %d of %d matches — raise \"limit\" or narrow the pattern]", limit, totalMatches)
@@ -269,40 +297,37 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	for _, match := range matches {
 		paths = append(paths, filepath.ToSlash(match.rel))
 	}
+	details := map[string]any{
+		"matches":   len(matches),
+		"pattern":   pattern,
+		"path":      relativeToRoot(t.Root, scanRoot),
+		"timedOut":  timedOut,
+		"ignored":   exclusions.ignored,
+		"excluded":  exclusions.builtin,
+		"gitignore": useGitignore,
+		"paths":     paths,
+	}
+	if ignoredPaths := exclusions.ignoredDetails(); ignoredPaths != nil {
+		details["ignored_paths"] = ignoredPaths
+	}
 	return agent.Result{
-		Text: text,
-		Details: map[string]any{
-			"matches":   len(matches),
-			"pattern":   pattern,
-			"path":      relativeToRoot(t.Root, scanRoot),
-			"timedOut":  timedOut,
-			"ignored":   ignored,
-			"excluded":  excluded,
-			"gitignore": useGitignore,
-			"paths":     paths,
-		},
+		Text:    text,
+		Details: details,
 	}
 }
 
 // scan walks scanRoot and collects matches.
 //
-// It returns the matches found, whether the deadline was hit, how many paths
-// were pruned by .gitignore, and how many directories were pruned by the
-// built-in excludes (node_modules, dist, target, …). The counts are evidence
-// for the caller: "no matches" must not be presented as an empty tree when the
-// only reason is a rule, and a pruned scan is not a complete project
-// inventory.
-// scan walks scanRoot, returning the matches and the error that stopped the walk
-// at the requested directory. A failure below the root is skipped: the rest of
-// the tree is still worth reporting, and one unreadable subtree is not evidence
-// about the request.
-func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bool, ignorer *ignorer) ([]globResult, bool, int, int, error) {
+// It returns the matches found, whether the deadline was hit, and the scope
+// decisions that pruned paths. The decisions are evidence for the caller: "no
+// matches" must not be presented as an empty tree when the only reason is a
+// rule, and a pruned scan is not a complete project inventory.
+func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bool, ignorer *ignorer) ([]globResult, bool, *scanExclusions, error) {
 	var (
 		matches  []globResult
 		timedOut bool
-		ignored  int
-		excluded int
 	)
+	exclusions := &scanExclusions{}
 	// A model writes shell-style alternation because a shell would accept it.
 	// Without expansion the pattern is a literal and matches nothing, which
 	// reads as an empty tree and sends the model into a retry loop.
@@ -338,14 +363,14 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 			// descending: walking into node_modules is the single largest
 			// glob cost.
 			if isBuiltInExclude(entry.Name()) {
-				excluded++
+				exclusions.addBuiltin()
 				return filepath.SkipDir
 			}
 			if !hidden && isHidden(entry.Name()) {
 				return filepath.SkipDir
 			}
 			if ignorer.ignored(rel, true) {
-				ignored++
+				exclusions.addIgnored(rel, ignorer.explain(rel, true))
 				return filepath.SkipDir
 			}
 			return nil
@@ -355,7 +380,7 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 			return nil
 		}
 		if ignorer.ignored(rel, false) {
-			ignored++
+			exclusions.addIgnored(rel, ignorer.explain(rel, false))
 			return nil
 		}
 
@@ -372,9 +397,9 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 		return nil
 	})
 	if walkErr != nil {
-		return matches, timedOut, ignored, excluded, walkErr
+		return matches, timedOut, exclusions, walkErr
 	}
-	return matches, timedOut || ctx.Err() != nil, ignored, excluded, nil
+	return matches, timedOut || ctx.Err() != nil, exclusions, nil
 }
 
 // globBraceLimit caps the alternatives one pattern may expand to. A pattern is

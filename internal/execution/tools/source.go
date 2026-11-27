@@ -311,6 +311,46 @@ func (s *ignoreScope) Ignored(rel string, isDir bool) bool {
 	return matcher.Ignored(rel, isDir)
 }
 
+// Exclusion reports whether rel or an ignored ancestor is outside the current
+// scope, along with the rule that decided it.
+//
+// It is the targeted-path lookup: a caller that skips a requested root needs
+// the same nested-boundary semantics the walk applies, not a plain ancestor
+// check. Evaluating ancestors only at or below the nearest nested repository
+// keeps an enclosing repository's rule from hiding a nested project root that
+// the scope deliberately includes.
+func (s *ignoreScope) Exclusion(rel string, isDir bool) (bool, string) {
+	if s == nil {
+		return false, ""
+	}
+	s.ensureLoaded()
+	s.mu.RLock()
+	matcher := s.matcher
+	nested := s.nested
+	s.mu.RUnlock()
+
+	rel = filepath.ToSlash(rel)
+	base := deepestNested(nested, rel)
+	if excluded, reason := matcher.MatchFrom(base, rel, isDir); excluded {
+		return true, reason
+	}
+	for {
+		index := strings.LastIndexByte(rel, '/')
+		if index < 0 {
+			return false, ""
+		}
+		rel = rel[:index]
+		// The nested boundary itself is included; only its own rules and
+		// paths beneath it may exclude a descendant.
+		if base != "" && len(rel) < len(base) {
+			return false, ""
+		}
+		if excluded, reason := matcher.MatchFrom(base, rel, true); excluded {
+			return true, reason
+		}
+	}
+}
+
 // Explain names the rule that excluded rel, when the scope can identify one.
 // It is optional provenance for the structural snapshot; a scope without an
 // explainer is still valid.

@@ -3,6 +3,10 @@
 // Every tool is a plain struct implementing agent.Tool. Tools never spawn
 // shells to accomplish file work; the standard library covers it, and a shell
 // would reintroduce the quoting and escaping hazards the API already avoids.
+// An optional native binary is different: grep may invoke ripgrep by argv as a
+// read-only fast path, with a standard-library scanner as the fallback. It is
+// never launched through a shell, and the decoded results pass the same limits
+// and repository scope as the fallback.
 package tools
 
 import (

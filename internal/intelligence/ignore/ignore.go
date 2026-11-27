@@ -204,17 +204,28 @@ func (m *Matcher) IgnoredFrom(base, rel string, isDir bool) bool {
 // (a captured entry, a changed path), where the walk's pruning is not
 // available.
 func (m *Matcher) Excluded(rel string, isDir bool) bool {
-	if m.Ignored(rel, isDir) {
-		return true
+	excluded, _ := m.MatchExcluded(rel, isDir)
+	return excluded
+}
+
+// MatchExcluded is Excluded with the rule that decided the exclusion.
+//
+// A caller that reports an ignored target must name the rule; a bare boolean
+// leaves the reader unable to distinguish a file rule from an ignored
+// enclosing directory. The ancestor lookup walks from the path upward, so the
+// returned rule names the path that a walk would have pruned.
+func (m *Matcher) MatchExcluded(rel string, isDir bool) (bool, string) {
+	if excluded, reason := m.Match(rel, isDir); excluded {
+		return true, reason
 	}
 	for {
 		index := strings.LastIndexByte(rel, '/')
 		if index < 0 {
-			return false
+			return false, ""
 		}
 		rel = rel[:index]
-		if m.Ignored(rel, true) {
-			return true
+		if excluded, reason := m.Match(rel, true); excluded {
+			return true, reason
 		}
 	}
 }
