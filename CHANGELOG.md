@@ -239,6 +239,17 @@ immutable.
 
 ### Changed
 
+- `ohgo doctor` now classifies each check as `OK`, `FALLBACK`, `OPTIONAL`,
+  `WARN`, or `ERROR`, groups the report by operational domain, and exits
+  non-zero only for `ERROR`. Default lines are compact; `--verbose` expands
+  adapter, server, and tool lists, and `--json` emits the same ordered
+  diagnosis for machines. Workspace-aware recommendations name the install
+  command for the host OS and available package manager, and only for
+  accelerators the workspace would use: `ripgrep` when content search is on
+  the native scanner, or a language server for a language detected in
+  `workdir`. Binary resolution checks `PATH` first, then standard Homebrew,
+  user-prefix, cargo, Go, and Windows install directories so a GUI or
+  IDE-spawned process sees the same tools as an interactive shell.
 - Lexical discovery and structural overview now share one repository-scope
   evaluator, including the nested-repository boundary. `grep`, `glob`, and a
   recursive `ls` report an exact pruned-path count plus a bounded sample with

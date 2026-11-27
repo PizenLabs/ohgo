@@ -120,7 +120,16 @@ it is done. ohgo is built around the opposite contract.
 
 ## Install
 
-### Prebuilt release
+### Core installation (zero-CGO, single binary)
+
+ohgo is one binary with no runtime dependency on Python, Node, a JDK, or a
+database. Core installation is the same on macOS, Linux, and Windows: provider
+access, sessions, tools, and the Go structural backend work immediately after
+the binary is on `PATH`. The portable variant is built with `CGO_ENABLED=0`;
+the default release adds the optional tree-sitter adapters but is still a
+single binary, and neither variant needs ripgrep or a language server.
+
+#### Prebuilt release
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh | sh
@@ -153,7 +162,7 @@ curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh \
   | sudo env PREFIX=/usr/local sh
 ```
 
-### From source
+#### From source
 
 ```sh
 git clone https://github.com/PizenLabs/ohgo.git
@@ -171,7 +180,7 @@ the native Go structural backend and reports every other source extension as
 `make build-multilang` is the explicit cgo build and fails loudly without a C
 toolchain.
 
-### Install into your user prefix
+#### Install into your user prefix
 
 ```sh
 make install                    # ~/.local/bin, first on a typical PATH
@@ -182,21 +191,13 @@ sudo make install PREFIX=/usr/local
 compiler gets the tree-sitter adapters. `make install-portable` installs the
 static Go-only variant. `DESTDIR` is supported for packagers.
 
-### Optional: ripgrep
-
-`grep` uses `ripgrep` (`rg`) when it is on `PATH` and falls back to the
-built-in Go scanner otherwise. Ripgrep is never required, adds no CGO
-dependency, and is invoked directly rather than through a shell. Both backends
-apply the same repository scope, binary-file skip, line-length, file-window,
-match-count, and timeout limits, and `ohgo doctor` reports which one is active.
-
-### Go install
+#### Go install
 
 ```sh
 go install github.com/PizenLabs/ohgo/cmd/ohgo@latest
 ```
 
-### Docker
+#### Docker
 
 ```sh
 make docker
@@ -205,6 +206,71 @@ docker run -it -v "$PWD:/work" ohgo:dev
 
 The image is built `CGO_ENABLED=0` and runs as a non-root user on a distroless
 static base.
+
+### Recommended enhancements
+
+Both enhancements are optional. `ohgo doctor` reports whether each is active and
+prints the install command for the detected OS under **Recommendations** only
+when it is missing. A missing accelerator is reported as `FALLBACK` (the
+built-in path still works) or `OPTIONAL`; only `ERROR` sets a non-zero exit
+status.
+
+#### ripgrep
+
+`grep` uses `ripgrep` (`rg`) when it is available and falls back to the
+built-in Go scanner otherwise. Ripgrep is never required, adds no CGO
+dependency, and is invoked directly rather than through a shell. Both backends
+apply the same repository scope, binary-file skip, line-length, file-window,
+match-count, and timeout limits.
+
+| OS | Install |
+| --- | --- |
+| macOS (Homebrew) | `brew install ripgrep` |
+| Debian/Ubuntu | `sudo apt install ripgrep` |
+| Fedora/RHEL | `sudo dnf install ripgrep` |
+| Arch | `sudo pacman -S ripgrep` |
+| Alpine | `sudo apk add ripgrep` |
+| Windows | `winget install BurntSushi.ripgrep.MSVC` or `scoop install ripgrep` |
+| Nix | `nix profile install nixpkgs#ripgrep` |
+
+#### Language servers
+
+Semantic assistance is optional. `ohgo doctor` inventories the languages in the
+current `workdir` and recommends a server only for those languages; a pure Go
+repository is never told to install `jdtls` or `pyright`. Install one server
+per language you actually use:
+
+| Workspace language | Server | Install |
+| --- | --- | --- |
+| Go | `gopls` | `brew install gopls` (macOS) or `go install golang.org/x/tools/gopls@latest` |
+| TypeScript/JavaScript | `typescript-language-server` | `npm install -g typescript-language-server typescript` |
+| Python | `pyright` | `npm install -g pyright` |
+| Rust | `rust-analyzer` | `rustup component add rust-analyzer` |
+| Java | `jdtls` | `brew install jdtls` (macOS), `scoop install main/jdtls` (Windows), `sudo apk add jdtls` (Alpine), otherwise the [upstream release](https://github.com/eclipse-jdtls/eclipse.jdt.ls) |
+| C/C++ | `clangd` | `brew install llvm` (macOS), `sudo apt install clangd` (Debian/Ubuntu), `sudo dnf install clang-tools-extra` (Fedora), `sudo pacman -S clang` (Arch), `winget install --id LLVM.clangd -e` (Windows) |
+| Ruby | `ruby-lsp` | `gem install ruby-lsp` |
+| C# | `csharp-ls` | `dotnet tool install --global csharp-ls` |
+| Kotlin | `kotlin-language-server` | `brew install kotlin-language-server` (macOS), otherwise the [releases](https://github.com/kotlin-lsp/kotlin-language-server/releases) |
+
+A missing server is reported as semantic `UNAVAILABLE`; AST evidence from the
+same workspace remains available.
+
+#### PATH for GUI, IDE, and MCP clients
+
+GUI, IDE, and MCP-launched processes often do not read your shell startup
+files, so a binary installed for an interactive terminal can be invisible to
+them. Put the install directory in the client's environment as well as your
+shell:
+
+- macOS/Linux: `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`,
+  `~/go/bin`, `~/.cargo/bin`, and `~/.npm-global/bin`.
+- Windows: `%LOCALAPPDATA%\Microsoft\WinGet\Links`, `%USERPROFILE%\go\bin`,
+  `%USERPROFILE%\.cargo\bin`, and `%APPDATA%\npm`.
+
+`ohgo` itself checks the standard install directories after `PATH`, so its own
+`rg` and language-server discovery behaves the same from a GUI launch. An MCP
+client that starts `ohgo` is a separate process and still needs the binary on
+its own `PATH`.
 
 ### Self-update
 
@@ -268,7 +334,7 @@ ohgo docs --dir ./ohgo-docs                          # man pages + markdown
 
 ```sh
 ohgo init          # writes ~/.ohgo/settings.json (never overwrites without --force)
-ohgo doctor        # every failure names its fix
+ohgo doctor        # grouped OK/FALLBACK/OPTIONAL/WARN/ERROR checks; fixes named
 ohgo               # interactive session (full-screen UI on a TTY)
 ```
 
@@ -492,13 +558,15 @@ streamable-HTTP request/response core (standalone GET streams, resumability,
 and server-to-client requests are not implemented).
 
 Semantic assistance is bounded and optional. `ohgo doctor` reports the language
-servers discovered on `PATH`; `investigate` selects the server matching the
-request's language (or the workspace's dominant supported language) and starts
-only that one, lazily, closing it after the step. Discovered servers include
-`gopls` (Go), `typescript-language-server` (TypeScript/TSX/JavaScript/JSX),
-`pyright`/`pylsp` (Python), `rust-analyzer`, `jdtls`, `clangd`, `ruby-lsp`,
-`csharp-ls`, and `kotlin-language-server`. A missing server is reported as
-semantic `UNAVAILABLE`; AST evidence from the same workspace remains available.
+servers available on `PATH` or the standard install directories and recommends
+one only for languages detected in the current `workdir`; `investigate` selects
+the server matching the request's language (or the workspace's dominant
+supported language) and starts only that one, lazily, closing it after the
+step. Discovered servers include `gopls` (Go), `typescript-language-server`
+(TypeScript/TSX/JavaScript/JSX), `pyright`/`pylsp` (Python), `rust-analyzer`,
+`jdtls`, `clangd`, `ruby-lsp`, `csharp-ls`, and `kotlin-language-server`. A
+missing server is reported as semantic `UNAVAILABLE`; AST evidence from the
+same workspace remains available.
 DAP runtime observation exists only for an already-authorized stopped debug
 session and is not exposed as a start/attach tool. The portable build has no
 tree-sitter adapters for non-Go languages, and reports them as unsupported
