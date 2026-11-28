@@ -394,7 +394,9 @@ func claimEvidenceBlock(shape TaskShape, evidence *EvidenceState, includeFrontie
 	line.WriteString("\n")
 	line.WriteString("Claim rule: configuration declares topology, not execution; " +
 		"absence needs a complete untruncated inventory (else \"not found in inspected scope\"); " +
-		"Implementation status and behavior need source/runtime evidence.\n")
+		"Implementation status and behavior need source/runtime evidence. " +
+		"Observed source is implementation evidence even without a live run; only README/docs prose is documentation. " +
+		"When documentation and a manifest or configuration disagree, state both and the conflict.\n")
 	// A term the documentation uses and the observed source does not is the
 	// exact vocabulary the completion audit will review. Naming it before the
 	// answer lets the model attribute the claim or read the source that carries

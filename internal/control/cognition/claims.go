@@ -1,6 +1,7 @@
 package cognition
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -68,6 +69,17 @@ type ClaimSummary struct {
 	TestTotal int
 	// TestTotalKnown reports that TestTotal is an observation.
 	TestTotalKnown bool
+	// TestSourceObserved reports that at least one test file's content was
+	// read. A test name or file count names a coordinate; only the content
+	// establishes the behavior the test asserts.
+	TestSourceObserved bool
+	// TestPaths are bounded coordinates from test declarations. They let the
+	// frontier name the file a broad survey should read without hardcoding a
+	// project's layout.
+	TestPaths []string
+	// TestNames are bounded test symbols from the same declarations. They
+	// carry the semantic signal a bare file count does not.
+	TestNames []string
 	// ImplementationPaths, ConfigurationPaths, and DocumentationPaths are
 	// bounded coordinates the model can cite. They are evidence, not authority.
 	ImplementationPaths []string
@@ -96,6 +108,10 @@ type ComponentEvidence struct {
 // claimPathLimit bounds each model-facing path list. The evidence block already
 // carries the coordinates; this list is a reminder of the observed class.
 const claimPathLimit = 3
+
+// claimTestLimit bounds the test coordinates the frontier can name. A broad
+// account needs one high-value test, not a second inventory of every test.
+const claimTestLimit = 8
 
 // claimComponentLimit bounds the projected component frontier.
 const claimComponentLimit = 8
@@ -156,13 +172,29 @@ func (s *EvidenceState) ClaimSummary() ClaimSummary {
 			// A stale inventory was queried, but it is not current truth. It
 			// remains PARTIAL so the model cannot read it as absence support.
 			summary.TestInventory = testInventoryState(item)
-			if value, ok := item.Counts["test_files"]; ok {
-				summary.TestFiles = value
-				summary.TestFilesKnown = true
-			}
 			if value, ok := item.Counts["total"]; ok {
 				summary.TestTotal = value
 				summary.TestTotalKnown = true
+			}
+		}
+		// An overview's test_files count is still an observation of how many
+		// test files exist. Keep it even before the semantic tests view, so a
+		// broad survey can name the test gap instead of treating a metadata
+		// count as the whole test story.
+		if value, ok := item.Counts["test_files"]; ok {
+			summary.TestFiles = value
+			summary.TestFilesKnown = true
+		}
+		if path := strings.TrimSpace(item.Source.Path); path != "" {
+			if strings.HasPrefix(item.ID, "test:") {
+				summary.TestPaths = appendUniqueTest(summary.TestPaths, path, claimTestLimit)
+				if name := testCoordinateName(item); name != "" {
+					summary.TestNames = appendUniqueTest(summary.TestNames, name, claimTestLimit)
+				}
+			}
+			if strings.HasPrefix(item.ID, "file:") && strings.TrimSpace(item.Value) != "" &&
+				agent.ClassifyPath(path) == agent.PathSource && agent.IsTestPath(path) {
+				summary.TestSourceObserved = true
 			}
 		}
 		switch item.EvidenceClass() {
@@ -262,6 +294,14 @@ func (s ClaimSummary) EvidenceFrontier() []string {
 		}
 		out = append(out, line)
 	}
+	// Test behavior is the highest-information gap after a survey discovers
+	// tests: a file count or test name is not evidence of what the suite
+	// asserts. It goes first because the projection renders a bounded prefix
+	// of the frontier, and a project account that stops at filenames is
+	// exactly the shallow investigation this frontier exists to prevent.
+	if line := s.testBehaviorFrontier(); line != "" {
+		add(line)
+	}
 	componentLines := 0
 	for _, component := range s.Components {
 		if component.SourceContent || !component.Structural || componentLines >= 2 {
@@ -277,7 +317,12 @@ func (s ClaimSummary) EvidenceFrontier() []string {
 	if !s.HasImplementation && s.HasConfiguration {
 		add("implementation -> SOURCE_CONTENT missing; documentation, manifests, configuration, and inventory are not implementation")
 	}
-	if s.TestInventory != "COMPLETE" && (s.HasInventory || s.StructuralScope != "") {
+	// A known test-file count already refutes absence. When tests are known
+	// to exist, the gap is their behavior, and testBehaviorFrontier names it;
+	// asking for an absence-proof inventory here would send the model back to
+	// filenames instead of into a test.
+	if s.TestInventory != "COMPLETE" && (s.HasInventory || s.StructuralScope != "") &&
+		(!s.TestFilesKnown || s.TestFiles <= 0) {
 		add("test absence -> COMPLETE current unscoped test inventory missing; next: query structure view=tests and inspect completeness")
 	}
 	if s.StructuralScope == "PARTIAL" || s.ExcludedRoots > 0 || s.ExcludedSourceFiles > 0 {
@@ -306,6 +351,93 @@ func (s ClaimSummary) EvidenceFrontier() []string {
 		add("dependency usage -> IMPORTED only; next: observe a concrete source operation before saying the project uses it")
 	}
 	return out
+}
+
+// testBehaviorFrontier names the one test gap a broad survey can resolve.
+// A complete test inventory with zero observed test symbols is not a gap: the
+// snapshot has no test behavior to read, and the answer must report that
+// limitation instead of searching forever.
+func (s ClaimSummary) testBehaviorFrontier() string {
+	if s.TestSourceObserved {
+		return ""
+	}
+	if s.TestInventory == "COMPLETE" && s.TestTotalKnown && s.TestTotal == 0 {
+		return ""
+	}
+	switch {
+	case s.TestTotalKnown && s.TestTotal > 0 || len(s.TestPaths) > 0:
+		line := "test behavior -> "
+		if s.TestTotalKnown && s.TestTotal > 0 {
+			line += fmt.Sprintf("%d tests", s.TestTotal)
+		} else {
+			line += "discovered tests"
+		}
+		if s.TestFilesKnown {
+			line += fmt.Sprintf(" in %d files", s.TestFiles)
+		}
+		if names := testNameSummary(s.TestNames); names != "" {
+			line += " (" + names + ")"
+		}
+		line += "; no test source read; next: "
+		if len(s.TestPaths) > 0 {
+			return line + "read " + s.TestPaths[0]
+		}
+		return line + "read one discovered test file"
+	case s.TestFilesKnown && s.TestFiles > 0:
+		if s.TestInventory == "NOT_QUERIED" {
+			return fmt.Sprintf("tests -> %d test files discovered; no test source read; next: query structure view=tests, then read one discovered test file", s.TestFiles)
+		}
+		return fmt.Sprintf("tests -> %d test files discovered; no test source read; next: inspect a test file's assertions directly", s.TestFiles)
+	default:
+		return ""
+	}
+}
+
+// testNameSummary keeps the semantic signal in the frontier bounded.
+func testNameSummary(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	shown := names
+	if len(shown) > 2 {
+		shown = shown[:2]
+	}
+	line := strings.Join(shown, ", ")
+	if len(names) > len(shown) {
+		line += fmt.Sprintf(" +%d more", len(names)-len(shown))
+	}
+	return line
+}
+
+// testCoordinateName recovers the test symbol from a structural coordinate.
+// The ID is the canonical coordinate; the summary is display text.
+func testCoordinateName(item EvidenceItem) string {
+	if parts := strings.SplitN(item.ID, ":", 4); len(parts) == 4 {
+		if name := strings.TrimSpace(parts[3]); name != "" {
+			return name
+		}
+	}
+	if name, _, ok := strings.Cut(item.Summary, " at "); ok {
+		return strings.TrimSpace(name)
+	}
+	return ""
+}
+
+// appendUniqueTest appends one bounded test coordinate.
+func appendUniqueTest(values []string, value string, limit int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	if len(values) >= limit {
+		return values
+	}
+	return append(values, value)
 }
 
 // isComponentSeedPath reports a path whose derived identity is a project

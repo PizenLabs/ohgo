@@ -872,7 +872,47 @@ func missingForAction(shape TaskShape, evidence *EvidenceState, execution Execut
 		}
 		missing = append(missing, requirement)
 	}
+	if requirement, ok := testBehaviorRequirement(shape, evidence); ok {
+		missing = append(missing, requirement)
+	}
 	return missing
+}
+
+// testBehaviorRequirement reports the one test-source observation a broad
+// survey needs once tests are known to exist.
+//
+// A test count or a list of test names is inventory. It says a suite exists,
+// not what the project's behavior is. The requirement is deliberately absent
+// when the semantic inventory observed zero test symbols: there is no test
+// behavior to read, and the answer must state that limitation rather than
+// searching for a file the snapshot did not name.
+func testBehaviorRequirement(shape TaskShape, evidence *EvidenceState) (Requirement, bool) {
+	if evidence == nil || shape.Kind != contract.ObjectiveInformational ||
+		!shape.RepositoryScope || !shape.BroadRepositoryAnalysis {
+		return Requirement{}, false
+	}
+	summary := evidence.ClaimSummary()
+	if summary.TestSourceObserved {
+		return Requirement{}, false
+	}
+	if summary.TestInventory == "COMPLETE" && summary.TestTotalKnown && summary.TestTotal == 0 {
+		return Requirement{}, false
+	}
+	switch {
+	case summary.TestTotalKnown && summary.TestTotal > 0,
+		len(summary.TestPaths) > 0:
+		// A semantic test inventory named actual tests. The overview's bare
+		// test_files count is not enough to require a read: it does not name a
+		// file, and a partial snapshot can report the count without exposing a
+		// test declaration to inspect.
+	default:
+		return Requirement{}, false
+	}
+	reason := "the inventory discovered tests; read at least one test's assertions, not only its name or file count"
+	if len(summary.TestPaths) > 0 {
+		reason += "; next: read " + summary.TestPaths[0]
+	}
+	return Requirement{Key: "test_behavior", Reason: reason}, true
 }
 
 // mutationTargetsDone reports whether every explicitly named path changed.
@@ -946,6 +986,8 @@ func nextEvidence(key string) string {
 		return nextFacetEvidence(EvidenceFacet(strings.TrimPrefix(key, "facet:")))
 	case key == "test_inventory":
 		return "query the structure tool with view=tests, unscoped, and inspect scope, inventory, and structural completeness; an overview test_files count is not a filtered inventory"
+	case key == "test_behavior":
+		return "read one of the discovered test files and use its assertions to explain the behavior under test; a test name or file count is not behavior"
 	case key == "external_observation":
 		return "use the external capability the request named and observe its result"
 	case key == "verification":

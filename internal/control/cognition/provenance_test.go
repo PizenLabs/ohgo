@@ -947,3 +947,35 @@ func TestDocumentationGrepIsNotImplementationEvidence(t *testing.T) {
 			before.DocumentationTerms, after.DocumentationTerms)
 	}
 }
+
+// A source identifier can name a dependency whose documented spelling is not
+// a whole token in the identifier. "NewRedisClient" and
+// "NewPostgresConnection" are implementation evidence for Redis and
+// PostgreSQL; treating them as documentation-only forces the answer to
+// downgrade an observed source fact.
+func TestCamelCaseSourceIdentifierCorroboratesDocumentedDependency(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md",
+			"The platform uses PostgreSQL for storage and Redis for caching."),
+		readEvidenceForTest("read-2", "backend/internal/product/app.go",
+			"package product\n\nfunc main() {\n\tdb := database.NewPostgresConnection(cfg)\n\tcache := redis.NewRedisClient(cfg)\n\t_ = db\n\t_ = cache\n}\n"),
+	)
+	summary := state.Provenance(shape)
+	if !summary.HasImplementation {
+		t.Fatalf("source read was not implementation evidence: %+v", summary)
+	}
+	for _, term := range summary.DocumentationTerms {
+		if term == "postgresql" || term == "redis" {
+			t.Fatalf("a source-observed dependency remained documentation-only: %v", summary.DocumentationTerms)
+		}
+	}
+	answer := "The product service opens a database connection and a Redis client in its startup path."
+	if assessment := agent.AssessAnswerProvenance(contract.IntentContract{
+		Objective: shape.Objective,
+		Kind:      contract.ObjectiveInformational,
+	}, answer, summary); !assessment.Pass() {
+		t.Fatalf("an answer grounded in the observed source was rejected: %s", assessment.Reason())
+	}
+}

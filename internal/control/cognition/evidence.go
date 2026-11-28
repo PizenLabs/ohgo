@@ -779,6 +779,8 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		return s.HasExternalObservation()
 	case key == "test_inventory":
 		return s.ClaimSummary().TestInventory == "COMPLETE"
+	case key == "test_behavior":
+		return s.ClaimSummary().TestSourceObserved
 	case key == "verification":
 		return execution.VerifiedAfterMutation || len(execution.Verifications) > 0
 	case key == "execution_result":

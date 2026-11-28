@@ -51,3 +51,27 @@ func TestManifestLanguage(t *testing.T) {
 		}
 	}
 }
+
+// Test-path detection is the boundary between a test coordinate and test
+// behavior. A production file whose name contains a test-like word must not
+// become test evidence.
+func TestIsTestPath(t *testing.T) {
+	cases := map[string]bool{
+		"internal/agent/loop_test.go":                     true,
+		"backend/internal/order/handler/zz_probe_test.go": true,
+		"web/src/__tests__/Button.test.tsx":               true,
+		"web/src/components/Button.spec.ts":               true,
+		"tests/integration/order.go":                      true,
+		"service/src/test/java/OrderTest.java":            true,
+		"scripts/check_test.py":                           true,
+		"service/tests/test_order.py":                     true,
+		"internal/agent/claims.go":                        false,
+		"web/src/contest.ts":                              false,
+		"docs/testing.md":                                 false,
+	}
+	for path, want := range cases {
+		if got := IsTestPath(path); got != want {
+			t.Errorf("IsTestPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
