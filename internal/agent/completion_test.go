@@ -34,6 +34,67 @@ func answerTurn(text string) Turn {
 	}}
 }
 
+// A turn whose prose the publication gate withheld is not an answer.
+//
+// Completion and the transcript must agree: before this rule a rejected
+// candidate could be certified COMPLETED while every host showed only a
+// withdrawn draft, and the durable task recorded an answer no transaction
+// accepted.
+func TestCompletionRequiresPublishedAnswerText(t *testing.T) {
+	intent := contract.IntentContract{Objective: "Explain this project.", Kind: contract.ObjectiveInformational}
+	withheld := []AnswerDisposition{AnswerNarration, AnswerSuperseded, AnswerRejected}
+	for _, disposition := range withheld {
+		turn := answerTurn("This is a Go project.")
+		turn.Answer = disposition
+		if disposition == AnswerRejected {
+			turn.AnswerReview = "the evidence review did not support the answer"
+		}
+		verdict := EvaluateTaskCompletion(CompletionInput{Turns: []Turn{turn}, Contract: intent})
+		if verdict.Complete() {
+			t.Fatalf("disposition %s: withheld prose completed the task", disposition)
+		}
+		if !strings.Contains(verdict.Reason, "not published") &&
+			!strings.Contains(verdict.Reason, "not committed") &&
+			!strings.Contains(verdict.Reason, "narration") {
+			t.Fatalf("disposition %s: reason %q does not name the publication boundary", disposition, verdict.Reason)
+		}
+	}
+	for _, disposition := range []AnswerDisposition{AnswerUnclassified, AnswerCommitted} {
+		turn := answerTurn("This is a Go project.")
+		turn.Answer = disposition
+		verdict := EvaluateTaskCompletion(CompletionInput{Turns: []Turn{turn}, Contract: intent})
+		if !verdict.Complete() {
+			t.Fatalf("disposition %s: published answer was not completed: %s", disposition, verdict.Reason)
+		}
+	}
+}
+
+// A terminal refusal still carries the claims the review actually refused. The
+// durable task must be able to name them; an unpublished answer is not an
+// evidence-free review.
+func TestRefusedAnswerCarriesItsClaimIssues(t *testing.T) {
+	intent := contract.IntentContract{Objective: "Explain this project.", Kind: contract.ObjectiveInformational}
+	turn := answerTurn("The project is built with HTMX.")
+	turn.Answer = AnswerRejected
+	turn.AnswerReview = "the evidence review did not support htmx"
+	turn.Draft = &AnswerDraft{
+		Claims: []AnswerClaim{{
+			Text:  "The project is built with HTMX.",
+			State: ClaimRepairRequired,
+			Issues: []contract.GroundingIssue{{
+				Code: "unsupported_documentation_claim", Claim: "htmx", Category: "attribution",
+			}},
+		}},
+	}
+	verdict := EvaluateTaskCompletion(CompletionInput{Turns: []Turn{turn}, Contract: intent})
+	if verdict.Complete() {
+		t.Fatal("a refused answer completed the task")
+	}
+	if len(verdict.Issues) != 1 || verdict.Issues[0].Claim != "htmx" {
+		t.Fatalf("issues = %+v, want the refused claim preserved", verdict.Issues)
+	}
+}
+
 func TestEvaluateCompletionRejectsMutationWithoutVerification(t *testing.T) {
 	turns := []Turn{
 		{Results: []ToolOutcome{toolOutcome("edit", Result{Text: "edited", Mutates: true})}},

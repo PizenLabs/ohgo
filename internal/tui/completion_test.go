@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -12,6 +13,28 @@ import (
 )
 
 func stopTurn() agent.Turn { return agent.Turn{Assistant: ai.AssistantMessage{}} }
+
+// A withheld answer must not reach the task's completion transition. The task
+// boundary is a host: if the publication gate refused the prose, the durable
+// task records review, not an answered objective.
+func TestTurnTaskOutcomeDoesNotCompleteAWithheldAnswer(t *testing.T) {
+	turn := agent.Turn{
+		Assistant: ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.TextContent{Text: "It is a Go project."}},
+			StopReason: ai.StopEndTurn,
+		},
+		Answer:       agent.AnswerRejected,
+		AnswerReview: "the evidence review did not support the answer",
+	}
+	action, reason, _ := turnTaskOutcome(nil, []agent.Turn{turn},
+		workspace.BuildIntentContract("Explain this project."), nil, nil)
+	if action != taskActionReview {
+		t.Fatalf("action = %v, want review (reason %q)", action, reason)
+	}
+	if !strings.Contains(reason, "not published") {
+		t.Fatalf("reason = %q, want the publication boundary", reason)
+	}
+}
 
 func TestTurnTaskOutcomeHonorsEvidenceReview(t *testing.T) {
 	turns := []agent.Turn{{Assistant: ai.AssistantMessage{

@@ -73,9 +73,11 @@ type livePainter struct {
 	// streamIndex is the entry index of the in-flight assistant answer, and
 	// streamRunes is how many of its runes have already left for the
 	// scrollback. Rune offsets keep every seal on a character boundary, so a
-	// CJK or emoji turn can never be cut mid-rune.
-	streamIndex int
-	streamRunes int
+	// CJK or emoji turn can never be cut mid-rune. streamLabeled records that
+	// a draft's warning label left ahead of its body and must not repeat.
+	streamIndex   int
+	streamRunes   int
+	streamLabeled bool
 
 	// rows is the height of the live region the renderer last painted, live
 	// is the region itself, and block is the live region's non-chrome part —
@@ -117,6 +119,7 @@ func (v *livePainter) forget() {
 	v.painted = 0
 	v.streamIndex = -1
 	v.streamRunes = 0
+	v.streamLabeled = false
 	v.rows = 0
 	v.live = nil
 	v.block = nil
@@ -225,12 +228,16 @@ func (v *livePainter) sealUpTo(s State, first int, pal *Palette, layout Layout) 
 // streamTail renders the part of a streaming assistant entry that has not
 // been sealed yet, and closes the stream.
 func (v *livePainter) streamTail(s State, index int, e Entry, pal *Palette, layout Layout) []string {
-	rest := []rune(e.AssistantText)
+	full := e.AssistantText
+	if e.Discarded {
+		full = e.WithdrawnText
+	}
+	rest := []rune(full)
 	gap := v.streamRunes == 0 && index > 0 && s.Entries[index-1].Kind == EntryTool
 	if v.streamRunes > 0 && v.streamRunes <= len(rest) {
 		rest = rest[v.streamRunes:]
 	}
-	v.streamIndex, v.streamRunes = -1, 0
+	v.streamIndex, v.streamRunes, v.streamLabeled = -1, 0, false
 	lines := liveMarkdownLines(string(rest), pal, layout)
 	now := s.presentationAt()
 	if !entryFading(e, now) {
@@ -251,23 +258,17 @@ func (v *livePainter) frameSealed(s State) liveFrame {
 	layout := ComputeLayout(s)
 	var f liveFrame
 	for i := v.painted; i < len(s.Entries); i++ {
-		f.history = append(f.history, liveEntryLines(s, i, s.Entries[i], pal, layout)...)
-	}
-	if open := s.openAssistant(); open >= 0 && open >= v.painted {
-		// An interrupted answer: render its tail and give up streaming it.
-		rest := []rune(s.Entries[open].AssistantText)
-		gap := v.streamRunes == 0 && open > 0 && s.Entries[open-1].Kind == EntryTool
-		if v.streamIndex == open && v.streamRunes <= len(rest) {
-			rest = rest[v.streamRunes:]
+		e := s.Entries[i]
+		if e.Kind == EntryAssistant && v.streamIndex == i {
+			// The label and any committed prefix are already in scrollback;
+			// emit only the remainder, exactly as the ordinary seal does.
+			f.history = append(f.history, v.streamTail(s, i, e, pal, layout)...)
+			continue
 		}
-		lines := liveMarkdownLines(string(rest), pal, layout)
-		if gap && len(lines) > 0 {
-			lines = append([]string{""}, lines...)
-		}
-		f.history = append(f.history, lines...)
+		f.history = append(f.history, liveEntryLines(s, i, e, pal, layout)...)
 	}
 	v.painted = len(s.Entries)
-	v.streamIndex, v.streamRunes = -1, 0
+	v.streamIndex, v.streamRunes, v.streamLabeled = -1, 0, false
 	return f
 }
 
@@ -277,7 +278,20 @@ func (v *livePainter) frameSealed(s State) liveFrame {
 func (v *livePainter) streamLines(s State, first int, pal *Palette, layout Layout, budget int) (history, live []string) {
 	for i := first; i < len(s.Entries); i++ {
 		e := s.Entries[i]
-		if e.Kind == EntryAssistant && s.openAssistant() == i {
+		revealing := e.Kind == EntryAssistant && !e.RevealAt.IsZero()
+		if e.Kind == EntryAssistant && (s.openAssistant() == i || revealing) {
+			if v.streamIndex != i {
+				v.streamIndex, v.streamRunes, v.streamLabeled = i, 0, false
+			}
+			// A settled draft keeps its warning label above the revealing
+			// body. Emit it once into scrollback so a later safe commit cannot
+			// move the label below text that was already sealed.
+			if e.Discarded && !v.streamLabeled {
+				if _, label := assistantDisplay(e, s.presentationAt()); label != "" {
+					history = append(history, pal.Warning.Render(label))
+					v.streamLabeled = true
+				}
+			}
 			gap := i > 0 && s.Entries[i-1].Kind == EntryTool && v.streamRunes == 0
 			committed, kept := v.assistantBlock(s, i, pal, layout, budget)
 			if gap && len(committed) > 0 {
@@ -305,38 +319,30 @@ func (v *livePainter) streamLines(s State, first int, pal *Palette, layout Layou
 // whole and the seam lands inside it.
 func (v *livePainter) assistantBlock(s State, i int, pal *Palette, layout Layout, budget int) (history, live []string) {
 	text := s.Entries[i].AssistantText
-	if v.streamIndex != i || v.streamRunes > len([]rune(text)) {
-		v.streamIndex, v.streamRunes = i, 0
+	if s.Entries[i].Discarded {
+		text = s.Entries[i].WithdrawnText
+	}
+	if !s.Entries[i].RevealAt.IsZero() {
+		text = answerRevealedText(text, s.Entries[i].RevealAt, s.presentationAt())
+	}
+	if v.streamIndex != i {
+		v.streamIndex, v.streamRunes, v.streamLabeled = i, 0, false
+	} else if v.streamRunes > len([]rune(text)) {
+		v.streamRunes = 0
 	}
 	rest := []rune(text)[v.streamRunes:]
 	if len(rest) == 0 {
 		return nil, nil
 	}
-	lines := liveMarkdownLines(string(rest), pal, layout)
-	// A provisional answer has not been classified by the runtime yet. It
-	// may be withdrawn as tool narration or a rejected draft, and output-first
-	// scrollback cannot be rewritten, so it stays in the live region until the
-	// accept/discard event settles it. A long provisional block is a viewport
-	// onto its tail, not a commit: the settlement frame commits the complete
-	// text in paragraph order.
+	// A buffered candidate has not been classified by the runtime yet. Its
+	// text is held in the entry so the publication decision can replace it,
+	// but nothing enters the live region or output-first scrollback until that
+	// decision commits it. The telemetry line reports the review status while
+	// the candidate is under audit.
 	if s.Entries[i].Provisional {
-		if budget > 0 && len(lines) > budget {
-			// Keep a markdown-safe suffix: a paragraph boundary outside any
-			// fence. A raw row cut can begin inside a fenced block and render
-			// the remaining code as prose.
-			if cut := suffixCut(rest, budget, pal, layout); cut > 0 {
-				return nil, liveMarkdownLines(string(rest[cut:]), pal, layout)
-			}
-			if containsFenceLine(rest) {
-				// A single long fenced block has no safe internal cut. Showing
-				// the whole provisional block may exceed the live budget, but
-				// cutting it would render the code body as prose.
-				return nil, lines
-			}
-			return nil, lines[len(lines)-budget:]
-		}
-		return nil, lines
+		return nil, nil
 	}
+	lines := liveMarkdownLines(string(rest), pal, layout)
 	if budget <= 0 || len(lines) <= budget {
 		return nil, lines
 	}
@@ -383,9 +389,8 @@ func commitCut(rest []rune, budget int, pal *Palette, layout Layout) int {
 }
 
 // suffixCut returns the latest paragraph boundary outside a fence whose
-// remainder fits the budget. It is used both to commit an accepted answer and
-// to choose the provisional viewport, so the two paths share one definition of
-// a safe markdown cut.
+// remainder fits the budget. It is used to commit an accepted answer, so the
+// live and scrollback paths share one definition of a safe markdown cut.
 func suffixCut(rest []rune, budget int, pal *Palette, layout Layout) int {
 	cuts := paragraphCutsOutsideFences(rest)
 	for scanned, k := 0, len(cuts)-1; k >= 0 && scanned < liveCommitWalk; k-- {
@@ -399,21 +404,6 @@ func suffixCut(rest []rune, budget int, pal *Palette, layout Layout) int {
 		}
 	}
 	return -1
-}
-
-// containsFenceLine reports a fenced block in the provisional text.
-func containsFenceLine(rest []rune) bool {
-	lineStart := 0
-	for i := 0; i <= len(rest); i++ {
-		if i < len(rest) && rest[i] != '\n' {
-			continue
-		}
-		if isFenceDelimiter(strings.TrimSpace(string(rest[lineStart:i]))) {
-			return true
-		}
-		lineStart = i + 1
-	}
-	return false
 }
 
 // paragraphCutsOutsideFences returns the rune offsets at which a prefix can
@@ -504,13 +494,15 @@ func firstUnstable(s State) int {
 	if open := s.openAssistant(); open >= 0 {
 		first = open
 	}
-	// A provisional answer may be replaced, so it is never sealed even when a
-	// later block (a reasoning trace) sits below it.
+	// A buffered candidate may be replaced, and a settled answer still
+	// revealing its text changes every frame. Neither may be sealed into
+	// scrollback before its display projection is final.
 	for i, entry := range s.Entries {
 		if i >= first {
 			break
 		}
-		if entry.Kind == EntryAssistant && entry.Provisional && !entry.Discarded {
+		if entry.Kind == EntryAssistant &&
+			(!entry.RevealAt.IsZero() || (entry.Provisional && !entry.Discarded)) {
 			first = i
 			break
 		}
@@ -594,7 +586,7 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		return userPromptLines(e.UserText, s.Status.User, pal, layout)
 
 	case EntryAssistant:
-		text, label := assistantDisplay(e)
+		text, label := assistantDisplay(e, s.presentationAt())
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
@@ -1006,10 +998,10 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
 	width := displayWidth(s, layout)
 	if hasProvisionalAssistant(s) {
-		// Output-first has no stable row above the streamed block, so the
-		// draft state lives in the telemetry line. Full-screen marks the block
-		// itself; both modes say the same thing exactly once.
-		parts = append(parts, "draft · answer review pending")
+		// The candidate's prose is buffered until the publication decision.
+		// The telemetry line is the one stable place to say what the runtime
+		// is doing, without painting text that may be withdrawn.
+		parts = append(parts, "verifying evidence…")
 	}
 	// Shutting down is the one non-idle state no active telemetry row claims:
 	// the turn is already leaving, so the footer keeps the phase word.
@@ -1182,9 +1174,9 @@ func printTranscript(lines []string) tea.Cmd {
 	return tea.Println(strings.Join(lines, "\n"))
 }
 
-// hasProvisionalAssistant reports a streamed answer the review has not
-// settled. It is a status query, not authority: the block remains provisional
-// until AssistantReconcile accepts or withdraws it.
+// hasProvisionalAssistant reports a buffered candidate the review has not
+// settled. It is a status query, not authority: the entry remains buffered
+// until AssistantReconcile accepts or discards it.
 func hasProvisionalAssistant(s State) bool {
 	for i := len(s.Entries) - 1; i >= 0; i-- {
 		entry := s.Entries[i]

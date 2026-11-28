@@ -225,6 +225,16 @@ func (s *EvidenceState) recordFailure(outcome agent.ToolOutcome, seq int) {
 	if s == nil || outcome.Result.NegativeObservation() {
 		return
 	}
+	// A refused answer plan is evidence-dependent control feedback, not a
+	// failed capability. The same plan must be allowed to run again after the
+	// model records the observations the refusal named; the loop's bounded
+	// plan attempts already prevent an unbounded retry. Recording this as a
+	// failure signature would suppress the re-audit and leave the model with
+	// stale claim issues it can no longer clear.
+	if outcome.ToolName == agent.AnswerPlanToolName &&
+		outcome.Result.FailureClass == agent.ToolFailureAnswerPlan {
+		return
+	}
 	signature := agent.CallSignature(outcome.ToolName, outcome.Args)
 	target := agent.CallTarget(outcome.ToolName, outcome.Args)
 	class, retryable, external, summary := failureDetails(outcome)

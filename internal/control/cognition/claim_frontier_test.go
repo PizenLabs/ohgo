@@ -556,3 +556,120 @@ func TestInformationalShapeStaysReadOnly(t *testing.T) {
 		t.Fatal("ASK shape allowed execution")
 	}
 }
+
+// Tests are high-information evidence once discovered. A file count or a test
+// name names a coordinate; the frontier must send the model into a test rather
+// than another inventory.
+func TestClaimFrontierTestBehaviorOutranksFilenames(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	tests := structureTestOutcome("tests-1", "tests", map[string]any{
+		"view": "tests", "graph_state": "CURRENT", "complete": true,
+		"partial": false, "truncated": false, "scope_complete": true,
+		"inventory_complete": true, "structural_complete": true,
+		"completeness": "COMPLETE", "test_files": 2, "total": 2,
+		"coordinates": []map[string]any{
+			{"path": "backend/internal/order/handler/http_test.go", "line": 25, "symbol": "handler.TestCreateOrderValidation", "kind": "test"},
+			{"path": "backend/internal/order/handler/zz_probe_test.go", "line": 42, "symbol": "handler.TestProbe_CrossUserReplay", "kind": "test"},
+		},
+	})
+	state := claimState(t, shape, tests)
+	summary := state.ClaimSummary()
+	if summary.TestSourceObserved {
+		t.Fatal("a test declaration was treated as test source")
+	}
+	if len(summary.TestPaths) != 2 || len(summary.TestNames) != 2 {
+		t.Fatalf("test coordinates = paths %v names %v", summary.TestPaths, summary.TestNames)
+	}
+	frontier := frontierText(summary)
+	for _, want := range []string{
+		"test behavior -> 2 tests in 2 files",
+		"TestCreateOrderValidation",
+		"read backend/internal/order/handler/http_test.go",
+	} {
+		if !strings.Contains(frontier, want) {
+			t.Fatalf("frontier = %q, want %q", frontier, want)
+		}
+	}
+
+	state.ObserveOutcome(readEvidenceForTest("read-doc", "backend/tests/README.md", "# Test fixtures"))
+	if state.ClaimSummary().TestSourceObserved {
+		t.Fatal("test-directory documentation was treated as test source")
+	}
+
+	state.ObserveOutcome(readEvidenceForTest("read-1",
+		"backend/internal/order/handler/http_test.go", "package handler\nfunc TestCreateOrderValidation(t *testing.T) {}\n"))
+	summary = state.ClaimSummary()
+	if !summary.TestSourceObserved {
+		t.Fatal("reading a test file did not establish test source")
+	}
+	if strings.Contains(frontierText(summary), "test behavior ->") {
+		t.Fatalf("frontier kept a resolved test gap: %q", frontierText(summary))
+	}
+}
+
+// A broad survey with discovered tests may not close before one test's
+// assertions were observed. The requirement names the test gap and disappears
+// once the source is read.
+func TestTestBehaviorRequirementKeepsBroadSurveyOpen(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "# Project\n\nA service."),
+		readEvidenceForTest("read-2", "backend/cmd/product/main.go", "package main\nfunc main() {}\n"),
+		readEvidenceForTest("read-3", "backend/internal/product/service.go", "package product\nfunc Serve() {}\n"),
+	)
+	state.ObserveOutcome(structureTestOutcome("tests-1", "tests", map[string]any{
+		"view": "tests", "graph_state": "CURRENT", "complete": true,
+		"partial": false, "truncated": false, "scope_complete": true,
+		"inventory_complete": true, "structural_complete": true,
+		"completeness": "COMPLETE", "test_files": 1, "total": 1,
+		"coordinates": []map[string]any{
+			{"path": "backend/internal/product/service_test.go", "line": 10, "symbol": "product.TestServe", "kind": "test"},
+		},
+	}))
+
+	suff := EvaluateSufficiency(shape, state, ExecutionState{}, false)
+	if suff.State != Insufficient || !containsString(suff.Missing, "test_behavior") {
+		t.Fatalf("completed inventory without test source = %s/%s missing %v, want INSUFFICIENT with test_behavior",
+			suff.State, suff.Stage, suff.Missing)
+	}
+	if !strings.Contains(strings.Join(suff.Next, " "), "test") {
+		t.Fatalf("next = %v, want a test read", suff.Next)
+	}
+
+	state.ObserveOutcome(readEvidenceForTest("read-4",
+		"backend/internal/product/service_test.go", "package product\nfunc TestServe(t *testing.T) {}\n"))
+	suff = EvaluateSufficiency(shape, state, ExecutionState{}, false)
+	if suff.State != Sufficient || suff.Stage != StageAnswer {
+		t.Fatalf("after test source = %s/%s missing %v, want SUFFICIENT/answer", suff.State, suff.Stage, suff.Missing)
+	}
+}
+
+// An overview test-file count is enough to request the semantic inventory, but
+// not enough to require a test read: it names no test and may come from a
+// snapshot whose test files did not parse. The absence line must yield to the
+// test-behavior line instead of asking for absence proof when tests exist.
+func TestClaimFrontierOverviewTestCountRequestsSemanticInventory(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := claimState(t, shape, structureTestOutcome("overview-1", "overview", map[string]any{
+		"view": "overview", "graph_state": "CURRENT", "complete": true,
+		"partial": false, "truncated": false, "scope_complete": true,
+		"inventory_complete": true, "structural_complete": true,
+		"completeness": "COMPLETE", "test_files": 5, "total": 0,
+	}))
+	summary := state.ClaimSummary()
+	frontier := frontierText(summary)
+	if !strings.Contains(frontier, "tests -> 5 test files discovered") ||
+		!strings.Contains(frontier, "query structure view=tests") {
+		t.Fatalf("frontier = %q, want the semantic test-inventory acquisition", frontier)
+	}
+	if strings.Contains(frontier, "test absence ->") {
+		t.Fatalf("frontier = %q, a known test-file count must not read as absence", frontier)
+	}
+	if summary.TestInventory == "COMPLETE" {
+		t.Fatalf("an overview count was promoted to a complete test inventory: %+v", summary)
+	}
+	if _, ok := testBehaviorRequirement(shape, state); ok {
+		t.Fatal("an overview count alone required a test read without naming a test")
+	}
+}

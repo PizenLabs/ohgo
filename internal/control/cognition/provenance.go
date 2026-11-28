@@ -185,7 +185,7 @@ func documentationOnlyTerms(documentation []string, observed, identity map[strin
 	var out []string
 	for _, text := range documentation {
 		for _, term := range documentationClaimTerms(text) {
-			if seen[term] || observed[term] || identity[term] || dependencyNamesTerm(term, dependencies) {
+			if seen[term] || provenanceTermObserved(term, observed) || identity[term] || dependencyNamesTerm(term, dependencies) {
 				continue
 			}
 			seen[term] = true
@@ -197,6 +197,25 @@ func documentationOnlyTerms(documentation []string, observed, identity map[strin
 	}
 	sort.Strings(out)
 	return out
+}
+
+// provenanceTermAliases collapses spelling variants of one technology name.
+// Source identifiers often use a short form ("Postgres") while documentation
+// uses the formal name ("PostgreSQL"); they are one dependency, and a source
+// observation of either is evidence of that stack term.
+var provenanceTermAliases = map[string]string{
+	"postgresql": "postgres",
+	"postgres":   "postgres",
+}
+
+func provenanceTermObserved(term string, observed map[string]bool) bool {
+	if observed[term] {
+		return true
+	}
+	if alias := provenanceTermAliases[term]; alias != "" {
+		return observed[alias]
+	}
+	return false
 }
 
 // dependencyNamesTerm reports a documented name corroborated by a dependency
@@ -398,24 +417,59 @@ func startsLowerWord(token string) bool {
 // every token the run can still inspect.
 func termSet(texts []string) map[string]bool {
 	out := map[string]bool{}
+	add := func(raw string) {
+		raw = strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_#|/-")
+		token := strings.ToLower(raw)
+		token = stripVersionSuffix(token)
+		if token == "" || genericProvenanceTerm(token) {
+			return
+		}
+		// Two-character vocabulary is normally grammar or an abbreviation
+		// too generic to identify a claim. An all-uppercase token is a
+		// proper noun the source actually names ("AI", "UI", "DB"), and
+		// documented names of that shape would otherwise be unobservable:
+		// the length floor alone made "AI" permanently documentation-only.
+		if len(token) < 3 && (len(token) != 2 || !isUpperWord(raw)) {
+			return
+		}
+		out[token] = true
+	}
 	for _, text := range texts {
 		for _, raw := range strings.Fields(splitTermText(text)) {
-			raw = strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_#|/-")
-			token := strings.ToLower(raw)
-			token = stripVersionSuffix(token)
-			if token == "" || genericProvenanceTerm(token) {
-				continue
+			add(raw)
+			// A source identifier such as NewRedisClient or
+			// NewPostgresConnection names the dependency even though the
+			// documentation's spelling is not a whole token in the identifier.
+			// Add its component words so a source read can corroborate the
+			// documented name instead of leaving it documentation-only.
+			for _, segment := range camelSegments(raw) {
+				add(segment)
 			}
-			// Two-character vocabulary is normally grammar or an abbreviation
-			// too generic to identify a claim. An all-uppercase token is a
-			// proper noun the source actually names ("AI", "UI", "DB"), and
-			// documented names of that shape would otherwise be unobservable:
-			// the length floor alone made "AI" permanently documentation-only.
-			if len(token) < 3 && (len(token) != 2 || !isUpperWord(raw)) {
-				continue
-			}
-			out[token] = true
 		}
+	}
+	return out
+}
+
+// camelSegments splits an identifier at camelCase and acronym boundaries.
+// A token with no mid-token boundary yields no segments, so its full spelling
+// remains the only term.
+func camelSegments(raw string) []string {
+	var out []string
+	start := 0
+	for i := 1; i < len(raw); i++ {
+		prev, current := raw[i-1], raw[i]
+		nextLower := i+1 < len(raw) && raw[i+1] >= 'a' && raw[i+1] <= 'z'
+		lowerToUpper := prev >= 'a' && prev <= 'z' && current >= 'A' && current <= 'Z'
+		acronymToWord := prev >= 'A' && prev <= 'Z' && current >= 'A' && current <= 'Z' && nextLower
+		if lowerToUpper || acronymToWord {
+			if i > start {
+				out = append(out, raw[start:i])
+			}
+			start = i
+		}
+	}
+	if start > 0 {
+		out = append(out, raw[start:])
 	}
 	return out
 }

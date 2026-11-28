@@ -290,10 +290,13 @@ func TestLongTurnReachesTranscriptInOrder(t *testing.T) {
 				preview += e.Text
 				deltas++
 				if index := p.state.lastProvisionalAssistant(); index < 0 || !p.state.Entries[index].Provisional {
-					t.Fatal("streamed text did not remain a provisional preview")
+					t.Fatal("streamed text was not buffered as a provisional entry")
 				}
-				if !strings.Contains(ansi.Strip(Render(p.state)), "draft · answer review pending") {
-					t.Fatal("streamed answer was not visibly labelled as provisional")
+				if got := p.state.AssistantText(); got != "" {
+					t.Fatalf("uncommitted candidate entered the answer projection: %q", got)
+				}
+				if !strings.Contains(ansi.Strip(Render(p.state)), "verifying evidence…") {
+					t.Fatal("streamed candidate was not marked as under review")
 				}
 			case AssistantReconcile:
 				if e.Answer != agent.AnswerCommitted {
@@ -319,9 +322,9 @@ func TestLongTurnReachesTranscriptInOrder(t *testing.T) {
 	}
 }
 
-// Streamed prose appears as a labelled draft before the answer gate, then the
-// exact committed value replaces it without duplication.
-func TestRunTurnStreamsProvisionalAnswerUntilCommit(t *testing.T) {
+// Streamed prose is buffered until the answer gate, then the exact committed
+// value appears once without duplication.
+func TestRunTurnBuffersCandidateUntilCommit(t *testing.T) {
 	deltas := []string{"# Project\n\n", "The project is a ", "Go agent runtime.\n"}
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
@@ -347,7 +350,10 @@ func TestRunTurnStreamsProvisionalAnswerUntilCommit(t *testing.T) {
 				preview += e.Text
 				index := p.state.lastProvisionalAssistant()
 				if index < 0 || !p.state.Entries[index].Provisional {
-					t.Fatal("candidate delta was not retained as a provisional entry")
+					t.Fatal("candidate delta was not retained as a buffered entry")
+				}
+				if got := p.state.AssistantText(); got != "" {
+					t.Fatalf("uncommitted candidate entered the answer projection: %q", got)
 				}
 			case AssistantReconcile:
 				if e.Answer == agent.AnswerCommitted {

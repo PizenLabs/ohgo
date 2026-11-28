@@ -43,6 +43,13 @@ var (
 	// and must earn the same coverage.
 	negativeAbsenceOfPattern = regexp.MustCompile(
 		`(?i)\babsence\s+of\s+([a-z0-9][a-z0-9 _./-]{0,40}?)(?:\s+(?:is|are|was|were|in|within|at|on|for|to)\b|[.,;:]|$)`)
+	// negativeUncertainPredicatePattern marks an absence the answer itself
+	// reports as unproven. "The absence of tests elsewhere is unproven" is an
+	// honest scope limitation, not the assertion that tests are absent; the
+	// negative-claim audit must not demand an inventory for it.
+	negativeUncertainPredicatePattern = regexp.MustCompile(
+		`(?i)^\s*(?:(?:is|are|was|were|remains?|has\s+not\s+been|have\s+not\s+been)\s+)?` +
+			`(?:unproven|not\s+proven|not\s+established|not\s+verified|unverified|unknown|undetermined|indeterminate|unclear|not\s+determined)\b`)
 	// changeReportPattern follows a negated quantity with a run predicate.
 	// "No files were modified", "no source files were read", and "no
 	// application or test was executed" report what the run did, not what the
@@ -82,6 +89,8 @@ var (
 	boundedRunLimitPattern = regexp.MustCompile(
 		`(?i)\b(?:before\s+(?:the\s+)?(?:evidence\s+|turn\s+|time\s+)?(?:window|run|budget|deadline|turn|turns)|` +
 			`within\s+(?:the\s+)?(?:evidence|turn|time)\s+(?:window|budget)|` +
+			`(?:repair|correction|evidence|tool)\s+(?:window|budget|allowance)|` +
+			`not\s+successfully\s+read|were\s+not\s+read|was\s+not\s+read|not\s+parsed|unparsed|` +
 			`ran\s+out\s+of\s+(?:turns|budget|time|evidence))\b`)
 	// An epistemic limit is not a repository absence. "No contradiction to
 	// arbitrate" says the comparison cannot be made; it does not assert what
@@ -144,7 +153,7 @@ var (
 	// uncertaintyPattern marks an honest report about external state: the
 	// answer names the claim in order to say it cannot be established.
 	uncertaintyPattern = regexp.MustCompile(
-		`(?i)\b(?:cannot|can't|could not|couldn't|unable|not able|no evidence|not verified|unverified|unknown|not established|does not establish|whether|may have|might have|possibly|would need)\b`)
+		`(?i)\b(?:cannot|can't|could not|couldn't|unable|not able|no evidence|not verified|unverified|unknown|not established|unproven|not proven|does not establish|whether|may have|might have|possibly|would need)\b`)
 	// remoteObservationPattern matches a command that actually talked to a
 	// remote surface. A successful result is the only local evidence that
 	// external state was observed rather than inferred.
@@ -395,20 +404,25 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 			// reported why it stopped, which is the honest answer the
 			// completion boundary asks for.
 			window := uncertaintyWindow(answerLower, match[0], match[1])
-			if boundedRunLimitPattern.MatchString(window) {
-				continue
-			}
-			detail := "the answer reports an inability to find evidence as the result"
 			// "I could not read it" is not the same as "the request could not
 			// be answered": when the run listed the path, the statement is
 			// about a call that was never made, and the reader needs the path,
-			// not the admission. A capability gap (no adapter for this
-			// language) is the usual origin: it says nothing about access to
-			// the file.
-			if path := collectGroundingCoverage(turns).declinesObservedPath(answerLower); path != "" {
+			// not the admission. An observed-but-unread path outranks a
+			// bounded-window phrase in the same sentence.
+			declined := collectGroundingCoverage(turns).declinesObservedPath(answerLower)
+			if declined == "" && (boundedRunLimitPattern.MatchString(window) ||
+				claimIsBounded(window) || boundedNegativeReport(window)) {
+				// The sentence itself bounds the limitation to what this run
+				// observed or to the window it was given. That is an honest
+				// scope statement, not a claim that the evidence is absent or
+				// inaccessible.
+				continue
+			}
+			detail := "the answer reports an inability to find evidence as the result"
+			if declined != "" {
 				detail = fmt.Sprintf(
 					"the answer reports it could not read the evidence, but this run observed %s; that gap is a call the run did not make, not a file it could not access",
-					path)
+					declined)
 			}
 			add("unverified_negative_result", detail)
 			break
@@ -504,12 +518,25 @@ func negativeClaims(answer string) []negativeClaim {
 			if boundedNegativeReport(window) || negativeEpistemicPattern.MatchString(window) {
 				continue
 			}
+			// An absence the answer itself calls unproven is a limitation, not
+			// the assertion that the subject is missing. It needs no inventory;
+			// the final facet/completion boundary owns the unresolved gap.
+			if negativePredicateUncertain(answer, match[1]) {
+				continue
+			}
 			// A statement about what this run changed is not an existence
 			// claim. "No files were modified" is a no-op report: a file scan
 			// can never cover it, and review here would punish an honest
 			// account of an untouched workspace.
 			if changeReportPattern.MatchString(answer[match[1]:]) ||
 				runReportFollowsNegative(answer, match[1]) {
+				continue
+			}
+			// "The README states there is no hosted service" reports the
+			// documentation, not a world absence. The audit owns what the
+			// repository contains; a documentation-attributed absence is a
+			// provenance claim and is checked by the attribution audit.
+			if attributedNegativeClaim(answer, match[0], match[1]) {
 				continue
 			}
 			if claimIsEvidenceGap(answer, match[3]) {
@@ -539,6 +566,77 @@ func negativeClaims(answer string) []negativeClaim {
 	addMatches(negativeMissingPattern, false)
 	addMatches(negativeAbsenceOfPattern, false)
 	return out
+}
+
+// negativePredicateUncertain reports whether the predicate immediately after
+// a negative match qualifies it as unproven. The match may consume the copula
+// ("absence of tests is" + "unproven") or stop before it; both forms are
+// reports of uncertainty, not absence claims. The scan is bounded to the
+// predicate's own clause so a later "cannot" cannot excuse a real absence.
+func negativePredicateUncertain(answer string, end int) bool {
+	if end < 0 || end >= len(answer) {
+		return false
+	}
+	limit := end + 80
+	if limit > len(answer) {
+		limit = len(answer)
+	}
+	tail := answer[end:limit]
+	if cut := strings.IndexAny(tail, ".;\n"); cut >= 0 {
+		tail = tail[:cut]
+	}
+	return negativeUncertainPredicatePattern.MatchString(tail)
+}
+
+// attributedNegativeClaim reports whether the negative occurrence is a
+// statement about documentation rather than a claim that the subject is absent
+// from the repository. The attribution must share the clause with the
+// negative; a later contrast ("README says no X, so the project has no X") is
+// a world claim and must still be audited.
+func attributedNegativeClaim(answer string, start, end int) bool {
+	if start < 0 || end < start || end > len(answer) {
+		return false
+	}
+	lineStart := strings.LastIndex(answer[:start], "\n") + 1
+	linePrefix := answer[lineStart:start]
+	clauseStart := strings.LastIndexAny(linePrefix, ".;!?")
+	prefix := linePrefix[clauseStart+1:]
+	if hasAttribution(prefix) && !negativeAttributionContrast(prefix) {
+		return true
+	}
+	// A bullet under an attributed section ("**Per README**" followed by a
+	// list) inherits the section's provenance. Only the immediately preceding
+	// non-empty line is considered; an unrelated earlier attribution does not
+	// govern a later section.
+	if lineStart > 1 {
+		previousEnd := lineStart - 1
+		previousStart := strings.LastIndex(answer[:previousEnd], "\n") + 1
+		previous := strings.TrimSpace(answer[previousStart:previousEnd])
+		if previous != "" && hasAttribution(previous) && !negativeAttributionContrast(previous) {
+			return true
+		}
+	}
+	// "There is no hosted service, according to the README" attributes the
+	// same clause after the negative. Stop at a clause boundary so a later
+	// sentence's attribution cannot excuse this claim.
+	suffix := answer[end:]
+	if cut := strings.IndexAny(suffix, ".;!?\n"); cut >= 0 {
+		suffix = suffix[:cut]
+	}
+	return hasAttribution(suffix) && !negativeAttributionContrast(suffix)
+}
+
+// negativeAttributionContrast reports a conclusion joined to the attribution.
+// "The README says X and the project has no Y" cannot borrow README as the
+// evidence for Y.
+func negativeAttributionContrast(text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range []string{" but ", " however ", " yet ", " whereas ", " so ", " therefore ", " thus ", " hence ", " and the project ", " and the repository "} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // manifestDeclarationAbsence reports a negative about what a manifest

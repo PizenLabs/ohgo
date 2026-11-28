@@ -7,6 +7,54 @@ immutable.
 
 ### Added
 
+- Broad project investigations now treat discovered tests as evidence to read,
+  not only inventory to count. Once the semantic test inventory names tests
+  (or the overview reports test files), the evidence frontier prioritizes the
+  test-behavior gap and names the discovered test symbols and a concrete file.
+  A semantic test inventory with test symbols keeps the survey open until at
+  least one test file's assertions are observed; a complete inventory that
+  observed zero test symbols stays closed. The overview's `test_files` count
+  now reaches the claim summary without pretending the filtered test inventory
+  is complete.
+- Evidence classes survive the answer lifecycle. CamelCase source identifiers
+  such as `NewPostgresConnection` and `NewRedisClient` corroborate the
+  documented dependency name, so an observed source operation is not recast as
+  a documentation-only claim. The answer-plan ledger and the state block
+  require explicit observed-source, documented, structural, runtime, and
+  inferred labels, and ask the answer to name documentation/manifest conflicts
+  instead of silently choosing one side.
+- Pre-prose answer plan (`prepare_answer`). At the informational answer
+  boundary the runtime can require the model to declare the claims the final
+  answer will make, plus the scope limitations it will state. The plan runs the
+  same deterministic claim audit as publication. A refused plan names the
+  missing observation and reopens the evidence surface without the plan tool;
+  the model must record an observation before it can plan again, and the
+  re-audit is not suppressed as a stale capability failure. An accepted
+  plan unlocks the answer request. The accepted claims and limitations travel
+  into that request as the composition ledger, and the final prose is checked
+  against the ledger again, so a documented claim cannot silently become an
+  unattributed world claim after the plan passes. The gate is bounded
+  (`agent.MaxAnswerPlanAttempts`) and cannot publish or complete anything.
+- The TUI buffers streamed candidate prose instead of painting it into the main
+  transcript. While the publication decision is pending the telemetry line says
+  `verifying evidence…`; a committed answer and the one labelled rejected draft
+  reveal progressively at a bounded reading pace, while the full text remains
+  the copy and answer contract from the first frame. The retained layout and
+  the output-first row budget follow the reveal until it completes, so it
+  cannot freeze after the entrance fade or overflow the repainted region. A
+  narration or superseded candidate is discarded without a visible wipe.
+- Manifest-backed stack adoption is grounded by the declaration itself. "The
+  backend uses Redis" now needs a manifest or import, while "uses Redis for
+  caching" still requires an observed source operation. An absence the answer
+  itself reports as unproven is a limitation, not a repository-wide absence;
+  the same holds for an absence explicitly attributed to documentation ("the
+  README states there is no hosted service"), while the unattributed world
+  claim remains subject to the inventory gate. PostgreSQL/Postgres spelling
+  variants share one provenance term.
+- Honest scope limits that name this run's inspected scope or evidence window
+  are not reported as `unverified_negative_result`. A limitation such as "the
+  internal source was not read in this pass" is a truthful boundary, not a
+  claim that the evidence does not exist.
 - `ohgo doctor --tools` renders a grouped breakdown of every registered tool,
   sourced from the live registry: functional group, approval safety
   (`read-only`, `mutating`, `shell`), active binding (`grep` → `rg (path)` or
@@ -50,9 +98,6 @@ immutable.
   required evidence, the already supported claims, and the permitted actions
   (`VERIFY`, `ATTRIBUTE`, `WEAKEN`, `REMOVE`). It carries no remaining-call
   counter.
-- Answer prose is no longer streamed as a candidate in the full-screen TUI or
-  output-first live surface. Reasoning and tool activity remain live; the first
-  user-visible answer prose is the committed artifact, published once.
 - Python structural coverage. The multi-language build registers
   `tree-sitter-python` over `.py`/`.pyi`: classes (including base classes),
   functions/methods, module variables, `import`/`from` resolution,
@@ -320,6 +365,31 @@ immutable.
 
 ### Fixed
 
+- A correction that spends its tool allowance no longer publishes a completion
+  confirmation in place of the answer. The model still sees its superseded
+  draft so it can preserve supported claims, but the final request now states
+  that the draft was withheld and requires the complete answer. The answer
+  review also refuses a short answer that refers to an unpublished analysis,
+  and the runtime state frames completion as a requirement rather than an
+  accomplished fact. Previously a model could read `Completion: a non-empty
+  answer was produced`, treat its withdrawn draft as delivered, and end with
+  "the analysis above"; when the ledger could not deterministically salvage the
+  richer draft, that confirmation became the committed answer.
+- The answer-correction allowance now admits calls in the model's order. A
+  correction batch previously dispatched concurrently, so whichever call
+  reached the atomic counter last could consume the final slot while an earlier
+  call in the same batch was refused; the executed evidence depended on
+  scheduling. Correction batches run serially, preserving authority-first
+  admission and making the admitted set and the refusals deterministic.
+  Investigation batches keep their concurrency.
+- An informational task can no longer be completed by a withheld answer.
+  Completion, the durable task's `Answered` evidence, and a delegated child's
+  result read the turn's `AnswerDisposition` through `Turn.AnswerText`; a
+  narrated, superseded, or rejected candidate is not an answer even though its
+  raw prose remains on the turn for audit and repair. Before this rule a run
+  could be reported `COMPLETED` / `PROVEN` while the transcript showed only a
+  withdrawn draft, and a refused answer's bounded claim issues were lost at the
+  completion boundary.
 - A slash-separated capability label in a comma-separated list (`test-impact
   selection/publishing`) is no longer treated as a runtime predicate about an
   earlier component in the list. It still needs a source observation carrying

@@ -451,6 +451,7 @@ func TestClearedRejoinsLiveEdge(t *testing.T) {
 	}
 	s.Apply(UserSubmitted{Text: "new question"})
 	s.Apply(AssistantDelta{Text: "new answer"})
+	s.Apply(AssistantReconcile{Text: "new answer", Answer: agent.AnswerCommitted})
 	out := ansi.Strip(Render(s))
 	if strings.Contains(out, "lines above") {
 		t.Errorf("stale scroll marker over fresh content:\n%s", out)

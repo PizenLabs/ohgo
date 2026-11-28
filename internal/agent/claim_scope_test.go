@@ -158,6 +158,20 @@ func claimStructureTests(testFiles int, scopeComplete bool) ToolOutcome {
 	}
 }
 
+// An absence the answer itself reports as unproven is an honest limitation,
+// not a repository-wide conclusion. The observed positive test inventory must
+// not turn that sentence into a claim that tests are absent elsewhere.
+func TestUnprovenAbsenceIsNotANegativeClaim(t *testing.T) {
+	answer := "Go tests are present in backend/internal/order/ (confirmed via structure inventory); I did not run them and did not perform a complete repo-wide test inventory, so absence of tests elsewhere is unproven."
+	turns := []Turn{{Results: []ToolOutcome{claimStructureTests(5, true)}}}
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("unproven absence produced claims: %+v", claims)
+	}
+	if codes := evidenceCodes(t, turns, answer); codes["unsupported_negative_conclusion"] {
+		t.Fatalf("unproven absence was reviewed as a negative conclusion: %v", codes)
+	}
+}
+
 // A stale snapshot is not a current absence proof, even when its four
 // completeness axes were complete when it was taken.
 func TestStaleTestInventoryDoesNotProveAbsence(t *testing.T) {
@@ -916,5 +930,55 @@ func TestCapabilityLabelWithoutObservationStillReviews(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(verdict.Reason), "publishing") {
 		t.Fatalf("reason = %q, want the unobserved behavior", verdict.Reason)
+	}
+}
+
+// A documentation sentence reports what the README says; it is not a claim
+// that the repository lacks the subject. The same sentence without the
+// attribution is a world absence and still needs coverage.
+func TestDocumentationAttributedAbsenceIsNotAWorldClaim(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{claimRead("README.md", "There is no hosted service.", 20)}}}
+	attributed := "The README states there is no hosted service, API key, or telemetry."
+	if claims := negativeClaims(attributed); len(claims) != 0 {
+		t.Fatalf("attributed absence produced world claims: %+v", claims)
+	}
+	if codes := evidenceCodes(t, turns, attributed); codes["unsupported_negative_conclusion"] {
+		t.Fatalf("attributed absence was reviewed as a world absence: %v", codes)
+	}
+
+	world := "There is no hosted service."
+	if claims := negativeClaims(world); len(claims) == 0 {
+		t.Fatal("an unattributed hosted-service absence was not audited")
+	}
+	if codes := evidenceCodes(t, turns, world); !codes["unsupported_negative_conclusion"] {
+		t.Fatalf("unattributed absence was accepted: %v", codes)
+	}
+}
+
+// A contrast after the attribution turns the sentence back into a world
+// conclusion; the documentation cannot lend its evidence to the second clause.
+func TestAttributedAbsenceContrastRemainsAWorldClaim(t *testing.T) {
+	answer := "The README states there is no hosted service, so the project has no hosted service."
+	claims := negativeClaims(answer)
+	if len(claims) == 0 {
+		t.Fatal("contrast absence was excused by an earlier attribution")
+	}
+	found := false
+	for _, claim := range claims {
+		if strings.Contains(strings.ToLower(claim.Subject), "hosted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("claims = %+v, want the hosted-service conclusion", claims)
+	}
+}
+
+// A list item under a documentation-attributed section is a report of that
+// section, not an independently evidenced world absence.
+func TestAttributedAbsenceSectionScopesItsBullets(t *testing.T) {
+	answer := "**Interfaces and storage (per README — documentation claim)**\n- Local SQLite only; no hosted service, API key, or telemetry."
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("section-attributed absence produced world claims: %+v", claims)
 	}
 }

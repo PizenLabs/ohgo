@@ -409,8 +409,13 @@ func hasRunningTool(s State) bool {
 	return latestRunningTool(s) != nil
 }
 
-// hasAssistantText reports the trailing assistant entry holds streamed text.
+// hasAssistantText reports that an assistant candidate is streaming. The
+// candidate may be buffered rather than painted, but it is still model output
+// arriving, so the runtime phase is Responding and not Working.
 func hasAssistantText(s State) bool {
+	if hasProvisionalAssistant(s) {
+		return true
+	}
 	if s.runtimeTracked {
 		return s.assistantText
 	}

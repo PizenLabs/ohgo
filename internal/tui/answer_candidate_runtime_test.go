@@ -17,8 +17,8 @@ const runtimeFinal = "The project is a Go service; cmd/ohgo is the CLI entrypoin
 // agent loop, the evidence review supersedes the first candidate, the loop
 // resumes with tool calls, and the final answer commits. Every event the
 // program publishes is applied to the authoritative state in publication
-// order. The active candidate must be visible while it streams, then withdraw
-// when the audit supersedes it, and only the committed answer may remain.
+// order. The candidate must be buffered while it streams, never painted, then
+// withdrawn when the audit supersedes it; only the committed answer may remain.
 func TestRuntimeEvidenceRepairWithdrawsSupersededCandidate(t *testing.T) {
 	responses := []ai.AssistantMessage{
 		{Content: []ai.ContentBlock{ai.TextContent{Text: runtimeCandidate}}, StopReason: ai.StopEndTurn},
@@ -72,6 +72,13 @@ func TestRuntimeEvidenceRepairWithdrawsSupersededCandidate(t *testing.T) {
 		p.state.Apply(event)
 		if hasActiveCandidate(p.state, runtimeCandidate) {
 			sawActive = true
+			var painted strings.Builder
+			for _, entry := range p.state.Entries {
+				renderEntryContent(&painted, entry, PaletteFor(""), Layout{Width: 100, ContentWidth: 100}, entryRenderContext{})
+			}
+			if strings.Contains(painted.String(), runtimeCandidate) {
+				t.Fatalf("buffered candidate painted before the publication decision after %T:\n%s", event, painted.String())
+			}
 		}
 		if reconcile, ok := event.(AssistantReconcile); ok && reconcile.Answer == agent.AnswerSuperseded {
 			sawSuperseded = true

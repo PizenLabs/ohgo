@@ -6,6 +6,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 // Layout tiers pin the responsive contract.
@@ -182,24 +184,27 @@ func TestToolOutputBoundedAndWrapped(t *testing.T) {
 	}
 }
 
-func TestStreamingWhileScrolledPinsViewport(t *testing.T) {
+func TestBufferedCandidateDoesNotMoveAReaderViewport(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 10})
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		s.Apply(Notice{Text: "older"})
 	}
 	s.Apply(ScrollMoved{Delta: 4})
 	before := s.Scroll
 	s.Apply(AssistantDelta{Text: "streamed\nchunk"})
-	if s.Scroll <= before {
-		t.Errorf("scroll = %d, want it pinned (was %d) while unfollowed", s.Scroll, before)
+	if s.Scroll != before {
+		t.Errorf("scroll = %d, want the reader's viewport unchanged (was %d)", s.Scroll, before)
 	}
 	if out := Render(s); !strings.Contains(out, "lines above") {
-		t.Errorf("render lost the scroll indicator during streaming: %q", out)
+		t.Errorf("render lost the scroll indicator while reviewing: %q", out)
+	}
+	if out := Render(s); !strings.Contains(out, "verifying evidence…") {
+		t.Errorf("render lost the review status: %q", out)
 	}
 }
 
-func TestStreamingWhileFollowingTracksEdge(t *testing.T) {
+func TestCommittedAnswerTracksLiveEdge(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 10})
 	s.Apply(AssistantDelta{Text: "hello"})
@@ -207,8 +212,12 @@ func TestStreamingWhileFollowingTracksEdge(t *testing.T) {
 	if !s.Follow || s.Scroll != 0 {
 		t.Errorf("scroll = %d follow = %v, want the live edge tracked", s.Scroll, s.Follow)
 	}
+	if out := Render(s); strings.Contains(out, "hello world") {
+		t.Errorf("buffered candidate painted before commit: %q", out)
+	}
+	s.Apply(AssistantReconcile{Text: "hello world", Answer: agent.AnswerCommitted})
 	if out := Render(s); !strings.Contains(out, "hello world") {
-		t.Errorf("render = %q, want streamed chunks concatenated in order", out)
+		t.Errorf("render = %q, want the committed answer", out)
 	}
 }
 

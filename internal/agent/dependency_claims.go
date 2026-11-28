@@ -91,9 +91,21 @@ var (
 	// dependencyRuntimeVerbPattern reports a runtime observation claim.
 	dependencyRuntimeVerbPattern = regexp.MustCompile(
 		`(?i)\b(?:at\s+runtime|observed\s+(?:at\s+)?runtime|while\s+running|running\s+service|runtime\s+observation)\b`)
-	// dependencyUseVerbPattern reports an operational use claim.
+	// dependencyAdoptionVerbPattern reports that a component adopts a
+	// technology. A manifest declaration or an import is enough: the sentence
+	// names the stack, not an operation the runtime performed.
+	dependencyAdoptionVerbPattern = regexp.MustCompile(
+		`(?i)\b(?:uses?|used|using|relies?\s+on|depends?\s+on|built\s+(?:with|on)|includes?|integrates?\s+with)\b`)
+	// dependencyUseVerbPattern reports an operational use claim. These verbs
+	// require a source operation in the named component; an adoption verb does
+	// not.
 	dependencyUseVerbPattern = regexp.MustCompile(
-		`(?i)\b(?:uses?|used|using|relies?\s+on|depends?\s+on|connects?\s+to|caches?|publishes?|consumes?|subscribes?|produces?|writes?|reads?|stores?|queries?|integrates?\s+with|calls?|sends?)\b`)
+		`(?i)\b(?:connects?\s+to|caches?|publishes?|consumes?|subscribes?|produces?|writes?|reads?|stores?|queries?|validates?|persists?|calls?|sends?)\b`)
+	// dependencyBehaviorPattern names the nouns that turn a stack mention into
+	// a behavioral claim even when the verb is only "uses". "Redis caching" is
+	// not the same claim as "the stack includes Redis".
+	dependencyBehaviorPattern = regexp.MustCompile(
+		`(?i)\b(?:cach(?:e|es|ed|ing)|publish(?:es|ed|ing)?|consum(?:e|es|ed|ing)|subscrib(?:e|es|ed|ing)|quer(?:y|ies|ied)|connect(?:s|ed|ing)?|validat(?:e|es|ed|ing)|persist(?:s|ed|ing)?|writ(?:e|es|ten|ing)|stor(?:e|es|ed|ing)|read(?:s|ing)?|send(?:s|ing)?|produc(?:e|es|ed|ing))\b`)
 	// dependencyNegativePattern reports an absence form. It is handled by the
 	// concept-absence audit, not by the positive use ladder.
 	dependencyNegativePattern = regexp.MustCompile(
@@ -135,7 +147,7 @@ func dependencyClaimIssues(sentence string, turns []Turn) []claimIssue {
 		}
 		out = append(out, claimIssue{Code: "unsupported_dependency_claim", Detail: detail})
 	}
-	if len(out) == 0 && strings.Contains(lower, "caching") {
+	if len(out) == 0 && dependencyBehaviorPattern.MatchString(lower) {
 		// "Redis caching" is a use claim even when the verb is a noun phrase.
 		for _, spec := range dependencyVocabulary {
 			index := dependencyMentionIndex(sentence, spec)
@@ -150,7 +162,7 @@ func dependencyClaimIssues(sentence string, turns []Turn) []claimIssue {
 			return []claimIssue{{
 				Code: "unsupported_dependency_claim",
 				Detail: fmt.Sprintf(
-					"the answer claims %q, but %s; caching requires a concrete cache operation in the component's source",
+					"the answer claims %q, but %s; an operational use requires a concrete operation in the component's source",
 					boundedClaim(dependencyClaimPhrase(sentence, index, spec)), dependencyObservationPhrase(observed)),
 			}}
 		}
@@ -178,6 +190,7 @@ func dependencyVerbInClause(sentence string, mention int) bool {
 		dependencyInitializeVerbPattern,
 		dependencyRuntimeVerbPattern,
 		dependencyUseVerbPattern,
+		dependencyAdoptionVerbPattern,
 	} {
 		if set.MatchString(clause) {
 			return true
@@ -201,6 +214,12 @@ func dependencyRequiredLevel(sentence string, mention int) dependencyLevel {
 		return dependencyInitializedLevel
 	case dependencyUseVerbPattern.MatchString(lower):
 		return dependencyUsed
+	case dependencyBehaviorPattern.MatchString(lower):
+		// A noun such as "caching" or "publishing" is an operational claim
+		// even when the sentence's only verb is an adoption word.
+		return dependencyUsed
+	case dependencyAdoptionVerbPattern.MatchString(sentence):
+		return dependencyDeclared
 	case dependencyDeclaredVerbPattern.MatchString(lower):
 		return dependencyDeclared
 	default:

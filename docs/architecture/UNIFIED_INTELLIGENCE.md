@@ -526,25 +526,90 @@ The runtime classifies every turn's assistant prose once, as
 
 | Disposition | Meaning | User-visible projection |
 |---|---|---|
-| `AnswerNarration` | A tool-round preamble or an abandoned plan. | Calls and results stay; any provisional prose preview is withdrawn. |
-| `AnswerSuperseded` | A bounded correction replaced the candidate. | The provisional preview is withdrawn when the correction starts. The candidate is audit lineage only: never rendered, persisted, or replayed as the answer or a withdrawal. A committed answer of the same turn links the internal tombstone through `SupersededBy`. |
+| `AnswerNarration` | A tool-round preamble or an abandoned plan. | Calls and results stay; the buffered prose is discarded. |
+| `AnswerSuperseded` | A bounded correction replaced the candidate. | The buffered candidate is discarded when the correction starts; it is audit lineage only: never rendered, persisted, or replayed as the answer or a withdrawal. A committed answer of the same turn links the internal tombstone through `SupersededBy`. |
 | `AnswerRejected` | The publication review terminally refused the candidate. | Exactly one labelled draft, or the plain output's `answer withheld` line. `AnswerReview` carries the control-plane reason verbatim. |
 | `AnswerCommitted` | The response transaction accepted the answer. | The one answer, settled with its exact text. |
 
-No answer prose is presented as final before `AnswerCommitted`. The TUI may
-show streamed deltas as a clearly labelled provisional preview while a
-candidate is under review; reasoning and tool activity remain live as well.
-The committed answer replaces that preview with its exact text. A narration or
-rejected disposition withdraws or relabels it as specified above. A superseded
-disposition withdraws the preview immediately: the correction is an internal
-repair step, so the replaced candidate never becomes a transcript artifact.
-Only a committed answer of the same turn links the internal tombstone as
-replaced, and the link is audit state rather than rendered content. The
-renderer does not infer a disposition from event order, empty text, stream
-completion, or its own audit read: an unclassified preview at a turn boundary
-is withdrawn, not promoted. A cancelled stream keeps its
-partial text as one display-only draft labelled with the interruption, never as
-an answer.
+No answer prose is presented as final before `AnswerCommitted`, and unapproved
+candidate prose is not presented at all. The TUI buffers streamed deltas in
+state while a candidate is under review. Its telemetry line states
+`verifying evidence…`; reasoning and tool activity remain live. A committed
+answer becomes one transcript block with its exact text. The block is revealed
+at a bounded reading pace rather than painted as one wall of text; the reveal
+is a display projection over the already settled text, so copy, persistence,
+and the answer contract see the full value from the first frame. The same
+reveal applies to the one labelled rejected draft. A narration or
+superseded disposition discards the buffer, so a refused candidate can never
+appear and vanish mid-read. A terminal rejection may project the buffered text
+once as the labelled display-only draft the disposition table specifies. A
+superseded candidate never becomes a transcript artifact. Only a committed
+answer of the same turn links the internal tombstone as replaced, and the link
+is audit state rather than rendered content. The renderer does not infer a
+disposition from event order, empty text, stream completion, or its own audit
+read: an unclassified buffer at a turn boundary is discarded, not promoted. A
+cancelled stream keeps its partial text as one display-only draft labelled with
+the interruption, never as an answer.
+
+An informational answer boundary also has a pre-prose claim gate. When the
+control plane reports that the required evidence is present, the next request
+offers the `prepare_answer` control tool instead of free prose. The model
+declares the claims the final answer will make and, separately, the scope
+limitations it will state. The runtime runs the same deterministic claim audit
+used before publication. A refused plan names the missing observation and
+reopens the evidence surface without the plan tool; the tool returns only after
+the model records an observation. A refused plan is control feedback, not a
+failed capability: after a new observation the same plan signature is
+re-audited against the updated evidence instead of being suppressed by the
+failure ledger. An accepted plan unlocks the answer request. The accepted
+claims and limitations are carried into every later request as the composition
+ledger: the final answer must use those claims at the strength and attribution
+the audit accepted. The final prose is checked against the ledger again, so a documented
+claim cannot be strengthened into an unattributed world claim after the plan
+passes. The gate is bounded: after its attempts are spent, the ordinary
+publication review still decides. The plan is a control observation, never evidence, so its own claims cannot
+corroborate the answer.
+
+Evidence depth is part of the survey contract, not a second publication gate.
+When a broad repository analysis observes test files, the overview count is
+recorded as inventory, and a semantic `structure view=tests` result names the
+tests, their files, and whether any test source was read. Test behavior is
+prioritized in the evidence frontier: a file count or a test name is a
+coordinate, not an account of what the suite asserts. Once the semantic
+inventory names tests, sufficiency keeps the survey open until at least one
+test file's content is observed; a complete inventory that observed zero test
+symbols stays closed, because there is no test behavior to read. This is a
+requirement on the evidence phase, not a veto on an answer: it is satisfied by
+one real observation and disappears when the inventory has nothing to name.
+
+The same evidence classes survive into the answer. A source read is
+implementation evidence even when no live runtime was observed; only
+README/docs prose is documentation. CamelCase source identifiers corroborate a
+documented dependency name (`NewPostgresConnection` supports PostgreSQL), so a
+source fact is not downgraded merely because the documentation spelled it
+differently. The accepted-plan ledger asks the final answer to label observed
+source, observed structure, documented, runtime, and inferred claims, and to
+name a documentation/manifest conflict instead of silently choosing one side.
+
+The model's live context is not the host transcript. A superseded candidate
+remains in that context so the model can repair its supported claims, but it
+was never delivered to the user. When a correction spends its tool allowance,
+the request states that the candidate was withheld and requires the complete
+answer; a short answer that refers to "the analysis above" or otherwise treats
+the unpublished draft as delivered is a review failure, not a committed
+answer. The completion condition is rendered as a requirement, never as an
+accomplished fact.
+
+Completion reads the same publication decision. `agent.EvaluateTaskCompletion`,
+the durable task's `Answered` evidence, and a delegated child's result use
+`Turn.AnswerText`: prose contributes to the answer only when the turn is
+committed (or is the unclassified zero value a host supplied without running
+the gate). For an informational objective, a run that ends on a narrated,
+superseded, or rejected candidate is `NEEDS_REVIEW` even though the raw prose
+remains on the turn for audit and repair. The two authorities therefore cannot disagree about whether an answer
+exists. A terminal refusal carries its draft's bounded claim issues into the
+review, so the durable task records what was refused rather than only a prose
+reason.
 
 The committed disposition is also the Thought boundary. Applying it reconciles
 every open reasoning trace before the answer becomes visible, so a frame can

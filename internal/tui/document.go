@@ -254,7 +254,9 @@ func BlockCopyText(entry Entry) string {
 	case EntryUser:
 		text = entry.UserText
 	case EntryAssistant:
-		text = entry.AssistantText
+		if !entry.Provisional {
+			text = entry.AssistantText
+		}
 	case EntryReasoning:
 		if entry.Reasoning != nil {
 			text = entry.Reasoning.Text

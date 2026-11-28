@@ -326,6 +326,11 @@ func entryTick(entry Entry, frame int, current bool, now time.Time) int {
 	if current {
 		return frame
 	}
+	// A settled answer revealing its display prefix changes every frame even
+	// though its full text is immutable.
+	if entry.Kind == EntryAssistant && !entry.RevealAt.IsZero() {
+		return frame
+	}
 	// An open reasoning head carries an elapsed time, so it also needs the
 	// frame while the runtime is still producing the trace. It is not the
 	// prominent activity (the reasoning glyph is deliberately subordinate),
@@ -354,6 +359,9 @@ func fixtureRevision(entry Entry) uint64 {
 	_, _ = h.Write([]byte(entry.WithdrawnReason))
 	_, _ = h.Write([]byte(entry.SupersededText))
 	_, _ = h.Write([]byte(entry.SupersededBy))
+	if !entry.RevealAt.IsZero() {
+		_, _ = h.Write([]byte{4})
+	}
 	if entry.Reasoning != nil {
 		_, _ = h.Write([]byte(entry.Reasoning.Text))
 		if entry.Reasoning.Expanded {

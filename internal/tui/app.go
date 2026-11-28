@@ -6284,11 +6284,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// at construction, because the program is the only thing that can turn
 	// it into UI events.
 	//
-	// Answer deltas are shown only as a labelled provisional preview. The
-	// reducer keeps them out of the committed answer contract, and the exact
-	// committed value (or withdrawal) replaces that preview after Run.
-	// Loop.drain sanitizes each delta before this hook, so streaming the preview
-	// observes the same runtime-state boundary as the settled answer.
+	// Answer deltas are buffered as a provisional candidate. The reducer keeps
+	// them out of the transcript and the answer contract until Run publishes
+	// the commit or withdrawal decision; the telemetry line reports the
+	// review. Loop.drain sanitizes each delta before this hook, so the buffered
+	// candidate observes the same runtime-state boundary as the settled answer.
 	p.loop.SetTextDeltaHook(func(delta string) {
 		for _, chunk := range splitAssistantChunks(delta) {
 			p.publishOK(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
@@ -6297,7 +6297,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	defer p.loop.SetTextDeltaHook(nil)
 	var liveThinking strings.Builder
 	// A stream with tool calls is investigation narration, not an answer. The
-	// provisional preview is withdrawn before the tool card opens so the two
+	// buffered candidate is discarded before the tool card opens so the two
 	// never read as competing output.
 	p.loop.SetAssistantMessageHook(func(message ai.AssistantMessage) {
 		if len(message.ToolCalls()) > 0 {
@@ -6500,8 +6500,8 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			})
 		case agent.AnswerSuperseded:
 			// A bounded correction replaces this candidate internally. The
-			// event withdraws the provisional preview; the candidate text is
-			// audit lineage on the turn, never a transcript artifact.
+			// event discards the buffered candidate; the text is audit lineage
+			// on the turn, never a transcript artifact.
 			p.publishCritical(AssistantReconcile{
 				Answer: agent.AnswerSuperseded, At: time.Now(), Seq: seq,
 			})
@@ -6697,7 +6697,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	}
 
 	// Assistant text must reach the transcript exactly once. The live deltas
-	// are a provisional preview; the committed value is settled below, after
+	// are a buffered candidate; the committed value is settled below, after
 	// every turn's tool cards have been published in order. This is the
 	// authoritative transfer: a delta dropped under backpressure, a rewrite
 	// by the answer finalizer, or a non-streaming transport all converge on
@@ -6811,10 +6811,10 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		}
 	}
 	// The answer disposition is the publication transaction's own record. A
-	// committed turn settles the provisional stream with its exact text; a
+	// committed turn settles the buffered candidate with its exact text; a
 	// terminal refusal keeps that one candidate as a labelled display-only
 	// draft with the control plane's reason. A run with neither (failure,
-	// cancellation, budget stop, narration only) withdraws the preview without
+	// cancellation, budget stop, narration only) discards the candidate without
 	// a review label: no transaction refused an answer, and the terminal footer
 	// names the actual outcome.
 	switch {
@@ -6845,7 +6845,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	case taskActionComplete, taskActionCompleteLimited:
 		answered := false
 		if len(turns) > 0 {
-			answered = strings.TrimSpace(turns[len(turns)-1].Assistant.Text()) != ""
+			// Answer evidence follows the publication decision, not raw model
+			// prose. A rejected or superseded candidate is not an answer the
+			// durable task may record, even if the turn still carries its text
+			// for audit.
+			answered = strings.TrimSpace(turns[len(turns)-1].AnswerText()) != ""
 		}
 		evidence := CompletionEvidence{Complete: true, Answered: answered}
 		if action == taskActionCompleteLimited {

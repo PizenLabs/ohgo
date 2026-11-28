@@ -591,18 +591,81 @@ func TestLiveWithdrawnDraftRendersLabel(t *testing.T) {
 	}
 }
 
-// The in-flight output-first block is a pure text suffix, so its draft state
+// The in-flight output-first block is a pure text suffix, so its review state
 // lives in the telemetry line instead of being prepended to the answer.
 func TestLiveStatusMarksProvisionalAnswer(t *testing.T) {
 	s := New()
 	s.Apply(AssistantDelta{Text: "candidate answer"})
 	line := liveStatusLine(s, DarkPalette(), ComputeLayout(s))
-	if !strings.Contains(line, "draft · answer review pending") {
-		t.Fatalf("live status does not mark the draft: %q", line)
+	if !strings.Contains(line, "verifying evidence…") {
+		t.Fatalf("live status does not mark the candidate review: %q", line)
+	}
+	if strings.Contains(line, "candidate answer") {
+		t.Fatalf("live status leaked candidate prose: %q", line)
 	}
 	s.Apply(AssistantReconcile{Text: "candidate answer", Answer: agent.AnswerCommitted})
 	line = liveStatusLine(s, DarkPalette(), ComputeLayout(s))
-	if strings.Contains(line, "draft ·") {
-		t.Fatalf("settled answer still marked as a draft: %q", line)
+	if strings.Contains(line, "verifying evidence…") {
+		t.Fatalf("settled answer still marked as under review: %q", line)
+	}
+}
+
+// A settled answer is still animated while its buffered text reveals. Output-
+// first mode must keep that reveal inside the live row budget and commit safe
+// prefixes, not grow the repainted region past the screen after AssistantDone.
+func TestLiveSettledAnswerRevealStaysBoundedAndConverges(t *testing.T) {
+	start := time.Date(2026, 11, 28, 1, 40, 0, 0, time.UTC)
+	answer := strings.Repeat("A settled answer paragraph that wraps across the transcript. \n\n", 8) + "LIVE_END"
+	p, painter := newLiveProgram()
+	p.state.Apply(TerminalResized{Width: 70, Height: 20})
+	p.state.Apply(FrameTick{At: start})
+	liveEvent(p, UserSubmitted{Text: "describe", At: start})
+	liveEvent(p, AssistantDelta{Text: answer, At: start})
+	liveEvent(p, AssistantReconcile{Text: answer, Answer: agent.AnswerCommitted, At: start})
+	liveEvent(p, AssistantDone{At: start.Add(10 * time.Millisecond)})
+
+	var painted []string
+	for _, offset := range []time.Duration{20 * time.Millisecond, 100 * time.Millisecond, 500 * time.Millisecond, 1500 * time.Millisecond, 4 * time.Second} {
+		p.state.Apply(FrameTick{At: start.Add(offset)})
+		painted = append(painted, painter.render(p.state)...)
+		if len(painter.live) > p.state.Height {
+			t.Fatalf("after %s the live region grew to %d rows, past the %d-row screen", offset, len(painter.live), p.state.Height)
+		}
+	}
+
+	got := squeeze(joinAll(painted) + joinAll(painter.block))
+	if got != squeeze(answer) {
+		t.Fatalf("settled live transcript holds %d runes, want %d", len(got), len(squeeze(answer)))
+	}
+}
+
+// A rejected draft has the same live budget. Its warning label must be
+// committed once, above the body, and the body must still reach the end.
+func TestLiveSettledDraftRevealStaysBoundedAndKeepsLabelOnce(t *testing.T) {
+	start := time.Date(2026, 11, 28, 1, 41, 0, 0, time.UTC)
+	answer := strings.Repeat("A rejected draft paragraph that wraps across the transcript. \n\n", 8) + "DRAFT_END"
+	p, painter := newLiveProgram()
+	p.state.Apply(TerminalResized{Width: 70, Height: 20})
+	p.state.Apply(FrameTick{At: start})
+	liveEvent(p, UserSubmitted{Text: "describe", At: start})
+	liveEvent(p, AssistantDelta{Text: answer, At: start})
+	liveEvent(p, AssistantReconcile{Text: answer, Answer: agent.AnswerRejected, Reason: "needs review", At: start})
+	liveEvent(p, AssistantDone{At: start.Add(10 * time.Millisecond)})
+
+	var painted []string
+	for _, offset := range []time.Duration{20 * time.Millisecond, 100 * time.Millisecond, 500 * time.Millisecond, 1500 * time.Millisecond, 4 * time.Second} {
+		p.state.Apply(FrameTick{At: start.Add(offset)})
+		painted = append(painted, painter.render(p.state)...)
+		if len(painter.live) > p.state.Height {
+			t.Fatalf("after %s the draft live region grew to %d rows, past the %d-row screen", offset, len(painter.live), p.state.Height)
+		}
+	}
+
+	all := ansi.Strip(joinAll(painted) + joinAll(painter.block))
+	if strings.Count(all, "draft withdrawn") != 1 {
+		t.Fatalf("draft label emitted %d times, want once:\n%s", strings.Count(all, "draft withdrawn"), all)
+	}
+	if got := squeeze(all); !strings.Contains(got, squeeze(answer)) {
+		t.Fatalf("settled draft lost part of its body: %d runes, want %d", len(got), len(squeeze(answer)))
 	}
 }

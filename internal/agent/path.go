@@ -112,6 +112,43 @@ func ClassifyPath(path string) PathClass {
 	return PathUnknown
 }
 
+// IsTestPath reports whether a source path belongs to a test suite.
+//
+// It is deliberately path-based: a test's behavior is established by reading
+// it, not by guessing from the name of the code it exercises. The rules cover
+// the naming conventions of the languages the structural adapters parse, plus
+// the conventional test directories shared across them.
+func IsTestPath(path string) bool {
+	normalized := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	if normalized == "" {
+		return false
+	}
+	base := filepath.Base(normalized)
+	switch {
+	case strings.HasSuffix(base, "_test.go"),
+		strings.HasSuffix(base, "_test.py"),
+		strings.HasSuffix(base, "_test.rs"),
+		strings.HasSuffix(base, "_test.rb"),
+		strings.HasSuffix(base, "_test.exs"),
+		strings.HasSuffix(base, "_spec.rb"),
+		(strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py")),
+		strings.Contains(base, ".test."),
+		strings.Contains(base, ".spec."):
+		return true
+	}
+	// Java, Kotlin, and .NET place tests under src/test or a Tests directory
+	// while the source lives under src/main. The directory is the convention;
+	// a production class can carry a Test-like suffix, so the basename alone
+	// is not enough.
+	for _, segment := range strings.Split(normalized, "/") {
+		switch segment {
+		case "tests", "test", "spec", "specs", "__tests__", "__test__":
+			return true
+		}
+	}
+	return false
+}
+
 // ManifestLanguage returns the implementation language a manifest path
 // identifies, or "" when the path is not a recognized manifest or the language
 // is not modeled.

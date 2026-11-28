@@ -243,6 +243,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		ProtocolRecoveryRequest:     parent.ProtocolRecoveryRequest,
 		ToolArgumentRecoveryRequest: parent.ToolArgumentRecoveryRequest,
 		OutputRecoveryRequest:       parent.OutputRecoveryRequest,
+		AnswerPlanLedgerRequest:     parent.AnswerPlanLedgerRequest,
 		RepairRequest:               parent.RepairRequest,
 		CorrectionToolCalls:         parent.CorrectionToolCalls,
 		StreamIdleTimeout:           parent.StreamIdleTimeout,
@@ -306,9 +307,11 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 	toolCalls := 0
 	for _, turn := range turns {
 		toolCalls += len(turn.Results)
-		if t := strings.TrimSpace(turn.Assistant.Text()); t != "" {
-			// A later turn is more considered than an earlier one: between them
-			// the child read tool output it did not have before.
+		if t := strings.TrimSpace(turn.AnswerText()); t != "" {
+			// A later committed answer is more considered than an earlier one:
+			// between them the child read tool output it did not have before.
+			// A withdrawn candidate contributes no text to the parent, even
+			// though the child keeps it for audit and repair.
 			text = t
 		}
 	}

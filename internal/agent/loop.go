@@ -137,6 +137,28 @@ type Turn struct {
 	Draft *AnswerDraft
 }
 
+// AnswerText returns the assistant prose this turn contributes to the run's
+// answer.
+//
+// The AnswerDisposition is the publication authority, so a consumer that needs
+// "the answer" must read it here rather than Assistant.Text(). A narrated,
+// superseded, or rejected candidate keeps its raw prose for audit and repair,
+// but it is not an answer even when the run stops before another candidate is
+// committed.
+//
+// AnswerUnclassified is the zero value: a host that constructs turns directly
+// (tests, subagent fixtures, a resumed legacy checkpoint) did not run the
+// publication gate, so there is no decision to override. A loop-produced turn
+// that can end a run is always classified before the run returns.
+func (t Turn) AnswerText() string {
+	switch t.Answer {
+	case AnswerUnclassified, AnswerCommitted:
+		return t.Assistant.Text()
+	default:
+		return ""
+	}
+}
+
 // ToolOutcome records what happened to one tool call.
 type ToolOutcome struct {
 	// CallID is the id of the tool call this outcome answers.
@@ -263,6 +285,12 @@ type Config struct {
 	// AnswerRepairs returns a repairable claim, it replaces the prose
 	// CompletionReviewRequest. Empty falls back to the prose directive.
 	RepairRequest string
+	// CorrectionAnswerRequest is the directive carried after a correction's
+	// tool allowance is spent. The earlier candidate was withheld, not
+	// delivered, so the model must write the complete answer instead of a
+	// confirmation of an analysis the user never saw. Empty omits the
+	// directive; the correction review still bounds the answer.
+	CorrectionAnswerRequest string
 	// AnswerRepairs returns the claim-level repairs for a rejected answer. It
 	// must be a projection of the same audit AnswerReview runs; the loop only
 	// renders it into the correction request. nil keeps the prose correction.
@@ -273,6 +301,28 @@ type Config struct {
 	// correction; authority, completion, and publication remain the runtime's.
 	// A nil hook accepts every answer with no open plan.
 	AnswerReview func(turns []Turn, answer string) string
+	// AnswerPlanReview audits the claims a model declares before writing its
+	// final answer. It is installed with AnswerReview for informational
+	// contracts. A non-nil hook makes the control plane's answer boundary
+	// require a passing plan before prose: the loop offers the plan tool alone,
+	// reopens the evidence surface without the plan tool when a plan names
+	// missing observations, and lets the ordinary publication review take over
+	// after the bounded plan attempts are spent. It cannot publish an answer or
+	// complete a task.
+	AnswerPlanReview func(turns []Turn, plan AnswerPlan) []contract.GroundingIssue
+	// AnswerPlanRequest is the directive carried on the answer-boundary
+	// request that asks for the plan. Empty still requires a plan when
+	// AnswerPlanReview is installed, but gives the model no instruction.
+	AnswerPlanRequest string
+	// AnswerPlanLedgerRequest is the directive carried after a plan is
+	// accepted. It receives {{claims}} and {{limitations}} rendered from the
+	// exact ledger the plan audit accepted. The final answer must compose from
+	// that ledger; a later draft cannot silently strengthen its claims.
+	AnswerPlanLedgerRequest string
+	// AnswerPlanEvidenceRequest is the directive carried on the evidence
+	// request that follows a refused plan. The plan tool is withheld on that
+	// request; the directive asks for the observations the refusal named.
+	AnswerPlanEvidenceRequest string
 	// EvidenceGap returns the control plane's current evidence-frontier gap.
 	// It is read when an answer is reviewed and again when it is finalized.
 	// A non-empty value means the model answered before the task's required
@@ -607,6 +657,12 @@ type Loop struct {
 	// the next turn look already published.
 	responseMu sync.Mutex
 	response   ResponseAudit
+	// acceptedPlan is the pre-prose claim ledger for the current run. It is
+	// set only by a reviewed, accepted plan and is reset at Run start. The
+	// answer request and the final prose audit use this exact ledger rather
+	// than reconstructing the model's intent from the answer text.
+	acceptedPlan AnswerPlan
+	planAccepted bool
 }
 
 // SetUsageLog installs the ledger that receives per-request cache samples.
@@ -1201,6 +1257,21 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	answerCorrections := 0
 	lastRepairKey := ""
 	correctionPending := false
+	// planPassed records that the pre-prose claim audit accepted a plan for
+	// this run. planAttempts bounds refused plans so a model that cannot
+	// converge returns to the ordinary publication review instead of looping.
+	// planGaps is the last refusal; it stays set until a successful observation
+	// so a prose-only turn cannot return to the plan surface with the same
+	// claims. The evidence request withholds the plan tool.
+	planPassed := false
+	planAttempts := 0
+	l.acceptedPlan = AnswerPlan{}
+	l.planAccepted = false
+	var planGaps []contract.GroundingIssue
+	// planProseAttempts bounds how many text-only turns may be withheld for
+	// lacking the required plan. After the bound, the publication review
+	// decides; the plan gate is a preflight, not an unconditional trap.
+	planProseAttempts := 0
 	// correctionDirective is the claim-level repair instruction for the active
 	// correction window. It is re-appended to every request while the window
 	// is open: the window can span several model turns, and a later turn that
@@ -1342,8 +1413,35 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return true
 		}
 
+		// The control plane reached its answer boundary and the claim
+		// preflight has not passed. Withhold this prose as narration and ask
+		// for the plan; nothing user-visible was streamed, so the turn costs a
+		// request rather than a published draft and a correction. The bound
+		// keeps a model that never plans from trapping the run: after one
+		// withheld prose turn the ordinary publication review decides.
+		if l.cfg.AnswerPlanReview != nil && !planPassed &&
+			planAttempts < MaxAnswerPlanAttempts && answerCorrections == 0 &&
+			toolNamed(l.cfg.Tools, AnswerPlanToolName) != nil && planProseAttempts < 1 {
+			last.Answer = AnswerNarration
+			last.AnswerReview = ""
+			planProseAttempts++
+			if directive := strings.TrimSpace(l.cfg.AnswerPlanRequest); directive != "" {
+				nudges = append(nudges, directive)
+			}
+			finish()
+			return false
+		}
+
 		reason := l.answerReviewReason(turns)
 		repairs := l.answerRepairs(turns)
+		if strings.Contains(reason, withheldDraftReviewReason) {
+			// The refusal is about the answer's publication boundary, not its
+			// claims. Reusing the first review's claim key would suppress the
+			// correction as a repeated failure and leave the withheld draft
+			// unpublished; the answer must be regenerated, not re-audited.
+			repairs = nil
+		}
+
 		// Track only candidates that can carry claims. A prose-only rejection
 		// (a plan or a missing evidence boundary) has no claim list and cannot
 		// be repaired sentence by sentence.
@@ -1527,6 +1625,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		runtimeBlocks = append(runtimeBlocks, l.cfg.RuntimeContext...)
 		runtimeBlocks = append(runtimeBlocks, nudges...)
 		activeTools := tools
+		// planEvidenceSurface is the pre-closure action surface for a plan
+		// refusal. It is captured before the control plane withdraws tools at
+		// its answer boundary, so a refused plan can reopen exactly the reads
+		// the projection considered available rather than the full built set.
+		var planEvidenceSurface []Tool
 		surface := actionSurface{}
 		answerEligible := false
 		objectiveComplete := false
@@ -1534,6 +1637,14 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		closed := false
 		refusals := map[string]string(nil)
 		var projectedToolChoice ai.ToolChoice
+		// forcePlanChoice pins the next request to the plan tool. It is set
+		// only when the control plane has reached its answer boundary and a
+		// plan has not passed yet. forceEvidenceChoice requires an evidence
+		// call on the request that follows a refused plan; a projector that
+		// forbade tools at the answer boundary must not turn the re-opened
+		// surface back into prose.
+		forcePlanChoice := false
+		forceEvidenceChoice := false
 		// redundant names offered capabilities the control plane judged unable
 		// to close the current gap. They stay offered so the request's tool
 		// block, and therefore its cached prefix, survives; the loop still
@@ -1603,6 +1714,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// closure below clears it. A correction request may use these
 			// tools to gather the evidence the review named.
 			correctionSurface := append([]Tool(nil), activeTools...)
+			// A refused plan reopens the evidence surface without plan
+			// bookkeeping. Offering the plan tool again lets the model repeat
+			// the same unsupported claims; offering task-plan bookkeeping lets
+			// it satisfy a forced tool call without observing the subject. The
+			// plan tools return after an observation.
+			planEvidenceSurface = withoutPlanTools(activeTools)
 			// AnswerEligible and Terminal are the control plane's semantic
 			// closure, not hints. The loop owns the request shape, so it must
 			// withdraw every tool rather than trusting a projector to also
@@ -1655,6 +1772,54 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				activeTools = []Tool{}
 				closed = true
 			}
+			// Pre-prose evidence plan. The control plane has reached its
+			// answer boundary; require the model to declare the claims it
+			// intends to make before any answer prose can stream. A refused
+			// plan reopens the evidence surface for exactly one request so the
+			// missing observation can be read. The ordinary publication review
+			// still decides what may be published.
+			if l.cfg.AnswerPlanReview != nil && !correcting && !terminal {
+				planTool := toolNamed(tools, AnswerPlanToolName)
+				switch {
+				case len(planGaps) > 0 && planTool != nil:
+					activeTools = planEvidenceSurface
+					if len(activeTools) == 0 {
+						activeTools = withoutPlanTools(tools)
+					}
+					closed = false
+					answerEligible = false
+					forceAnswer = false
+					forceEvidenceChoice = true
+					forcePlanChoice = false
+					report.AnswerEligible = false
+					report.Reason = joinReason(report.Reason,
+						"answer plan refused; evidence surface reopened for the missing observations")
+					if directive := strings.TrimSpace(l.cfg.AnswerPlanEvidenceRequest); directive != "" {
+						runtimeBlocks = append(runtimeBlocks, directive)
+					}
+					// planGaps stays set until a successful observation. A
+					// prose-only turn or a repeated plan must not turn this
+					// back into the plan-only surface with the same claims.
+				case answerEligible && planTool != nil && !planPassed && planAttempts < MaxAnswerPlanAttempts:
+					// A reconciled task plan stays available beside the
+					// preflight: forcing the plan tool while a todo is open
+					// would make the answer review refuse an open item the
+					// model was not allowed to close.
+					openPlans := OpenPlanTools(tools)
+					activeTools = append([]Tool{planTool}, openPlans...)
+					closed = false
+					forceAnswer = false
+					forcePlanChoice = len(openPlans) == 0
+					report.AnswerEligible = false
+					report.Reason = joinReason(report.Reason, "answer plan required before publication")
+					if directive := strings.TrimSpace(l.cfg.AnswerPlanRequest); directive != "" {
+						runtimeBlocks = append(runtimeBlocks, directive)
+					}
+				}
+			}
+			if ledger := l.answerPlanLedgerReason(); ledger != "" {
+				runtimeBlocks = append(runtimeBlocks, ledger)
+			}
 			if removed > 0 {
 				report.Reason = joinReason(report.Reason,
 					fmt.Sprintf("projection proposed %d tool(s) outside the loop's tool set; ignored", removed))
@@ -1704,11 +1869,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// The repair claims are the correction window's objective, not a
 		// one-request hint. A correction can need several model turns (read,
 		// read, answer), and a later turn that no longer sees the named claims
-		// follows whatever unrelated coordinate the state block surfaces. The
-		// directive is appended per request and withheld once the allowance is
-		// spent; the projection then states the exhausted budget.
-		if l.correctionActive.Load() && correctionDirective != "" && l.remainingCorrectionCalls() > 0 {
-			runtimeBlocks = append(runtimeBlocks, correctionDirective)
+		// follows whatever unrelated coordinate the state block surfaces. While
+		// the allowance can still buy evidence, the directive names the
+		// claims. Once it is spent, the answer itself is the only repair: state
+		// that the earlier candidate was withheld so the model writes the
+		// complete answer instead of confirming a draft the user never saw.
+		if l.correctionActive.Load() {
+			if l.remainingCorrectionCalls() > 0 {
+				if correctionDirective != "" {
+					runtimeBlocks = append(runtimeBlocks, correctionDirective)
+				}
+			} else if directive := strings.TrimSpace(l.cfg.CorrectionAnswerRequest); directive != "" {
+				runtimeBlocks = append(runtimeBlocks, directive)
+			}
 		}
 		// The reopened surface applies to this correction request only. A
 		// second rejected answer is returned to the host for completion
@@ -1750,6 +1923,26 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 		if projectedToolChoice.Type != "" || projectedToolChoice.ToolName != "" {
 			toolChoice = projectedToolChoice
+		}
+		forcedPlanTool := forcePlanChoice && toolNamed(activeTools, AnswerPlanToolName) != nil
+		if forcedPlanTool {
+			// The evidence phase is complete; the next action is the claim
+			// preflight, not another probe and not prose. The plan tool is the
+			// only offered capability, so a provider that ignores the choice
+			// still cannot run an unrelated call.
+			toolChoice = ai.ToolChoice{Type: "tool", ToolName: AnswerPlanToolName}
+		} else if forceEvidenceChoice && len(activeTools) > 0 {
+			// A refused plan owes evidence. The projection may have closed the
+			// answer boundary with a prose choice; the reopened surface must
+			// produce an observation before the plan returns.
+			toolChoice = ai.ToolChoiceAny
+		}
+		if toolChoice.Type == "tool" && toolChoice.ToolName != "" &&
+			toolNamed(activeTools, toolChoice.ToolName) == nil {
+			// A projector may pin a capability the loop's final surface
+			// withdrew. Never force a tool that is not offered; the request
+			// would ask the provider to call an unavailable capability.
+			toolChoice = ai.ToolChoice{}
 		}
 
 		if err := ctx.Err(); err != nil {
@@ -2114,7 +2307,46 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			}
 		}
 
-		outcomes, admissionErr := l.dispatch(ctx, activeByName, surface, refusals, assistant, calls, turn, len(turns), edit)
+		outcomes, admissionErr := l.dispatch(ctx, activeByName, surface, refusals, assistant, calls, turn, len(turns), turns, edit)
+		for _, outcome := range outcomes {
+			if outcome.ToolName != AnswerPlanToolName {
+				continue
+			}
+			result, ok := outcome.Result.Details.(AnswerPlanResult)
+			if !ok || !result.Reviewed {
+				continue
+			}
+			if planAttempts >= MaxAnswerPlanAttempts {
+				// The preflight is bounded. A later plan call is still a
+				// control observation for the model, but it cannot reopen the
+				// evidence surface again; the ordinary publication review owns
+				// the answer.
+				continue
+			}
+			planAttempts++
+			if result.Accepted {
+				planPassed = true
+				planGaps = nil
+				l.acceptedPlan = result.Plan
+				l.planAccepted = true
+				continue
+			}
+			planPassed = false
+			planGaps = result.Issues
+			l.acceptedPlan = AnswerPlan{}
+			l.planAccepted = false
+		}
+		if len(planGaps) > 0 {
+			for _, outcome := range outcomes {
+				if planEvidenceOutcome(outcome) {
+					// The model paid the evidence debt; the next request may
+					// offer the plan again. A prose-only turn or a control
+					// update leaves the debt in place and reopens evidence.
+					planGaps = nil
+					break
+				}
+			}
+		}
 		turn.Results = outcomes
 		l.markVerification(ctx, edit, outcomes)
 		for _, outcome := range outcomes {
@@ -2637,9 +2869,11 @@ func asToolArgumentError(err error) *ai.ToolCallArgumentError {
 
 // dispatch runs a batch of tool calls.
 //
-// Calls marked exclusive run alone; shared calls run concurrently. Results are
-// always returned in the order the model emitted the calls, so the transcript
-// matches the assistant message regardless of completion order.
+// Calls marked exclusive run alone; shared calls run concurrently, except in
+// the answer-correction window, whose small allowance is admitted in model
+// order. Results are always returned in the order the model emitted the calls,
+// so the transcript matches the assistant message regardless of completion
+// order.
 func (l *Loop) dispatch(
 	ctx context.Context,
 	byName map[string]Tool,
@@ -2649,6 +2883,7 @@ func (l *Loop) dispatch(
 	calls []ai.ToolCall,
 	turn Turn,
 	turnIndex int,
+	history []Turn,
 	edit *runEdit,
 ) ([]ToolOutcome, error) {
 	// The recovery point is captured before the first batch that can change the
@@ -2697,6 +2932,21 @@ func (l *Loop) dispatch(
 		collected = append(collected, indexed{position: position, outcome: outcome})
 	}
 
+	// The answer-correction allowance is per call, but a batch is one model
+	// action. A concurrent correction batch lets whichever goroutine reaches
+	// the atomic counter first win the last slot, so the runtime could execute
+	// a later call while refusing an earlier one in the same batch. The
+	// allowance is at most a handful of calls, so serializing only the
+	// correction window costs little and makes both the admitted set and the
+	// refusals follow model order. Investigation batches keep their
+	// concurrency.
+	serial := l.correctionActive.Load()
+	run := func(position int, call ai.ToolCall) {
+		outcome := l.execute(ctx, byName, surface, refusals, assistant, call, turn, turnIndex, history)
+		l.noteEvidence(outcome.Result)
+		l.noteObservation(call, outcome.Result, turnIndex)
+		record(position, outcome)
+	}
 	for i, call := range calls {
 		exclusive := isExclusive(byName, call)
 		if exclusive {
@@ -2705,14 +2955,15 @@ func (l *Loop) dispatch(
 			wg.Wait()
 		}
 
-		wg.Add(1)
-		go func(position int, call ai.ToolCall) {
-			defer wg.Done()
-			outcome := l.execute(ctx, byName, surface, refusals, assistant, call, turn, turnIndex)
-			l.noteEvidence(outcome.Result)
-			l.noteObservation(call, outcome.Result, turnIndex)
-			record(position, outcome)
-		}(i, call)
+		if serial {
+			run(i, call)
+		} else {
+			wg.Add(1)
+			go func(position int, call ai.ToolCall) {
+				defer wg.Done()
+				run(position, call)
+			}(i, call)
+		}
 
 		if exclusive {
 			// And drain again before anything else starts, otherwise a shared
@@ -2865,6 +3116,7 @@ func (l *Loop) execute(
 	call ai.ToolCall,
 	turn Turn,
 	turnIndex int,
+	history []Turn,
 ) (out ToolOutcome) {
 	fail := func(text string) ToolOutcome {
 		return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: Result{Text: text, IsError: true}}
@@ -3232,6 +3484,16 @@ func (l *Loop) execute(
 		ConclusionMode: l.cfg.ConclusionMode,
 		Budget:         l.budget,
 		Deadline:       l.deadline(),
+	}
+	if call.Name == AnswerPlanToolName && l.cfg.AnswerPlanReview != nil {
+		// The plan is a control observation: the audit sees the evidence from
+		// completed turns and never the plan's own claims. The history slice
+		// is immutable for the duration of dispatch; Run appends to the turn
+		// list only after every outcome is collected.
+		reviewTurns := history
+		toolCtx.AnswerPlanReview = func(plan AnswerPlan) []contract.GroundingIssue {
+			return l.cfg.AnswerPlanReview(reviewTurns, plan)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(err.Error())

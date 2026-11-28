@@ -209,9 +209,13 @@ func TestDependencyUseMatrix(t *testing.T) {
 			turn: manifest, text: "The project declares Redis as a dependency.",
 		},
 		{
-			name: "use claim with only a manifest",
-			turn: manifest, text: "The project uses Redis.",
+			name: "behavior claim with only a manifest",
+			turn: manifest, text: "The project uses Redis for caching.",
 			want: "unsupported_dependency_claim",
+		},
+		{
+			name: "adoption claim with only a manifest",
+			turn: manifest, text: "The project uses Redis.",
 		},
 		{
 			name: "README usage is not dependency evidence",
@@ -223,8 +227,8 @@ func TestDependencyUseMatrix(t *testing.T) {
 			turn: importOnly, text: "The product repository imports Redis.",
 		},
 		{
-			name: "use claim with only an import",
-			turn: importOnly, text: "The product service uses Redis.",
+			name: "behavior claim with only an import",
+			turn: importOnly, text: "The product service caches sessions in Redis.",
 			want: "unsupported_dependency_claim",
 		},
 		{
