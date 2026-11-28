@@ -7,6 +7,22 @@ immutable.
 
 ### Added
 
+- Broad project investigations now treat discovered tests as evidence to read,
+  not only inventory to count. Once the semantic test inventory names tests
+  (or the overview reports test files), the evidence frontier prioritizes the
+  test-behavior gap and names the discovered test symbols and a concrete file.
+  A semantic test inventory with test symbols keeps the survey open until at
+  least one test file's assertions are observed; a complete inventory that
+  observed zero test symbols stays closed. The overview's `test_files` count
+  now reaches the claim summary without pretending the filtered test inventory
+  is complete.
+- Evidence classes survive the answer lifecycle. CamelCase source identifiers
+  such as `NewPostgresConnection` and `NewRedisClient` corroborate the
+  documented dependency name, so an observed source operation is not recast as
+  a documentation-only claim. The answer-plan ledger and the state block
+  require explicit observed-source, documented, structural, runtime, and
+  inferred labels, and ask the answer to name documentation/manifest conflicts
+  instead of silently choosing one side.
 - Pre-prose answer plan (`prepare_answer`). At the informational answer
   boundary the runtime can require the model to declare the claims the final
   answer will make, plus the scope limitations it will state. The plan runs the

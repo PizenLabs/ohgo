@@ -120,13 +120,13 @@ const AnswerPlanRequest = `Runtime answer boundary: the evidence phase is comple
 // AnswerPlanEvidenceRequest is the directive carried on the evidence request
 // after a refused plan. The plan tool is withheld on that request so the model
 // cannot repeat the same proposal; the refusal already names the missing reads.
-const AnswerPlanEvidenceRequest = `Runtime answer plan refused: prepare_answer named claims the observations do not support. Use the available evidence tools now to read the subjects the refusal named, or narrow the claim to what was actually observed. The plan tool is withheld until a successful observation is recorded. Do not repeat the plan or write the final answer in this request.`
+const AnswerPlanEvidenceRequest = `Runtime answer plan refused: prepare_answer named claims the observations do not support. Use the available evidence tools now to read the subjects the refusal named, or narrow the claim to what was actually observed. Keep the evidence class intact: a source read is implementation evidence and is not a documentation claim; only README/docs prose is documentation. If runtime behavior was not observed, say it is unverified at runtime instead of downgrading observed source to a documentation claim. The plan tool is withheld until a successful observation is recorded. Do not repeat the plan or write the final answer in this request.`
 
 // AnswerPlanLedgerRequest is the directive carried after a plan is accepted.
 // It carries the exact claims the preflight audited, so the final answer is
 // composed from that ledger instead of silently strengthening an earlier
 // draft. Placeholders: {{claims}}, {{limitations}}.
-const AnswerPlanLedgerRequest = `Runtime accepted answer plan. The final answer must use only the factual claims below, preserve each claim's attribution and strength, and must not introduce a stronger claim, a new absolute quantifier, or an unledgered factual detail. If a claim is stated as documentation ("the README describes..."), keep that attribution in the answer. Compose the answer from this ledger, not from an earlier draft.
+const AnswerPlanLedgerRequest = `Runtime accepted answer plan. The final answer must use only the factual claims below, preserve each claim's attribution and strength, and must not introduce a stronger claim, a new absolute quantifier, or an unledgered factual detail. Keep each claim's evidence class explicit: observed source, observed structure, documented (name the document), runtime, or inferred. A source observation is implementation evidence even when no live run was observed; do not recast it as a documentation claim. If documentation and a manifest or configuration disagree, name both sources and the conflict instead of silently choosing one. If a claim is stated as documentation ("the README describes..."), keep that attribution in the answer. Compose the answer from this ledger, not from an earlier draft.
 
 Accepted claims:
 {{claims}}
