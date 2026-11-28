@@ -567,8 +567,29 @@ ledger: the final answer must use those claims at the strength and attribution
 the audit accepted. The final prose is checked against the ledger again, so a documented
 claim cannot be strengthened into an unattributed world claim after the plan
 passes. The gate is bounded: after its attempts are spent, the ordinary
-publication review still decides. The plan is a control observation, never
-evidence, so its own claims cannot corroborate the answer.
+publication review still decides. The plan is a control observation, never evidence, so its own claims cannot
+corroborate the answer.
+
+Evidence depth is part of the survey contract, not a second publication gate.
+When a broad repository analysis observes test files, the overview count is
+recorded as inventory, and a semantic `structure view=tests` result names the
+tests, their files, and whether any test source was read. Test behavior is
+prioritized in the evidence frontier: a file count or a test name is a
+coordinate, not an account of what the suite asserts. Once the semantic
+inventory names tests, sufficiency keeps the survey open until at least one
+test file's content is observed; a complete inventory that observed zero test
+symbols stays closed, because there is no test behavior to read. This is a
+requirement on the evidence phase, not a veto on an answer: it is satisfied by
+one real observation and disappears when the inventory has nothing to name.
+
+The same evidence classes survive into the answer. A source read is
+implementation evidence even when no live runtime was observed; only
+README/docs prose is documentation. CamelCase source identifiers corroborate a
+documented dependency name (`NewPostgresConnection` supports PostgreSQL), so a
+source fact is not downgraded merely because the documentation spelled it
+differently. The accepted-plan ledger asks the final answer to label observed
+source, observed structure, documented, runtime, and inferred claims, and to
+name a documentation/manifest conflict instead of silently choosing one side.
 
 The model's live context is not the host transcript. A superseded candidate
 remains in that context so the model can repair its supported claims, but it
